@@ -7,7 +7,7 @@ const rateLimit = require("express-rate-limit");
 const { createSessionMiddleware } = require("./config/session");
 
 const { registerUser } = require("./routes/register");
-const { loginUser, checkUserExists, logoutUser } = require("./routes/login");
+const { loginUser, logoutUser } = require("./routes/login");
 const {
   getRooms,
   createRooms,
@@ -20,6 +20,7 @@ const requireAuth = require("./middleware/requireAuth");
 const requireRoomMember = require("./middleware/requireRoomMember");
 const validate = require("./middleware/validate");
 const schemas = require("./validation/schemas");
+const { notFound, errorHandler } = require("./middleware/errorHandler");
 
 const createApp = ({ authRateLimitMax = 20, loginEmailRateLimitMax = 10 } = {}) => {
   const app = express();
@@ -85,7 +86,6 @@ const createApp = ({ authRateLimitMax = 20, loginEmailRateLimitMax = 10 } = {}) 
 
   app.get("/rooms", getRooms);
   app.post("/logout", logoutUser); // era GET: logout por GET permite CSRF via <img>/<a>
-  app.post("/checkUserExists", checkUserExists);
   app.get("/messages/:id", validate(schemas.getMessages), requireRoomMember, getMessages);
   app.post("/messages", validate(schemas.postMessage), requireRoomMember, postMessages);
   app.post(
@@ -103,6 +103,9 @@ const createApp = ({ authRateLimitMax = 20, loginEmailRateLimitMax = 10 } = {}) 
   // A rota POST /session permitia que qualquer cliente definisse req.session.userId
   // manualmente — ou seja, se passar por qualquer usuário sem autenticar.
   // Ver docs/01-baseline-seguranca.md para o registro completo.
+
+  app.use(notFound);
+  app.use(errorHandler);
 
   return app;
 };

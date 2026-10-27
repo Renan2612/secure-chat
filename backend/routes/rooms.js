@@ -1,74 +1,74 @@
 const crypto = require("crypto");
 const pool = require("../db");
 
-const getRooms = (req, res) => {
-  const userId = req.session.userId;
-  pool
-    .query(
+// Erros inesperados seguem para o error handler central (next), que
+// responde 500 genérico e registra o erro sem dados da requisição.
+
+const getRooms = async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
       `SELECT distinct rooms.id, rooms.name,  (SELECT COUNT(*) FROM messages WHERE room = rooms.id AND id > rooms_users.last_msg_viewed) as nummessages FROM rooms
     JOIN rooms_users
     ON rooms.id = rooms_users.room
     WHERE rooms_users.user_id = $1
     `,
-      [userId]
-    )
-    .then((result) => result.rows)
-    .then((messages) => {
-      res.status(200).json(messages);
-    })
-    .catch((err) => {
-      console.log("err", err);
-      res.status(500).json({ message: "Erro ao buscar salas" });
-    });
+      [req.session.userId]
+    );
+    return res.status(200).json(rows);
+  } catch (err) {
+    return next(err);
+  }
 };
 
 // Busca só entre as salas das quais o usuário já é membro (uso: avisar que
 // ele já tem uma sala com esse nome). CORRIGIDO: antes buscava em TODAS as
 // salas e revelava nome e ID de salas privadas de terceiros.
-const checkRoomExists = (req, res) => {
-  const name = req.body.name;
-  pool
-    .query(
+const checkRoomExists = async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
       `SELECT rooms.id, rooms.name FROM rooms
        JOIN rooms_users ON rooms_users.room = rooms.id
        WHERE rooms.name = $1 AND rooms_users.user_id = $2`,
-      [name, req.session.userId]
-    )
-    .then((resp) => {
-      res.status(200).json(resp.rows);
-    })
-    .catch((err) => {
-      console.log("err", err);
-      res.status(500).json({ message: "Erro ao verificar sala" });
-    });
+      [req.body.name, req.session.userId]
+    );
+    return res.status(200).json(rows);
+  } catch (err) {
+    return next(err);
+  }
 };
 
 // Chave de convite com 128 bits aleatórios (era o literal fixo "41421" no
 // projeto original). Só é devolvida aqui, ao criador, que a repassa por fora
 // do sistema a quem quiser convidar. O criador já entra na sala, na mesma
 // transação da criação (sem isso, a sala nascia sem nenhum membro).
-const createRooms = async (req, res) => {
-  const name = req.body.name;
+const createRooms = async (req, res, next) => {
   const key = crypto.randomBytes(16).toString("hex");
-  const client = await pool.connect();
+  let client;
+  let brokenConnection;
   try {
+    client = await pool.connect();
     await client.query("BEGIN");
     const { rows } = await client.query(
       "INSERT INTO rooms (name, key) VALUES ($1, $2) RETURNING id, name",
-      [name, key]
+      [req.body.name, key]
     );
     await client.query(
       "INSERT INTO rooms_users (room, user_id, last_msg_viewed) VALUES ($1, $2, 0)",
       [rows[0].id, req.session.userId]
     );
     await client.query("COMMIT");
-    res.status(201).json({ id: rows[0].id, name: rows[0].name, key });
+    return res.status(201).json({ id: rows[0].id, name: rows[0].name, key });
   } catch (err) {
-    await client.query("ROLLBACK");
-    console.log("err", err);
-    res.status(500).json({ message: "Erro ao criar sala" });
+    // Se o ROLLBACK também falhar, a conexão está quebrada: release(erro)
+    // a descarta em vez de devolvê-la ao pool. O erro reportado é o original.
+    if (client) {
+      await client.query("ROLLBACK").catch((rollbackErr) => {
+        brokenConnection = rollbackErr;
+      });
+    }
+    return next(err);
   } finally {
-    client.release();
+    if (client) client.release(brokenConnection);
   }
 };
 
@@ -83,7 +83,7 @@ const sameKey = (provided, expected) => {
 
 // CORRIGIDO (item E): exige a chave de convite da sala. Sala inexistente e
 // chave errada recebem a mesma resposta, para não revelar quais IDs existem.
-const joinRooms = async (req, res) => {
+const joinRooms = async (req, res, next) => {
   const roomId = req.body.idRoom;
   try {
     const { rows } = await pool.query("SELECT id, name, key FROM rooms WHERE id = $1", [roomId]);
@@ -97,32 +97,26 @@ const joinRooms = async (req, res) => {
     );
     return res.status(200).json({ id: rows[0].id, name: rows[0].name });
   } catch (err) {
-    console.log("err", err);
-    return res.status(500).json({ message: "Erro ao entrar na sala" });
+    return next(err);
   }
 };
 
 // Pertencimento à sala verificado antes, pelo middleware requireRoomMember.
-const roomsUsers = (req, res) => {
-  const room = req.params.room;
-  pool
-    .query(
+const roomsUsers = async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
       `SELECT users.name, users.id
-      FROM rooms_users 
+      FROM rooms_users
       JOIN users
       ON user_id = users.id
       WHERE room = $1;
     `,
-      [room]
-    )
-    .then((result) => result.rows)
-    .then((rooms) => {
-      res.status(200).json(rooms);
-    })
-    .catch((err) => {
-      console.log("err", err);
-      res.status(500).json({ message: "Erro ao listar membros" });
-    });
+      [req.params.room]
+    );
+    return res.status(200).json(rows);
+  } catch (err) {
+    return next(err);
+  }
 };
 
 module.exports = { getRooms, createRooms, joinRooms, checkRoomExists, roomsUsers };

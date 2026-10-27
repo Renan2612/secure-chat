@@ -20,7 +20,8 @@ const pool = new Pool({
 });
 
 pool.on("error", (err) => {
-  console.error("Erro inesperado no pool do Postgres:", err);
+  // Só a mensagem: o objeto de erro do pg pode trazer dados de conexão.
+  console.error("Erro inesperado no pool do Postgres:", err.message);
 });
 
 module.exports = pool;

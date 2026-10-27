@@ -40,22 +40,9 @@ const loginUser = async (req, res, next) => {
   }
 };
 
-// CORRIGIDO: esta rota devolvia a linha inteira de `users`, incluindo o
-// HASH DA SENHA, para qualquer requisição com um e-mail. Agora devolve
-// apenas se o e-mail existe, sem nenhum dado do usuário.
-const checkUserExists = (req, res) => {
-  const email = req.body.email;
-  pool
-    .query("SELECT id FROM users WHERE email = $1", [email])
-    .then((result) => result.rows)
-    .then((users) => {
-      res.status(200).json({ exists: users.length > 0 });
-    })
-    .catch((err) => {
-      console.log("err", err);
-      res.status(500).json({ message: "Erro ao verificar usuário" });
-    });
-};
+// REMOVIDO: checkUserExists. Respondia se um e-mail tinha conta, para
+// qualquer um — enumeração de usuários. O cadastro já informa e-mail
+// duplicado (409), então a rota não era essencial.
 
 // Apaga a sessão no servidor (revogação real: um cookie copiado deixa de
 // funcionar) e pede ao navegador para descartar o cookie.
@@ -67,4 +54,4 @@ const logoutUser = (req, res, next) => {
   });
 };
 
-module.exports = { loginUser, logoutUser, checkUserExists };
+module.exports = { loginUser, logoutUser };
