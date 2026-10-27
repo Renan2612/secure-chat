@@ -1,6 +1,6 @@
 // Ataque (item D, IDOR): usuário autenticado B tenta ler/escrever na sala
 // de A, da qual não é membro, só trocando o ID da sala na requisição.
-const { pool, resetDb, createUser, createRoomInDb, insertMessage } = require("./helpers");
+const { pool, resetDb, createUser, addMember, createRoomInDb, insertMessage } = require("./helpers");
 
 let alice;
 let bob;
@@ -84,19 +84,13 @@ describe("membro da sala continua com acesso", () => {
   });
 
   test("GET /rooms lista a sala depois que B vira membro", async () => {
-    await pool.query("INSERT INTO rooms_users (room, user_id, last_msg_viewed) VALUES ($1, $2, 0)", [
-      roomId,
-      bob.id,
-    ]);
+    await addMember(roomId, bob.id);
     const res = await bob.agent.get("/rooms");
     expect(res.body.map((r) => r.id)).toEqual([roomId]);
   });
 
   test("updateLastViewed altera só o próprio marcador, mesmo com user_id forjado", async () => {
-    await pool.query("INSERT INTO rooms_users (room, user_id, last_msg_viewed) VALUES ($1, $2, 0)", [
-      roomId,
-      bob.id,
-    ]);
+    await addMember(roomId, bob.id);
     const res = await alice.agent
       .post("/updateLastViewed")
       .send({ room: roomId, idLastMessage: 7, user_id: bob.id, user: { id: bob.id } });
@@ -117,10 +111,7 @@ describe("membro da sala continua com acesso", () => {
   });
 
   test("ao virar membro, B passa a ter acesso", async () => {
-    await pool.query("INSERT INTO rooms_users (room, user_id, last_msg_viewed) VALUES ($1, $2, 0)", [
-      roomId,
-      bob.id,
-    ]);
+    await addMember(roomId, bob.id);
     expect((await bob.agent.get(`/messages/${roomId}`)).status).toBe(200);
   });
 });

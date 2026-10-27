@@ -26,6 +26,13 @@ const createUser = async (name = "user") => {
   return { agent, id: reg.body.id, email, loginResponse: login };
 };
 
+// Inscreve o usuário na sala direto no banco (sem passar pela API).
+const addMember = (roomId, userId) =>
+  pool.query("INSERT INTO rooms_users (room, user_id, last_msg_viewed) VALUES ($1, $2, 0)", [
+    roomId,
+    userId,
+  ]);
+
 // Cria uma sala direto no banco (sem passar pela API) e inscreve os membros.
 const createRoomInDb = async (name, memberIds = []) => {
   const { rows } = await pool.query(
@@ -33,10 +40,7 @@ const createRoomInDb = async (name, memberIds = []) => {
     [name, "chave-da-sala-de-teste"]
   );
   for (const userId of memberIds) {
-    await pool.query("INSERT INTO rooms_users (room, user_id, last_msg_viewed) VALUES ($1, $2, 0)", [
-      rows[0].id,
-      userId,
-    ]);
+    await addMember(rows[0].id, userId);
   }
   return rows[0].id;
 };
@@ -72,6 +76,7 @@ module.exports = {
   pool,
   resetDb,
   createUser,
+  addMember,
   createRoomInDb,
   insertMessage,
   failQueriesMatching,

@@ -1,7 +1,7 @@
 // Ataque: coleta de informação — rotas de debug, enumeração, vazamento de
 // hash de senha / chave de sala nas respostas e detalhes internos em erros.
 const request = require("supertest");
-const { app, pool, resetDb, createUser, failQueriesMatching } = require("./helpers");
+const { app, pool, resetDb, createUser, failQueriesMatching, PASSWORD } = require("./helpers");
 
 beforeEach(resetDb);
 afterEach(() => jest.restoreAllMocks());
@@ -43,11 +43,11 @@ test("nenhuma resposta da API contém hash de senha nem room.key (exceto createR
 
   await request(app)
     .post("/register")
-    .send({ email: "carol@example.com", password: "senha-forte-de-teste", name: "Carol" })
+    .send({ email: "carol@example.com", password: PASSWORD, name: "Carol" })
     .then(record("register", 201));
   await request(app)
     .post("/login")
-    .send({ email: alice.email, password: "senha-forte-de-teste" })
+    .send({ email: alice.email, password: PASSWORD })
     .then(record("login ok", 200));
   await request(app)
     .post("/login")

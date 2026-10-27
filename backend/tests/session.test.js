@@ -11,6 +11,9 @@ afterAll(() => pool.end());
 const sessionCookie = (res) =>
   (res.headers["set-cookie"] || []).find((c) => c.startsWith("sid="));
 
+const countSessions = async () =>
+  (await pool.query("SELECT count(*)::int AS n FROM user_sessions")).rows[0].n;
+
 test("após logout, o cookie antigo não funciona mais (sessão destruída no servidor)", async () => {
   const { agent, loginResponse } = await createUser("alice");
   const stolenCookie = sessionCookie(loginResponse).split(";")[0];
@@ -34,16 +37,16 @@ test("logout limpa o cookie no navegador", async () => {
 
 test("logout remove a sessão do banco", async () => {
   const { agent } = await createUser("alice");
-  expect((await pool.query("SELECT count(*)::int AS n FROM user_sessions")).rows[0].n).toBe(1);
+  expect(await countSessions()).toBe(1);
   await agent.post("/logout");
-  expect((await pool.query("SELECT count(*)::int AS n FROM user_sessions")).rows[0].n).toBe(0);
+  expect(await countSessions()).toBe(0);
 });
 
 test("login gera um ID de sessão novo (sem session fixation)", async () => {
   const { agent, email, loginResponse } = await createUser("alice");
   const first = sessionCookie(loginResponse);
   const second = sessionCookie(
-    await agent.post("/login").send({ email, password: "senha-forte-de-teste" })
+    await agent.post("/login").send({ email, password: PASSWORD })
   );
   expect(second).toBeDefined();
   expect(second.split(";")[0]).not.toBe(first.split(";")[0]);
@@ -78,7 +81,7 @@ test("cookie tem nome genérico, HttpOnly, SameSite=Lax e Max-Age", async () => 
 test("requisição anônima não cria sessão nem cookie", async () => {
   const res = await request(app).get("/health");
   expect(sessionCookie(res)).toBeUndefined();
-  expect((await pool.query("SELECT count(*)::int AS n FROM user_sessions")).rows[0].n).toBe(0);
+  expect(await countSessions()).toBe(0);
 });
 
 describe("configuração de produção", () => {
@@ -93,11 +96,11 @@ describe("configuração de produção", () => {
     const prodApp = createApp({ authRateLimitMax: 10000 });
     await request(prodApp)
       .post("/register")
-      .send({ email: "prod@example.com", password: "senha-forte-de-teste", name: "Prod" });
+      .send({ email: "prod@example.com", password: PASSWORD, name: "Prod" });
     const res = await request(prodApp)
       .post("/login")
       .set("X-Forwarded-Proto", "https")
-      .send({ email: "prod@example.com", password: "senha-forte-de-teste" });
+      .send({ email: "prod@example.com", password: PASSWORD });
     expect(sessionCookie(res)).toMatch(/Secure/);
   });
 
@@ -143,5 +146,5 @@ test("falha ao gravar a sessão no login: 500 sem deixar o usuário logado", asy
   expect(sessionCookie(res)).toBeUndefined();
   // Nenhuma sessão autenticada ficou gravada por uma segunda tentativa de save.
   await new Promise((r) => setImmediate(r));
-  expect((await pool.query("SELECT count(*)::int AS n FROM user_sessions")).rows[0].n).toBe(0);
+  expect(await countSessions()).toBe(0);
 });

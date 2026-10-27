@@ -66,14 +66,14 @@ const createApp = ({ authRateLimitMax = 20, loginEmailRateLimitMax = 10 } = {}) 
   app.use(createSessionMiddleware());
 
   // --- Rate limiting em rotas sensíveis (login/registro) ---
-  // NOTA: ajustar limites conforme necessidade real do projeto na Etapa 2.
-  const authLimiter = rateLimit({
+  const limiterDefaults = {
     windowMs: 15 * 60 * 1000,
-    max: authRateLimitMax,
     standardHeaders: true,
     legacyHeaders: false,
     message: { message: "Muitas tentativas. Tente novamente em instantes." },
-  });
+  };
+
+  const authLimiter = rateLimit({ ...limiterDefaults, max: authRateLimitMax });
 
   // Segundo limite, só no login, por CONTA (e-mail normalizado) em vez de
   // por IP: freia força bruta distribuída contra uma conta específica a
@@ -82,16 +82,13 @@ const createApp = ({ authRateLimitMax = 20, loginEmailRateLimitMax = 10 } = {}) 
   // Efeito colateral aceito: um atacante ainda pode travar o login de uma
   // conta por 15 min errando a senha de propósito (ver docs/02).
   const loginEmailLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
+    ...limiterDefaults,
     max: loginEmailRateLimitMax,
     // Só senha/e-mail errados (401) contam: erros do servidor (500), como
     // uma queda do banco, não podem travar a conta do dono depois.
     skipSuccessfulRequests: true,
     requestWasSuccessful: (req, res) => res.statusCode !== 401,
-    standardHeaders: true,
-    legacyHeaders: false,
     keyGenerator: (req) => `login:${req.body.email}`,
-    message: { message: "Muitas tentativas. Tente novamente em instantes." },
   });
 
   // --- Rotas públicas (as únicas acessíveis sem sessão) ---

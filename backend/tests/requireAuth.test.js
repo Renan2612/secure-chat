@@ -1,6 +1,6 @@
 // Ataque: atacante sem conta (sem sessão) tenta usar a API diretamente.
 const request = require("supertest");
-const { app, pool, resetDb } = require("./helpers");
+const { app, pool, resetDb, PASSWORD } = require("./helpers");
 
 beforeEach(resetDb);
 afterAll(() => pool.end());
@@ -44,14 +44,14 @@ describe("rotas públicas continuam acessíveis sem sessão", () => {
   test("POST /register não exige sessão", async () => {
     const res = await request(app)
       .post("/register")
-      .send({ email: "novo@example.com", password: "senha-forte-de-teste", name: "Novo" });
+      .send({ email: "novo@example.com", password: PASSWORD, name: "Novo" });
     expect(res.status).toBe(201);
   });
 
   test("POST /login não exige sessão", async () => {
     const res = await request(app)
       .post("/login")
-      .send({ email: "ninguem@example.com", password: "senha-forte-de-teste" });
+      .send({ email: "ninguem@example.com", password: PASSWORD });
     // Chega ao handler de login (401 por credenciais), não ao requireAuth.
     expect(res.status).toBe(401);
     expect(res.body).toEqual({ message: "Credenciais inválidas" });
