@@ -44,25 +44,25 @@ const updateLastRead = (req, res) => {
     });
 };
 
-// ATENÇÃO (Etapa 2): o remetente (message.user.id) vem do corpo da
-// requisição, ou seja, do CLIENTE — e não da sessão autenticada no servidor.
-// Isso permite forjar mensagens em nome de outro usuário. O servidor deve
-// usar req.session.userId como remetente, nunca o que o cliente envia.
-// Mantido assim de propósito para servir de linha de base de comparação.
+// CORRIGIDO (item C): o remetente é SEMPRE o usuário da sessão. Qualquer
+// "user"/"user_id" enviado pelo cliente no corpo é ignorado — antes, o
+// servidor gravava message.user.id do corpo e qualquer um forjava o autor.
+// Que a sala existe e que o usuário é membro já foi garantido pelo
+// middleware requireRoomMember (pertencer a rooms_users implica a sala
+// existir, pela chave estrangeira).
 const postMessages = (req, res) => {
   const today = new Date(Date.now());
-  const message = req.body;
   const data = today.toUTCString();
 
   pool
     .query(
-      `INSERT INTO messages (room, user_id, message, dt_message) VALUES ($1, $2, $3 , $4) returning *;
+      `INSERT INTO messages (room, user_id, message, dt_message) VALUES ($1, $2, $3 , $4)
+       RETURNING id, room, user_id, message, dt_message;
     `,
-      [message.room.id, message.user.id, message.message, data]
+      [req.body.room, req.session.userId, req.body.message, data]
     )
-    .then((result) => result.rows)
-    .then((messages) => {
-      res.status(201).json(messages);
+    .then((result) => {
+      res.status(201).json(result.rows[0]);
     })
     .catch((err) => {
       console.log("err", err);
