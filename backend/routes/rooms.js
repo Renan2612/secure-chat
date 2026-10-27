@@ -93,8 +93,7 @@ const joinRooms = (req, res) => {
     });
 };
 
-// ATENÇÃO (Etapa 2): não verifica se req.session.userId é membro da sala
-// solicitada antes de devolver a lista de participantes.
+// Pertencimento à sala verificado antes, pelo middleware requireRoomMember.
 const roomsUsers = (req, res) => {
   const room = req.params.room;
   pool

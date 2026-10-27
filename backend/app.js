@@ -18,6 +18,7 @@ const {
 } = require("./routes/rooms");
 const { getMessages, postMessages, updateLastRead } = require("./routes/messages");
 const requireAuth = require("./middleware/requireAuth");
+const requireRoomMember = require("./middleware/requireRoomMember");
 
 const createApp = ({ authRateLimitMax = 20 } = {}) => {
   const app = express();
@@ -70,14 +71,14 @@ const createApp = ({ authRateLimitMax = 20 } = {}) => {
   app.get("/rooms", getRooms);
   app.post("/logout", logoutUser); // era GET: logout por GET permite CSRF via <img>/<a>
   app.post("/checkUserExists", checkUserExists);
-  app.get("/messages/:id", getMessages);
-  app.post("/messages", postMessages);
-  app.post("/updateLastViewed", updateLastRead);
+  app.get("/messages/:id", requireRoomMember, getMessages);
+  app.post("/messages", requireRoomMember, postMessages);
+  app.post("/updateLastViewed", requireRoomMember, updateLastRead);
   app.post("/checkRoomExists", checkRoomExists);
   app.post("/createRoom", createRooms);
   app.get("/listRoomsNotInto", listRoomsNotInto);
   app.post("/joinRooms", joinRooms);
-  app.get("/roomUsers/:room", roomsUsers);
+  app.get("/roomUsers/:room", requireRoomMember, roomsUsers);
 
   // As rotas de debug /session, /sessionRoom e /session (POST) foram REMOVIDAS.
   // A rota POST /session permitia que qualquer cliente definisse req.session.userId

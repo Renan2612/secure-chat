@@ -1,11 +1,9 @@
 const pool = require("../db");
 
-// ATENÇÃO (Etapa 2): esta rota não verifica se req.session.userId pertence
-// à sala solicitada — qualquer usuário autenticado pode ler qualquer sala
-// trocando o :id na URL (IDOR). Ver docs/01-baseline-seguranca.md.
+// Pertencimento à sala verificado antes, pelo middleware requireRoomMember.
+// CORRIGIDO: não grava mais req.session.room (estado desnecessário na sessão).
 const getMessages = (req, res) => {
   const room = req.params.id;
-  req.session.room = room;
   pool
     .query(
       `SELECT users.name AS userName, users.id AS userId, message AS message, dt_message AS dtMessage, messages.id as idMessage, rooms.name AS roomName, rooms.id as roomId FROM messages
