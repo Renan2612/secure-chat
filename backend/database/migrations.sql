@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS rooms_users (
    room INTEGER NOT NULL,
    user_id INTEGER NOT NULL,
    last_msg_viewed INTEGER NULL,
+   -- Um vínculo por (sala, usuário): entrar duas vezes não duplica a linha.
+   UNIQUE (room, user_id),
    FOREIGN KEY (user_id)
       REFERENCES users (id),
    FOREIGN KEY (room)

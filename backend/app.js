@@ -12,7 +12,6 @@ const {
   getRooms,
   createRooms,
   checkRoomExists,
-  listRoomsNotInto,
   joinRooms,
   roomsUsers,
 } = require("./routes/rooms");
@@ -76,7 +75,6 @@ const createApp = ({ authRateLimitMax = 20 } = {}) => {
   app.post("/updateLastViewed", requireRoomMember, updateLastRead);
   app.post("/checkRoomExists", checkRoomExists);
   app.post("/createRoom", createRooms);
-  app.get("/listRoomsNotInto", listRoomsNotInto);
   app.post("/joinRooms", joinRooms);
   app.get("/roomUsers/:room", requireRoomMember, roomsUsers);
 
