@@ -1,7 +1,8 @@
 const bcrypt = require("bcrypt");
 const pool = require("../db");
+const { cookieOptions, SESSION_COOKIE_NAME } = require("../config/session");
 
-const loginUser = (req, res) => {
+const loginUser = (req, res, next) => {
   const email = req.body.email;
   const password = req.body.password;
 
@@ -18,10 +19,16 @@ const loginUser = (req, res) => {
           return res.status(500).json({ message: "Erro ao autenticar" });
         }
         if (result) {
-          req.session.userId = users[0].id;
-          req.session.userName = users[0].name;
-          req.session.room = null;
-          return res.status(201).json({ message: "saves" });
+          // Troca o ID da sessão no login: um ID plantado antes da
+          // autenticação (session fixation) deixa de valer.
+          return req.session.regenerate((regenErr) => {
+            if (regenErr) return next(regenErr);
+            req.session.userId = users[0].id;
+            return req.session.save((saveErr) => {
+              if (saveErr) return next(saveErr);
+              return res.status(201).json({ message: "saves" });
+            });
+          });
         }
         // Era um "else" vazio: a requisição ficava pendurada sem resposta.
         return res.status(401).json({ message: "Senha incorreta" });
@@ -50,9 +57,14 @@ const checkUserExists = (req, res) => {
     });
 };
 
-const logoutUser = (req, res) => {
-  req.session = null;
-  return res.status(200).send();
+// Apaga a sessão no servidor (revogação real: um cookie copiado deixa de
+// funcionar) e pede ao navegador para descartar o cookie.
+const logoutUser = (req, res, next) => {
+  req.session.destroy((err) => {
+    if (err) return next(err);
+    res.clearCookie(SESSION_COOKIE_NAME, cookieOptions());
+    return res.status(204).send();
+  });
 };
 
 module.exports = { loginUser, logoutUser, checkUserExists };

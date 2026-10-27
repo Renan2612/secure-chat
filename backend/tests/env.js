@@ -9,8 +9,6 @@ const defaults = {
   DB_PORT: "5433",
   DB_NAME: "secure_chat_test",
   SESSION_SECRET: "segredo-de-sessao-usado-apenas-nos-testes-0123456789",
-  SESSION_KEY_1: "chave-de-teste-1",
-  SESSION_KEY_2: "chave-de-teste-2",
 };
 
 for (const [name, value] of Object.entries(defaults)) {

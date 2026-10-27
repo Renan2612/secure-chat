@@ -9,7 +9,7 @@ const app = createApp({ authRateLimitMax: 10000 });
 const PASSWORD = "senha-forte-de-teste";
 
 const resetDb = () =>
-  pool.query("TRUNCATE messages, rooms_users, rooms, users RESTART IDENTITY CASCADE");
+  pool.query("TRUNCATE user_sessions, messages, rooms_users, rooms, users RESTART IDENTITY CASCADE");
 
 let counter = 0;
 

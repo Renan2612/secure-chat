@@ -3,8 +3,8 @@
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
-const cookieSession = require("cookie-session");
 const rateLimit = require("express-rate-limit");
+const { createSessionMiddleware } = require("./config/session");
 
 const { registerUser } = require("./routes/register");
 const { loginUser, checkUserExists, logoutUser } = require("./routes/login");
@@ -22,6 +22,16 @@ const requireAuth = require("./middleware/requireAuth");
 const createApp = ({ authRateLimitMax = 20 } = {}) => {
   const app = express();
 
+  // Atrás de um proxy reverso (nginx, Traefik...) o Express só enxerga HTTP
+  // vindo do proxy; sem isso, req.secure é falso e o cookie Secure não é
+  // emitido, e o rate limit veria o IP do proxy em vez do IP do cliente.
+  // TRUST_PROXY = número de proxies na frente do app (ex.: 1). Não habilitar
+  // sem proxy: o cliente poderia forjar X-Forwarded-For.
+  if (process.env.TRUST_PROXY) {
+    const hops = Number(process.env.TRUST_PROXY);
+    app.set("trust proxy", Number.isInteger(hops) ? hops : process.env.TRUST_PROXY);
+  }
+
   // --- Segurança de cabeçalhos HTTP ---
   app.use(helmet());
 
@@ -36,19 +46,8 @@ const createApp = ({ authRateLimitMax = 20 } = {}) => {
   // --- Limite de tamanho do corpo da requisição ---
   app.use(express.json({ limit: "10kb" }));
 
-  // --- Sessão (cookie assinado) ---
-  // NOTA (Etapa 2): migrar para sessão armazenada no servidor (ex.: connect-pg-simple)
-  // para permitir revogação de sessões e evitar guardar dados no cliente.
-  app.use(
-    cookieSession({
-      name: "session",
-      keys: [process.env.SESSION_KEY_1, process.env.SESSION_KEY_2],
-      maxAge: 24 * 60 * 60 * 1000,
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-    })
-  );
+  // --- Sessão armazenada no servidor (Postgres) ---
+  app.use(createSessionMiddleware());
 
   // --- Rate limiting em rotas sensíveis (login/registro) ---
   // NOTA: ajustar limites conforme necessidade real do projeto na Etapa 2.
