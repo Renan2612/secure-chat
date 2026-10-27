@@ -13,7 +13,9 @@ const idParam = z
   .transform(Number)
   .pipe(id);
 
-const email = z.email().max(254);
+// Normalizado (sem espaços, minúsculo) antes de validar: "Alice@X.com" e
+// "alice@x.com" são a mesma conta, no cadastro, no login e no rate limit.
+const email = z.string().trim().toLowerCase().pipe(z.email().max(254));
 
 // O bcrypt ignora tudo depois do 72º BYTE: senhas maiores seriam truncadas
 // em silêncio. O limite é em bytes (UTF-8), não em caracteres.

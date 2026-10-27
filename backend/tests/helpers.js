@@ -3,8 +3,8 @@ const pool = require("../db");
 const { createApp } = require("../app");
 
 // Limite alto: os testes fazem muitos logins seguidos a partir do mesmo IP.
-// O comportamento do rate limit em si é testado com um app próprio.
-const app = createApp({ authRateLimitMax: 10000 });
+// O comportamento dos rate limits em si é testado com um app próprio (login.test.js).
+const app = createApp({ authRateLimitMax: 10000, loginEmailRateLimitMax: 10000 });
 
 const PASSWORD = "senha-forte-de-teste";
 

@@ -2,42 +2,42 @@ const bcrypt = require("bcrypt");
 const pool = require("../db");
 const { cookieOptions, SESSION_COOKIE_NAME } = require("../config/session");
 
-const loginUser = (req, res, next) => {
-  const email = req.body.email;
-  const password = req.body.password;
+// Hash bcrypt (custo 12, o mesmo do cadastro) de uma senha aleatória
+// descartada. Quando o e-mail não existe, o login compara a senha contra ele
+// só para gastar o mesmo tempo de uma conta real: sem isso, a resposta para
+// "e-mail inexistente" saía ~100x mais rápida e revelava quais contas existem.
+const DUMMY_HASH = "$2b$12$Cv3IAqZsRwB5vmi56Cknfur/J/Z140DXSk1s9wEq98nc32h98N8t.";
 
-  pool
-    .query("SELECT * FROM users WHERE email = $1", [email])
-    .then((result) => result.rows)
-    .then((users) => {
-      if (users.length !== 1) {
-        return res.status(404).json({ message: "Usuário não encontrado" });
-      }
-      bcrypt.compare(password, users[0].password, (err, result) => {
-        if (err) {
-          console.log("err", err);
-          return res.status(500).json({ message: "Erro ao autenticar" });
-        }
-        if (result) {
-          // Troca o ID da sessão no login: um ID plantado antes da
-          // autenticação (session fixation) deixa de valer.
-          return req.session.regenerate((regenErr) => {
-            if (regenErr) return next(regenErr);
-            req.session.userId = users[0].id;
-            return req.session.save((saveErr) => {
-              if (saveErr) return next(saveErr);
-              return res.status(201).json({ message: "saves" });
-            });
-          });
-        }
-        // Era um "else" vazio: a requisição ficava pendurada sem resposta.
-        return res.status(401).json({ message: "Senha incorreta" });
+// "E-mail não existe" e "senha errada" recebem exatamente a mesma resposta
+// (status, corpo e tempo), para não permitir enumeração de usuários.
+const INVALID_CREDENTIALS = { message: "Credenciais inválidas" };
+
+const loginUser = async (req, res, next) => {
+  const { email, password } = req.body; // e-mail já normalizado pelo validate
+
+  try {
+    const { rows } = await pool.query("SELECT id, name, password FROM users WHERE email = $1", [
+      email,
+    ]);
+    const user = rows[0];
+    const passwordMatches = await bcrypt.compare(password, user ? user.password : DUMMY_HASH);
+    if (!user || !passwordMatches) {
+      return res.status(401).json(INVALID_CREDENTIALS);
+    }
+
+    // Troca o ID da sessão no login: um ID plantado antes da
+    // autenticação (session fixation) deixa de valer.
+    return req.session.regenerate((regenErr) => {
+      if (regenErr) return next(regenErr);
+      req.session.userId = user.id;
+      return req.session.save((saveErr) => {
+        if (saveErr) return next(saveErr);
+        return res.status(200).json({ id: user.id, name: user.name });
       });
-    })
-    .catch((err) => {
-      console.log("err", err);
-      res.status(500).json({ message: "Erro ao autenticar" });
     });
+  } catch (err) {
+    return next(err);
+  }
 };
 
 // CORRIGIDO: esta rota devolvia a linha inteira de `users`, incluindo o

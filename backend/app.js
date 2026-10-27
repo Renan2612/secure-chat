@@ -21,7 +21,7 @@ const requireRoomMember = require("./middleware/requireRoomMember");
 const validate = require("./middleware/validate");
 const schemas = require("./validation/schemas");
 
-const createApp = ({ authRateLimitMax = 20 } = {}) => {
+const createApp = ({ authRateLimitMax = 20, loginEmailRateLimitMax = 10 } = {}) => {
   const app = express();
 
   // Atrás de um proxy reverso (nginx, Traefik...) o Express só enxerga HTTP
@@ -61,10 +61,24 @@ const createApp = ({ authRateLimitMax = 20 } = {}) => {
     message: { message: "Muitas tentativas. Tente novamente em instantes." },
   });
 
+  // Segundo limite, só no login, por CONTA (e-mail normalizado) em vez de
+  // por IP: freia força bruta distribuída contra uma conta específica a
+  // partir de muitos IPs. Roda depois do validate, que normaliza o e-mail.
+  // Efeito colateral aceito: um atacante pode travar o login de uma conta
+  // por 15 min errando a senha de propósito (ver docs/02).
+  const loginEmailLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: loginEmailRateLimitMax,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => `login:${req.body.email}`,
+    message: { message: "Muitas tentativas. Tente novamente em instantes." },
+  });
+
   // --- Rotas públicas (as únicas acessíveis sem sessão) ---
   app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
   app.post("/register", authLimiter, validate(schemas.register), registerUser);
-  app.post("/login", authLimiter, validate(schemas.login), loginUser);
+  app.post("/login", authLimiter, validate(schemas.login), loginEmailLimiter, loginUser);
 
   // --- Daqui para baixo, tudo exige sessão autenticada ---
   app.use(requireAuth);

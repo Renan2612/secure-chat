@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS rooms(
 CREATE TABLE IF NOT EXISTS users(
    id SERIAL PRIMARY KEY,
    name VARCHAR(255) NOT NULL,
-   email VARCHAR(255) NOT NULL,
+   -- Único e sempre em minúsculas (a API normaliza antes de gravar; o
+   -- CHECK impede que uma inserção fora da API crie "duplicatas" por caixa).
+   email VARCHAR(254) NOT NULL UNIQUE CHECK (email = LOWER(email)),
    password VARCHAR(255) NOT NULL
 );
 
