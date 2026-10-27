@@ -17,6 +17,7 @@ const {
   roomsUsers,
 } = require("./routes/rooms");
 const { getMessages, postMessages, updateLastRead } = require("./routes/messages");
+const requireAuth = require("./middleware/requireAuth");
 
 const createApp = ({ authRateLimitMax = 20 } = {}) => {
   const app = express();
@@ -59,13 +60,15 @@ const createApp = ({ authRateLimitMax = 20 } = {}) => {
     message: { message: "Muitas tentativas. Tente novamente em instantes." },
   });
 
-  // --- Rotas HTTP ---
-  // IMPORTANTE (Etapa 2): nenhuma destas rotas verifica autenticação nem
-  // pertencimento à sala ainda. Isso é tratado na Etapa 2 com middleware
-  // dedicado. Ver docs/01-baseline-seguranca.md.
-  app.get("/rooms", getRooms);
+  // --- Rotas públicas (as únicas acessíveis sem sessão) ---
+  app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
   app.post("/register", authLimiter, registerUser);
   app.post("/login", authLimiter, loginUser);
+
+  // --- Daqui para baixo, tudo exige sessão autenticada ---
+  app.use(requireAuth);
+
+  app.get("/rooms", getRooms);
   app.post("/logout", logoutUser); // era GET: logout por GET permite CSRF via <img>/<a>
   app.post("/checkUserExists", checkUserExists);
   app.get("/messages/:id", getMessages);
