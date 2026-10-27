@@ -13,7 +13,7 @@ escrito antes da correção (TDD) e visto falhando contra o código antigo.
 ```bash
 docker compose -f docker-compose.test.yml up -d --wait   # Postgres de teste (porta 5433, tmpfs)
 cd backend
-npm test                                                 # jest --runInBand, ~45 s
+npm test                                                 # jest --runInBand, ~1 min
 ```
 
 O banco de teste é separado do de desenvolvimento e é recriado a partir da
@@ -121,18 +121,34 @@ entrada nem dizer qual regra falhou.
 - Rate limit: além do limite por IP já existente (20 / 15 min em `/login` e
   `/register`), o login tem limite **por conta** (e-mail normalizado):
   10 tentativas **falhas** / 15 min, contra força bruta distribuída por
-  muitos IPs. Só falhas contam, para o uso legítimo não gastar a cota.
+  muitos IPs. Só respostas **401** contam: logins corretos não gastam a
+  cota, e erros do servidor (ex.: banco fora) não travam a conta do dono.
 
 ### 2.8 Higiene de erros e logs
 
 - Error handler central (`backend/middleware/errorHandler.js`): 500 sempre
   `{ message: "Erro interno" }`, sem stack, mensagem do Postgres nem nome de
-  tabela. JSON malformado → 400; corpo acima de 10 kb → 413.
-- O log de erro registra método, rota, tipo/código e mensagem do erro.
-  **Não** registra corpo da requisição (senhas), cabeçalhos (cookie) nem
-  `err.detail` do pg (que costuma conter valores das colunas, ex.: o e-mail
-  num erro de duplicidade). Os `console.log("err", err)` espalhados pelas
-  rotas, que despejavam o objeto inteiro, foram removidos.
+  tabela. Erros do cliente sinalizados pelo Express/body-parser (JSON
+  malformado, charset não suportado, parâmetro de URL malformado…) mantêm
+  seu status 4xx com `Requisição inválida` (413 para corpo acima de 10 kb) e
+  não poluem o log de erros internos.
+- O log de erro interno registra data/hora, método, rota, código do erro,
+  metadados de schema do pg (constraint, tabela, coluna) e o **stack**
+  (arquivo/linha). **Não** registra corpo da requisição (senhas), cabeçalhos
+  (cookie) nem `err.detail` do pg (que costuma conter valores das colunas,
+  ex.: o e-mail num erro de duplicidade). Os `console.log("err", err)`
+  espalhados pelas rotas, que despejavam o objeto inteiro, foram removidos.
+  Ressalva: algumas mensagens do pg citam a entrada (ex.: erro 22P02); a
+  validação impede isso hoje, mas uma lacuna futura num schema poderia levar
+  entrada do usuário ao log.
+- `createRoom` registra um listener de `'error'` no client retirado do pool:
+  sem ele, uma queda de conexão no meio da transação **derrubava o processo
+  inteiro** (reproduzido em teste). Falha no `ROLLBACK` é registrada e a
+  conexão é descartada.
+- Se a gravação da sessão falha no login, a sessão é descartada antes do
+  500 — antes, o cliente via erro mas recebia um cookie autenticado.
+- `GET /health` consulta o banco (`SELECT 1`) e responde `503` se ele
+  estiver fora, para o orquestrador não mandar tráfego a uma instância inútil.
 - `POST /checkUserExists` **removida**: respondia a qualquer um se um e-mail
   tinha conta. O cadastro já informa e-mail duplicado (409), então ela não
   era essencial. (O frontend ainda não está no repositório; se ele usar essa
@@ -180,7 +196,7 @@ Cliente                                Servidor                         Postgres
 
 | Rota | Quem pode acessar | Verificações aplicadas (em ordem) | Teste de ataque |
 |---|---|---|---|
-| `GET /health` | qualquer um | — | `requireAuth.test.js` |
+| `GET /health` | qualquer um | — (consulta o banco) | `requireAuth.test.js`, `hygiene.test.js` |
 | `POST /register` | qualquer um | rate limit IP · zod | `validation.test.js`, `login.test.js` |
 | `POST /login` | qualquer um | rate limit IP · zod · rate limit por conta (falhas) | `login.test.js` |
 | `POST /logout` | autenticado | sessão | `session.test.js` |
@@ -212,6 +228,7 @@ com textos genéricos:
 | 404 | `Não encontrado` | rota inexistente (com sessão) |
 | 409 | `E-mail já cadastrado` | cadastro com e-mail existente |
 | 413 | `Requisição muito grande` | corpo acima de 10 kb |
+| 415 | `Requisição inválida` | charset/encoding do corpo não suportado |
 | 429 | `Muitas tentativas. Tente novamente em instantes.` | rate limit |
 | 500 | `Erro interno` | qualquer falha inesperada |
 
@@ -230,7 +247,7 @@ Mudanças por rota:
 | `POST /updateLastViewed` | aceitava qualquer sala | corpo `{ room: <id>, idLastMessage: <inteiro ≥ 0> }`, só para salas das quais é membro |
 | `GET /listRoomsNotInto` | lista de salas alheias | **removida** (404) — a tela de "entrar em sala" passa a pedir ID + chave |
 | `POST /checkUserExists` | `{ exists }` | **removida** (404) — usar o 409 do `/register` |
-| `GET /health` | — | nova: `200 { status: "ok" }` |
+| `GET /health` | — | nova: `200 { status: "ok" }`, ou `503 { status: "indisponível" }` se o banco estiver fora |
 
 ## 6. Limitações conhecidas
 

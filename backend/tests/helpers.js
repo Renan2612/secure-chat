@@ -49,4 +49,31 @@ const insertMessage = async (roomId, userId, text) => {
   return rows[0].id;
 };
 
-module.exports = { app, pool, resetDb, createUser, createRoomInDb, insertMessage, PASSWORD };
+// Faz pool.query falhar só para o SQL que casa com `pattern` (as demais
+// consultas — ex.: a leitura da sessão pelo connect-pg-simple, que usa o
+// mesmo pool — seguem normais). Devolve um contador de falhas injetadas,
+// para o teste provar que a rota-alvo foi de fato alcançada.
+const failQueriesMatching = (pattern, error, times = 1) => {
+  const realQuery = pool.query.bind(pool);
+  const injected = { count: 0 };
+  jest.spyOn(pool, "query").mockImplementation((text, ...rest) => {
+    const sql = typeof text === "string" ? text : text && text.text;
+    if (injected.count < times && pattern.test(sql || "")) {
+      injected.count += 1;
+      return Promise.reject(error);
+    }
+    return realQuery(text, ...rest);
+  });
+  return injected;
+};
+
+module.exports = {
+  app,
+  pool,
+  resetDb,
+  createUser,
+  createRoomInDb,
+  insertMessage,
+  failQueriesMatching,
+  PASSWORD,
+};

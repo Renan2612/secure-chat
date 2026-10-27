@@ -11,6 +11,7 @@ beforeEach(async () => {
   alice = await createUser("alice");
   bob = await createUser("bob");
   const res = await alice.agent.post("/createRoom").send({ name: "Sala secreta" });
+  expect(res.status).toBe(201);
   room = res.body;
 });
 
@@ -95,5 +96,33 @@ describe("descoberta de salas privadas", () => {
   test("checkRoomExists encontra as salas do próprio usuário (evitar nome repetido)", async () => {
     const res = await alice.agent.post("/checkRoomExists").send({ name: "Sala secreta" });
     expect(res.body).toEqual([{ id: room.id, name: "Sala secreta" }]);
+  });
+});
+
+describe("createRoom é atômico e resiste a falhas de conexão", () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  test("se a inscrição do criador falha, a sala não fica órfã", async () => {
+    jest.spyOn(console, "error").mockImplementation(() => {});
+    const carol = await createUser("carol");
+    // Conta apagada com a sessão ainda ativa: o INSERT em rooms_users viola a FK.
+    await pool.query("DELETE FROM users WHERE id = $1", [carol.id]);
+    const res = await carol.agent.post("/createRoom").send({ name: "Sala órfã" });
+    expect(res.status).toBe(500);
+    expect((await pool.query("SELECT 1 FROM rooms WHERE name = 'Sala órfã'")).rowCount).toBe(0);
+  });
+
+  test("evento 'error' na conexão durante a transação não derruba o processo", async () => {
+    jest.spyOn(console, "error").mockImplementation(() => {});
+    const realConnect = pool.connect.bind(pool);
+    jest.spyOn(pool, "connect").mockImplementation(async (callback) => {
+      if (callback) return realConnect(callback);
+      const client = await realConnect();
+      // Simula a queda do socket enquanto a rota usa o client (após o await).
+      setImmediate(() => client.emit("error", new Error("conexão caiu")));
+      return client;
+    });
+    const res = await alice.agent.post("/createRoom").send({ name: "Sala instável" });
+    expect([201, 500]).toContain(res.status);
   });
 });

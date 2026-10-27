@@ -52,7 +52,8 @@ describe("rotas públicas continuam acessíveis sem sessão", () => {
     const res = await request(app)
       .post("/login")
       .send({ email: "ninguem@example.com", password: "senha-forte-de-teste" });
-    // Pode ser 401 por credenciais inválidas, mas nunca por falta de sessão.
-    expect(res.body.message).not.toBe("Não autenticado");
+    // Chega ao handler de login (401 por credenciais), não ao requireAuth.
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ message: "Credenciais inválidas" });
   });
 });

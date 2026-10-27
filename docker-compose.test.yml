@@ -5,6 +5,10 @@
 #
 #   docker compose -f docker-compose.test.yml up -d
 #   cd backend && npm test
+# Nome de projeto próprio: sem ele, este arquivo e o docker-compose.yml (mesmo
+# diretório) dividiriam projeto e rede, e um `down` de um afetaria o outro.
+name: secure-chat-test
+
 services:
   db-test:
     image: postgres:16-alpine

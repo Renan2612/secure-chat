@@ -31,7 +31,14 @@ const loginUser = async (req, res, next) => {
       if (regenErr) return next(regenErr);
       req.session.userId = user.id;
       return req.session.save((saveErr) => {
-        if (saveErr) return next(saveErr);
+        if (saveErr) {
+          // Descarta a sessão já marcada como autenticada: sem isso, o
+          // express-session ainda enviaria o cookie e tentaria gravá-la de
+          // novo no fim da resposta — o cliente veria "erro" mas poderia
+          // ficar logado.
+          req.session = null;
+          return next(saveErr);
+        }
         return res.status(200).json({ id: user.id, name: user.name });
       });
     });

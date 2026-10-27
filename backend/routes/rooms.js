@@ -45,8 +45,16 @@ const createRooms = async (req, res, next) => {
   const key = crypto.randomBytes(16).toString("hex");
   let client;
   let brokenConnection;
+  // Um client retirado do pool não tem listener de 'error'; se a conexão
+  // cair no meio da transação, o pg emite 'error' e, sem listener, o Node
+  // derruba o PROCESSO inteiro. O listener marca a conexão como quebrada
+  // (a query pendente também rejeita e cai no catch abaixo).
+  const onConnectionError = (connErr) => {
+    brokenConnection = connErr;
+  };
   try {
     client = await pool.connect();
+    client.on("error", onConnectionError);
     await client.query("BEGIN");
     const { rows } = await client.query(
       "INSERT INTO rooms (name, key) VALUES ($1, $2) RETURNING id, name",
@@ -61,14 +69,18 @@ const createRooms = async (req, res, next) => {
   } catch (err) {
     // Se o ROLLBACK também falhar, a conexão está quebrada: release(erro)
     // a descarta em vez de devolvê-la ao pool. O erro reportado é o original.
-    if (client) {
+    if (client && !brokenConnection) {
       await client.query("ROLLBACK").catch((rollbackErr) => {
+        console.error("[erro] ROLLBACK falhou em createRooms:", rollbackErr.message);
         brokenConnection = rollbackErr;
       });
     }
     return next(err);
   } finally {
-    if (client) client.release(brokenConnection);
+    if (client) {
+      client.removeListener("error", onConnectionError);
+      client.release(brokenConnection);
+    }
   }
 };
 

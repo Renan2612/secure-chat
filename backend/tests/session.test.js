@@ -1,10 +1,11 @@
 // Sessão armazenada no servidor (item H): revogação real no logout,
 // proteção contra session fixation e atributos do cookie.
 const request = require("supertest");
-const { app, pool, resetDb, createUser } = require("./helpers");
+const { app, pool, resetDb, createUser, failQueriesMatching, PASSWORD } = require("./helpers");
 const { createApp } = require("../app");
 
 beforeEach(resetDb);
+afterEach(() => jest.restoreAllMocks());
 afterAll(() => pool.end());
 
 const sessionCookie = (res) =>
@@ -68,7 +69,9 @@ test("cookie tem nome genérico, HttpOnly, SameSite=Lax e Max-Age", async () => 
   expect(cookie).toBeDefined();
   expect(cookie).toMatch(/HttpOnly/);
   expect(cookie).toMatch(/SameSite=Lax/);
-  expect(cookie).toMatch(/Expires=/);
+  const expires = Date.parse(cookie.match(/Expires=([^;]+)/)[1]);
+  const eightHours = 8 * 60 * 60 * 1000;
+  expect(Math.abs(expires - (Date.now() + eightHours))).toBeLessThan(60 * 1000);
   expect(cookie).not.toMatch(/Secure/); // fora de produção, sem HTTPS
 });
 
@@ -98,6 +101,23 @@ describe("configuração de produção", () => {
     expect(sessionCookie(res)).toMatch(/Secure/);
   });
 
+  test("rotação: cookie assinado com o segredo anterior continua válido", async () => {
+    const { loginResponse } = await createUser("alice");
+    const cookie = sessionCookie(loginResponse).split(";")[0];
+    process.env.SESSION_SECRET_PREVIOUS = process.env.SESSION_SECRET;
+    process.env.SESSION_SECRET = "novo-segredo-de-sessao-apos-rotacao-0123456789";
+    const rotated = createApp({ authRateLimitMax: 10000 });
+    expect((await request(rotated).get("/rooms").set("Cookie", cookie)).status).toBe(200);
+  });
+
+  test("sem o segredo anterior configurado, o cookie antigo deixa de valer", async () => {
+    const { loginResponse } = await createUser("alice");
+    const cookie = sessionCookie(loginResponse).split(";")[0];
+    process.env.SESSION_SECRET = "novo-segredo-de-sessao-apos-rotacao-0123456789";
+    const rotated = createApp({ authRateLimitMax: 10000 });
+    expect((await request(rotated).get("/rooms").set("Cookie", cookie)).status).toBe(401);
+  });
+
   test("app não sobe sem SESSION_SECRET", () => {
     delete process.env.SESSION_SECRET;
     expect(() => createApp()).toThrow(/SESSION_SECRET/);
@@ -107,4 +127,21 @@ describe("configuração de produção", () => {
     process.env.SESSION_SECRET = "curto";
     expect(() => createApp()).toThrow(/SESSION_SECRET/);
   });
+});
+
+test("falha ao gravar a sessão no login: 500 sem deixar o usuário logado", async () => {
+  const { email } = await createUser("alice");
+  await pool.query("DELETE FROM user_sessions");
+  jest.spyOn(console, "error").mockImplementation(() => {});
+  // Primeira gravação de sessão falha (ex.: timeout do pool); as seguintes funcionariam.
+  const injected = failQueriesMatching(/INSERT INTO "?[a-z_."]*user_sessions/i, new Error("timeout"));
+
+  const res = await request(app).post("/login").send({ email, password: PASSWORD });
+
+  expect(injected.count).toBe(1);
+  expect(res.status).toBe(500);
+  expect(sessionCookie(res)).toBeUndefined();
+  // Nenhuma sessão autenticada ficou gravada por uma segunda tentativa de save.
+  await new Promise((r) => setImmediate(r));
+  expect((await pool.query("SELECT count(*)::int AS n FROM user_sessions")).rows[0].n).toBe(0);
 });

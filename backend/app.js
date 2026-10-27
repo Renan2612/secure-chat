@@ -21,6 +21,19 @@ const requireRoomMember = require("./middleware/requireRoomMember");
 const validate = require("./middleware/validate");
 const schemas = require("./validation/schemas");
 const { notFound, errorHandler } = require("./middleware/errorHandler");
+const pool = require("./db");
+
+// Também verifica o banco: sem ele, toda rota útil falharia, e o
+// orquestrador (Docker/proxy) precisa saber para não mandar tráfego.
+const healthCheck = async (req, res) => {
+  try {
+    await pool.query("SELECT 1");
+    return res.status(200).json({ status: "ok" });
+  } catch (err) {
+    console.error("[health] banco indisponível:", err.message);
+    return res.status(503).json({ status: "indisponível" });
+  }
+};
 
 const createApp = ({ authRateLimitMax = 20, loginEmailRateLimitMax = 10 } = {}) => {
   const app = express();
@@ -71,7 +84,10 @@ const createApp = ({ authRateLimitMax = 20, loginEmailRateLimitMax = 10 } = {}) 
   const loginEmailLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: loginEmailRateLimitMax,
+    // Só senha/e-mail errados (401) contam: erros do servidor (500), como
+    // uma queda do banco, não podem travar a conta do dono depois.
     skipSuccessfulRequests: true,
+    requestWasSuccessful: (req, res) => res.statusCode !== 401,
     standardHeaders: true,
     legacyHeaders: false,
     keyGenerator: (req) => `login:${req.body.email}`,
@@ -79,7 +95,7 @@ const createApp = ({ authRateLimitMax = 20, loginEmailRateLimitMax = 10 } = {}) 
   });
 
   // --- Rotas públicas (as únicas acessíveis sem sessão) ---
-  app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
+  app.get("/health", healthCheck);
   app.post("/register", authLimiter, validate(schemas.register), registerUser);
   app.post("/login", authLimiter, validate(schemas.login), loginEmailLimiter, loginUser);
 
