@@ -65,11 +65,13 @@ const createApp = ({ authRateLimitMax = 20, loginEmailRateLimitMax = 10 } = {}) 
   // Segundo limite, só no login, por CONTA (e-mail normalizado) em vez de
   // por IP: freia força bruta distribuída contra uma conta específica a
   // partir de muitos IPs. Roda depois do validate, que normaliza o e-mail.
-  // Efeito colateral aceito: um atacante pode travar o login de uma conta
-  // por 15 min errando a senha de propósito (ver docs/02).
+  // Conta só tentativas FALHAS, para o uso legítimo não gastar a cota.
+  // Efeito colateral aceito: um atacante ainda pode travar o login de uma
+  // conta por 15 min errando a senha de propósito (ver docs/02).
   const loginEmailLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: loginEmailRateLimitMax,
+    skipSuccessfulRequests: true,
     standardHeaders: true,
     legacyHeaders: false,
     keyGenerator: (req) => `login:${req.body.email}`,

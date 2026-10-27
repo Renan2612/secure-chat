@@ -106,3 +106,15 @@ test("rate limit por e-mail no login: tentativas contra a mesma conta são barra
   // Outra conta não é afetada.
   expect((await attempt("outra@example.com")).status).toBe(401);
 });
+
+test("rate limit por e-mail conta só falhas: logins legítimos não gastam a cota da conta", async () => {
+  const limited = createApp({ authRateLimitMax: 10000, loginEmailRateLimitMax: 3 });
+  await request(limited)
+    .post("/register")
+    .send({ email: "dona@example.com", password: PASSWORD, name: "Dona" });
+  const login = (password) => request(limited).post("/login").send({ email: "dona@example.com", password });
+
+  for (let i = 0; i < 5; i += 1) expect((await login(PASSWORD)).status).toBe(200);
+  // Depois de vários logins corretos, uma senha errada ainda é só 401.
+  expect((await login("senha-errada-123")).status).toBe(401);
+});
