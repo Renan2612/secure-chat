@@ -38,20 +38,26 @@ const readSecrets = () => {
   return previous ? [current, previous] : [current];
 };
 
-const createSessionMiddleware = () =>
-  session({
+// Cria o store e o middleware juntos: o canal em tempo real (/ws) usa o
+// MESMO middleware para autenticar o upgrade e o MESMO store para revalidar
+// a sessão das conexões abertas — uma única fonte de verdade para "logado".
+const createSession = () => {
+  const store = new PgSession({
+    pool,
+    tableName: "user_sessions",
+    // Limpeza periódica de sessões expiradas. Desligada nos testes para
+    // não deixar timers abertos que impedem o jest de encerrar.
+    pruneSessionInterval: process.env.NODE_ENV === "test" ? false : 15 * 60,
+  });
+  const middleware = session({
     name: SESSION_COOKIE_NAME,
     secret: readSecrets(),
-    store: new PgSession({
-      pool,
-      tableName: "user_sessions",
-      // Limpeza periódica de sessões expiradas. Desligada nos testes para
-      // não deixar timers abertos que impedem o jest de encerrar.
-      pruneSessionInterval: process.env.NODE_ENV === "test" ? false : 15 * 60,
-    }),
+    store,
     resave: false,
     saveUninitialized: false, // nenhuma sessão/cookie para visitante anônimo
     cookie: { ...cookieOptions(), maxAge: SESSION_MAX_AGE_MS },
   });
+  return { middleware, store };
+};
 
-module.exports = { createSessionMiddleware, cookieOptions, SESSION_COOKIE_NAME };
+module.exports = { createSession, cookieOptions, SESSION_COOKIE_NAME };

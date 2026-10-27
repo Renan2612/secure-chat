@@ -1,10 +1,10 @@
-// Montagem da aplicação Express, separada do server.js para que os testes
-// (supertest) possam usar o app sem abrir porta nem subir o Socket.IO.
+// Montagem da aplicação Express, separada do servidor HTTP/WebSocket
+// (createServer.js) para que os testes possam usar o app sem abrir porta.
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
-const { createSessionMiddleware } = require("./config/session");
+const { createSession } = require("./config/session");
 
 const { registerUser } = require("./routes/register");
 const { loginUser, logoutUser } = require("./routes/login");
@@ -35,7 +35,14 @@ const healthCheck = async (req, res) => {
   }
 };
 
-const createApp = ({ authRateLimitMax = 20, loginEmailRateLimitMax = 10 } = {}) => {
+// onSessionEnd(userId): chamado quando uma sessão termina por logout, para o
+// canal em tempo real derrubar as conexões abertas daquele usuário.
+const createApp = ({
+  authRateLimitMax = 20,
+  loginEmailRateLimitMax = 10,
+  session = createSession(),
+  onSessionEnd = () => {},
+} = {}) => {
   const app = express();
 
   // Atrás de um proxy reverso (nginx, Traefik...) o Express só enxerga HTTP
@@ -63,7 +70,8 @@ const createApp = ({ authRateLimitMax = 20, loginEmailRateLimitMax = 10 } = {}) 
   app.use(express.json({ limit: "10kb" }));
 
   // --- Sessão armazenada no servidor (Postgres) ---
-  app.use(createSessionMiddleware());
+  app.use(session.middleware);
+  app.locals.onSessionEnd = onSessionEnd;
 
   // --- Rate limiting em rotas sensíveis (login/registro) ---
   const limiterDefaults = {

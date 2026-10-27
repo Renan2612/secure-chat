@@ -28,7 +28,7 @@
     "express-session": "^1.19.0",
     "helmet": "^7.1.0",
     "pg": "^8.11.5",
-    "socket.io": "^4.7.5",
+    "ws": "^8.22.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {
