@@ -31,6 +31,8 @@ const ERRORS = {
   BAD_REQUEST: "Pacote inválido",
   HELLO_REQUIRED: "Envie HELLO antes de qualquer outro pacote",
   UNSUPPORTED_VERSION: `Versão de protocolo não suportada (servidor: ${PROTOCOL_VERSION})`,
+  NOT_MEMBER: "Sem acesso a esta sala",
+  INTERNAL: "Erro interno",
 };
 
 const INT_MAX = 2147483647;
@@ -39,9 +41,13 @@ const INT_MAX = 2147483647;
 // devolvido como "ref" nas respostas e erros correspondentes.
 const base = { v: z.literal(PROTOCOL_VERSION), id: z.string().min(1).max(64).optional() };
 
+const room = z.number().int().positive().max(INT_MAX);
+
 const clientPacket = z.discriminatedUnion("type", [
   z.object({ ...base, type: z.literal("HELLO"), client: z.string().max(64).optional() }),
   z.object({ ...base, type: z.literal("PING") }),
+  z.object({ ...base, type: z.literal("SUBSCRIBE"), room }),
+  z.object({ ...base, type: z.literal("UNSUBSCRIBE"), room }),
 ]);
 
 module.exports = {

@@ -16,14 +16,19 @@ class Connection {
     this.limits = limits;
     this.handlers = handlers; // { TIPO: async (conn, packet) => void }
     this.ready = false;
+    this.rooms = new Set(); // salas em que esta conexão está inscrita
 
     this.helloTimer = setTimeout(() => this.close(CLOSE.HELLO_TIMEOUT, "HELLO não recebido"), limits.helloTimeoutMs);
     socket.on("message", (data, isBinary) => this.onFrame(data, isBinary));
     socket.on("close", () => clearTimeout(this.helloTimer));
   }
 
+  isOpen() {
+    return this.socket.readyState === WebSocket.OPEN;
+  }
+
   send(packet) {
-    if (this.socket.readyState !== WebSocket.OPEN) return;
+    if (!this.isOpen()) return;
     this.socket.send(JSON.stringify({ v: PROTOCOL_VERSION, ...packet }));
   }
 
@@ -51,7 +56,18 @@ class Connection {
 
     const packet = parsed.data;
     if (packet.type === "PING") return this.send({ type: "PONG", ...(packet.id ? { ref: packet.id } : {}) });
-    return this.handlers[packet.type](this, packet);
+    return this.dispatch(packet);
+  }
+
+  // Erros inesperados nos handlers viram ERROR INTERNAL para o cliente; no
+  // log vai só o tipo do pacote e a mensagem do erro, nunca o pacote.
+  async dispatch(packet) {
+    try {
+      await this.handlers[packet.type](this, packet);
+    } catch (err) {
+      console.error(`[ws] erro ao tratar ${packet.type}: ${err.message}`);
+      this.error("INTERNAL", packet.id);
+    }
   }
 
   onHandshakeFrame(raw) {
