@@ -6,10 +6,7 @@ const registerUser = async (req, res) => {
   const password = req.body.password;
   const name = req.body.name;
 
-  if (!email || !password || !name) {
-    return res.status(400).json({ message: "Dados obrigatórios ausentes" });
-  }
-
+  // Formato dos campos já validado pelo middleware validate (schemas.register).
   try {
     const hashedPassword = await hashPassword(password, 12);
     const result = await pool.query(
