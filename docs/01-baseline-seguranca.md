@@ -30,21 +30,43 @@ etapas seguintes. Este documento serve de evidência para o relatório final
 | 18 | Node 16 e dependências desatualizadas (2022) | `package.json` | Atualizado para Node ≥ 18 e versões atuais das libs |
 | 19 | Sem `.env.example`, sem Docker Compose, README mínimo | raiz do projeto | Adicionados `.env.example`, `docker-compose.yml`, `Dockerfile`, este README |
 
+## Resolvido na Etapa 2 — autenticação e autorização
+
+Detalhes, decisões e mudanças de contrato em
+[`02-autenticacao-autorizacao.md`](02-autenticacao-autorizacao.md). Cada item
+tem testes de ataque automatizados (`cd backend && npm test`), vistos
+falhando contra o código antigo antes da correção.
+
+| # | Problema | Correção | Testes que provam |
+|---|---|---|---|
+| C | Remetente da mensagem vinha do corpo (`message.user.id`) | `POST /messages` usa sempre `req.session.userId`; campos extras são descartados pelo validador. **Parte HTTP resolvida; o socket continua aceitando o remetente do cliente (Etapa 3, item A/B).** | `backend/tests/messageSender.test.js` |
+| D | Nenhuma rota verificava se o usuário é membro da sala (IDOR) | Middleware `requireRoomMember` (403) em `GET /messages/:id`, `POST /messages`, `GET /roomUsers/:room`, `POST /updateLastViewed`; `requireAuth` global (401) | `backend/tests/requireRoomMember.test.js`, `backend/tests/requireAuth.test.js` |
+| E | `joinRooms` não validava a chave de convite | Chave obrigatória, comparada em tempo constante; chave de 128 bits devolvida só ao criador; criador entra na sala; `listRoomsNotInto` removida e `checkRoomExists` restrita às salas do usuário | `backend/tests/roomInvite.test.js` |
+| H | Sessão assinada no cliente (cookie-session), sem revogação | `express-session` + `connect-pg-simple` (tabela `user_sessions`); logout destrói a sessão no servidor; ID regenerado no login | `backend/tests/session.test.js` |
+
+Também na Etapa 2: validação de entrada com zod (`tests/validation.test.js`),
+login sem enumeração de usuários e com tempo equalizado (`tests/login.test.js`),
+error handler central sem vazamento e remoção de `checkUserExists`
+(`tests/hygiene.test.js`), e correção da `migrations.sql`, que criava as
+tabelas num banco diferente do usado pelo backend.
+
 ## Pendente — propositalmente NÃO corrigido ainda
 
 Estes problemas são o núcleo das próximas etapas e foram deixados como estão
-para servir de comparação "antes/depois" no relatório final.
+para servir de comparação "antes/depois" no relatório final. Os itens
+marcados ✅ foram resolvidos na Etapa 2 (ver seção anterior); as linhas
+foram mantidas para preservar o registro.
 
 | # | Problema | Onde | Etapa que resolve |
 |---|---|---|---|
 | A | Socket.IO sem autenticação: qualquer um conecta sem sessão válida | `server.js` | Etapa 3 |
 | B | Socket.IO usa `broadcast.emit` global — todo cliente conectado recebe mensagens de **todas** as salas, não só da sua | `server.js` | Etapa 3 |
-| C | Servidor não define o remetente da mensagem — vem do corpo enviado pelo cliente (`message.user.id`), permitindo forjar identidade | `routes/messages.js`, socket | Etapa 2 / Etapa 3 |
-| D | Nenhuma rota verifica se o usuário autenticado é membro da sala antes de ler/escrever (IDOR) | `routes/messages.js`, `routes/rooms.js` | Etapa 2 |
-| E | `joinRooms` não valida a chave de convite da sala — qualquer usuário autenticado entra em qualquer sala só sabendo o `idRoom` | `routes/rooms.js` | Etapa 2 |
+| C | Servidor não define o remetente da mensagem — vem do corpo enviado pelo cliente (`message.user.id`), permitindo forjar identidade | ~~`routes/messages.js`~~ (✅ Etapa 2), socket | ✅ HTTP: Etapa 2 · ⏳ socket: Etapa 3 |
+| D | Nenhuma rota verifica se o usuário autenticado é membro da sala antes de ler/escrever (IDOR) | `routes/messages.js`, `routes/rooms.js` | ✅ **Resolvido na Etapa 2** |
+| E | `joinRooms` não valida a chave de convite da sala — qualquer usuário autenticado entra em qualquer sala só sabendo o `idRoom` | `routes/rooms.js` | ✅ **Resolvido na Etapa 2** |
 | F | Mensagens armazenadas em texto claro no Postgres — o admin do banco lê tudo | `database/migrations.sql` | Etapa 4 (E2EE) |
 | G | Sem TLS — tráfego HTTP/WS em texto claro | infraestrutura | Etapa 4 |
-| H | Sessão assinada no cliente (cookie-session) sem possibilidade de revogação centralizada | `server.js` | Avaliar na Etapa 2 |
+| H | Sessão assinada no cliente (cookie-session) sem possibilidade de revogação centralizada | `server.js` | ✅ **Resolvido na Etapa 2** |
 | I | Frontend React ainda não auditado | `frontend/` | Próxima tarefa, antes da Etapa 3 |
 
 ## Vulnerabilidades de dependências (`npm audit`)
