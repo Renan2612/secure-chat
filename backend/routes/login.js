@@ -1,12 +1,15 @@
+const crypto = require("crypto");
 const bcrypt = require("bcrypt");
 const pool = require("../db");
+const { BCRYPT_COST } = require("../helpers/users");
 const { cookieOptions, SESSION_COOKIE_NAME } = require("../config/session");
 
-// Hash bcrypt (custo 12, o mesmo do cadastro) de uma senha aleatória
-// descartada. Quando o e-mail não existe, o login compara a senha contra ele
-// só para gastar o mesmo tempo de uma conta real: sem isso, a resposta para
-// "e-mail inexistente" saía ~100x mais rápida e revelava quais contas existem.
-const DUMMY_HASH = "$2b$12$Cv3IAqZsRwB5vmi56Cknfur/J/Z140DXSk1s9wEq98nc32h98N8t.";
+// Hash bcrypt de uma senha aleatória descartada, gerado na inicialização com
+// o MESMO custo dos hashes reais. Quando o e-mail não existe, o login compara
+// a senha contra ele só para gastar o mesmo tempo de uma conta real: sem
+// isso, a resposta para "e-mail inexistente" saía ~100x mais rápida e
+// revelava quais contas existem.
+const DUMMY_HASH = bcrypt.hashSync(crypto.randomBytes(32).toString("hex"), BCRYPT_COST);
 
 // "E-mail não existe" e "senha errada" recebem exatamente a mesma resposta
 // (status, corpo e tempo), para não permitir enumeração de usuários.
@@ -61,4 +64,4 @@ const logoutUser = (req, res, next) => {
   });
 };
 
-module.exports = { loginUser, logoutUser };
+module.exports = { loginUser, logoutUser, DUMMY_HASH };

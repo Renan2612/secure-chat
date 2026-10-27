@@ -1,5 +1,9 @@
 // Ataque: enumeração de contas pelo login (mensagem, status ou tempo de
 // resposta diferentes para "e-mail não existe" e "senha errada").
+// Custo real: o teste de tempo equalizado precisa do bcrypt com custo de
+// produção (definido antes de carregar os módulos que o leem).
+process.env.BCRYPT_COST = "12";
+
 const request = require("supertest");
 const { app, pool, resetDb, createUser, failQueriesMatching, PASSWORD } = require("./helpers");
 const { createApp } = require("../app");

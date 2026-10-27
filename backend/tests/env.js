@@ -9,6 +9,10 @@ const defaults = {
   DB_PORT: "5433",
   DB_NAME: "secure_chat_test",
   SESSION_SECRET: "segredo-de-sessao-usado-apenas-nos-testes-0123456789",
+  CLIENT_URL: "http://localhost:3000",
+  // Custo baixo só nos testes (ver helpers/users.js); login.test.js volta
+  // para 12 porque mede a equalização de tempo do login.
+  BCRYPT_COST: "4",
 };
 
 for (const [name, value] of Object.entries(defaults)) {

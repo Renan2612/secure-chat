@@ -10,7 +10,7 @@ const registerUser = async (req, res, next) => {
   const { email, password, name } = req.body;
 
   try {
-    const hashedPassword = await hashPassword(password, 12);
+    const hashedPassword = await hashPassword(password);
     const result = await pool.query(
       "INSERT INTO users (email, password, name) VALUES ($1,$2,$3) returning id, email, name",
       [email, hashedPassword, name]
