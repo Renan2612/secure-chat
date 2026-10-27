@@ -1,0 +1,23 @@
+# Postgres descartável para os testes automatizados (npm test).
+# Separado do banco de desenvolvimento: outra porta, outro banco, dados em
+# tmpfs (somem quando o container para). O schema é aplicado pelo próprio
+# jest (tests/globalSetup.js) a partir de backend/database/migrations.sql.
+#
+#   docker compose -f docker-compose.test.yml up -d
+#   cd backend && npm test
+services:
+  db-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_test
+      POSTGRES_DB: secure_chat_test
+    ports:
+      - "127.0.0.1:5433:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d secure_chat_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 15

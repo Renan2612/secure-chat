@@ -1,5 +1,10 @@
-CREATE DATABASE messagewebapp;
-\c messagewebapp;
+-- Schema do secure-chat. Este script NÃO cria o banco: ele roda dentro do
+-- banco já selecionado (no Docker, o POSTGRES_DB; manualmente, via
+-- `psql -d secure_chat -f database/migrations.sql`).
+--
+-- CORRIGIDO (Etapa 2): o original fazia `CREATE DATABASE messagewebapp;
+-- \c messagewebapp;`, então as tabelas iam parar num banco diferente do
+-- DB_NAME usado pelo backend (secure_chat) e a aplicação não as encontrava.
 
 DROP TABLE IF EXISTS messages;
 DROP TABLE IF EXISTS rooms_users;
