@@ -1,0 +1,11 @@
+# O Dockerfile faz `COPY . .`: sem este arquivo, a imagem levava o .env com
+# os segredos reais (SESSION_SECRET, senha do banco) e o node_modules do
+# host (compilado para outro sistema e com dependências de desenvolvimento),
+# sobrescrevendo o `npm install --omit=dev` feito dentro do container.
+# Os segredos chegam ao container em tempo de execução, via env_file.
+.env
+.env.*
+!.env.example
+node_modules
+npm-debug.log*
+tests
