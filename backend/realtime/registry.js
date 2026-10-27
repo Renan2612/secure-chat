@@ -1,5 +1,5 @@
 // Registro em memória das conexões abertas: por usuário (limite de conexões,
-// derrubar tudo no logout). Cada conexão é um objeto { socket, userId, sid }.
+// derrubar tudo no logout). Cada conexão é uma instância de Connection.
 class ConnectionRegistry {
   constructor() {
     this.byUser = new Map(); // userId → Set<conexão>

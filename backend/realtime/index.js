@@ -12,6 +12,7 @@
 const { WebSocketServer } = require("ws");
 const { PROTOCOL_PATH, DEFAULT_LIMITS } = require("./protocol");
 const { ConnectionRegistry } = require("./registry");
+const { Connection } = require("./connection");
 
 const STATUS_TEXT = { 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 429: "Too Many Requests", 503: "Service Unavailable" };
 
@@ -70,7 +71,7 @@ const attachRealtime = (server, { session, ...options } = {}) => {
         return rejectUpgrade(socket, 503, "Servidor sem vagas de conexão");
       }
       return wss.handleUpgrade(req, socket, head, (ws) => {
-        const conn = { socket: ws, userId, sid: req.sessionID };
+        const conn = new Connection(ws, { userId, sid: req.sessionID, limits, handlers: {} });
         registry.add(conn);
         ws.on("close", () => registry.remove(conn));
         ws.on("error", () => ws.terminate());

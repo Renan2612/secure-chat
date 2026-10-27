@@ -62,7 +62,7 @@ const openSocket = (srv, { cookie, origin = ORIGIN, path = "/ws", ...options } =
 
 // Guarda os pacotes recebidos e o fechamento, para consulta pelos testes.
 const track = (ws) => {
-  const inbox = { packets: [], waiters: [], closed: null };
+  const inbox = { packets: [], consumed: new Set(), waiters: [], closed: null };
   const settle = () => {
     inbox.waiters = inbox.waiters.filter((w) => !w.check());
   };
@@ -96,9 +96,9 @@ const nextPacket = (inbox, type, timeoutMs) =>
   waitFor(
     inbox,
     (i) => {
-      const index = i.packets.findIndex((p) => p.type === type && !p.consumed);
+      const index = i.packets.findIndex((p, n) => p.type === type && !i.consumed.has(n));
       if (index === -1) return null;
-      i.packets[index].consumed = true;
+      i.consumed.add(index);
       return i.packets[index];
     },
     type,
@@ -121,7 +121,7 @@ const connect = async (srv, cookie, options) => {
 // Garante que nenhum pacote do tipo chegou dentro da janela.
 const expectNoPacket = async (inbox, type, windowMs = 300) => {
   await new Promise((r) => setTimeout(r, windowMs));
-  expect(inbox.packets.filter((p) => p.type === type && !p.consumed)).toEqual([]);
+  expect(inbox.packets.filter((p, n) => p.type === type && !inbox.consumed.has(n))).toEqual([]);
 };
 
 module.exports = {
