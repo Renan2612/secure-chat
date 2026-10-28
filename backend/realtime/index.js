@@ -67,9 +67,13 @@ const attachRealtime = (server, { session, ...options } = {}) => {
       if (pathname !== PROTOCOL_PATH) return rejectUpgrade(socket, 404, "Não encontrado");
       if (!isAllowedOrigin(req.headers.origin)) return rejectUpgrade(socket, 403, "Origem não permitida");
 
+      // Um logout que aconteça enquanto a sessão é lida (await abaixo) não
+      // pode deixar passar este upgrade com a sessão já revogada.
+      const revocationMark = registry.revocations;
       const sess = await loadSession(session.middleware, req);
       if (!sess || !Number.isInteger(sess.userId)) return rejectUpgrade(socket, 401, "Não autenticado");
       const { userId } = sess;
+      if (registry.revokedSince(userId, revocationMark)) return rejectUpgrade(socket, 401, "Não autenticado");
 
       // Checagem e registro sem await no meio: handleUpgrade chama o callback
       // de forma síncrona, então dois upgrades não furam o limite juntos.
@@ -146,6 +150,7 @@ const attachRealtime = (server, { session, ...options } = {}) => {
     registry,
     // Fim da sessão (logout): fecha todas as conexões do usuário.
     closeUser: (userId) => {
+      registry.revoke(userId);
       for (const conn of registry.forUser(userId)) conn.close(CLOSE.SESSION_ENDED, "sessão encerrada");
     },
     close: () => {

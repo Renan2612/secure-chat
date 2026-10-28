@@ -7,6 +7,22 @@ class ConnectionRegistry {
     this.byRoom = new Map(); // sala → Set<conexão inscrita>
     this.all = new Set();
     this.cooldownUntil = new Map(); // userId → instante (ms) do fim da quarentena
+    // Revogações (logout): contador global e, por usuário, o valor dele no
+    // último logout. Um upgrade que leu a sessão ANTES de um logout do mesmo
+    // usuário é recusado (ver revokedSince).
+    this.revocations = 0;
+    this.revokedAt = new Map(); // userId → valor de this.revocations
+  }
+
+  revoke(userId) {
+    this.revocations += 1;
+    this.revokedAt.set(userId, this.revocations);
+  }
+
+  // Houve logout deste usuário depois do instante `mark` (= this.revocations
+  // lido antes de carregar a sessão)?
+  revokedSince(userId, mark) {
+    return (this.revokedAt.get(userId) ?? 0) > mark;
   }
 
   startCooldown(userId, ms) {

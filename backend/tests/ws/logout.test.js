@@ -67,3 +67,36 @@ test("quadro que chegue depois do close (cliente que ignora o fechamento) não �
   await new Promise((r) => setTimeout(r, 100));
   expect((await pool.query("SELECT 1 FROM messages")).rowCount).toBe(0);
 });
+
+test("upgrade em andamento durante o logout não sobrevive a ele (corrida TOCTOU)", async () => {
+  // Atrasa só a leitura da sessão feita pelo upgrade; o logout acontece
+  // nesse intervalo, depois de a sessão ter sido lida como válida.
+  const realQuery = pool.query.bind(pool);
+  let release;
+  const gate = new Promise((r) => {
+    release = r;
+  });
+  let delayed = false;
+  const spy = jest.spyOn(pool, "query").mockImplementation(async (text, ...rest) => {
+    const sql = typeof text === "string" ? text : text?.text;
+    if (!delayed && /SELECT sess FROM/.test(sql || "")) {
+      delayed = true;
+      const result = await realQuery(text, ...rest);
+      await gate;
+      return result;
+    }
+    return realQuery(text, ...rest);
+  });
+  const pending = openSocket(srv, { cookie: alice.cookie });
+  while (!delayed) await new Promise((r) => setTimeout(r, 5));
+  await srv.http.post("/logout").set("Cookie", alice.cookie);
+  release();
+  const res = await pending;
+  spy.mockRestore();
+  if (res.ws) {
+    expect((await closed(res.inbox)).code).toBe(4401);
+  } else {
+    expect(res.status).toBe(401);
+  }
+  expect(srv.realtime.registry.countForUser(alice.id)).toBe(0);
+});
