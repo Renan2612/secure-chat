@@ -84,8 +84,21 @@ automatizados.
 |---|---|---|---|
 | G | Sem TLS: tráfego HTTP/WS em texto claro | Caddy como proxy reverso e terminador de TLS (TLS 1.2/1.3, só ECDHE + AEAD, HSTS de 1 ano); HTTP → 308 para HTTPS; origem única `https://localhost` (`/api/*`, `/ws`); backend e banco sem portas no host; cookie `sid` com `Secure`; `trust proxy` = 1 salto exato; ws-client só por `wss://` com verificação de certificado | `scripts/verify-tls.sh`; `backend/tests/proxy.test.js`, `backend/tests/ws/upgradeIp.test.js`, `backend/tests/tools/wsClientTls.test.js`; captura no Wireshark ([`04-tls-e-proxy.md`](04-tls-e-proxy.md) §10) |
 
-**Atenção:** o TLS termina no proxy. Proxy, backend e banco continuam vendo
-o conteúdo em claro (item F, Etapa 4b).
+**Atenção:** o TLS termina no proxy. Na Etapa 4a, proxy, backend e banco
+ainda viam o conteúdo em claro; isso é o item F, resolvido na Etapa 4b-1.
+
+## Resolvido na Etapa 4b-1 — criptografia ponta a ponta (núcleo)
+
+Detalhes em [`05-e2ee.md`](05-e2ee.md). Provado por `scripts/verify-e2ee.sh`
+contra a stack no ar (21 provas, com controles positivos; validado com
+duas mutações que fazem o script falhar) e por testes de ataque.
+
+| # | Problema | Correção | Evidência |
+|---|---|---|---|
+| F | Mensagens em texto claro no Postgres (e no proxy/backend, onde o TLS termina) | Cada mensagem é cifrada (AES-256-GCM) e assinada (ECDSA P-256) no cliente com a chave da sala, que só existe embrulhada para cada membro (ECDH + HKDF); o servidor aceita só envelope E2EE v1 bem formado (`E2EE_REQUIRED`, `KEY_VERSION_MISMATCH`) e o banco tem `CHECK` de formato; chaves privadas num keystore cifrado no cliente; TOFU + número de segurança | `scripts/verify-e2ee.sh` (o marcador não aparece no banco nem na captura da rede interna, nem decodificado de base64; cada cliente decifra o do outro; o banco só tem o envelope); `backend/tests/ws/e2eeMessages.test.js`, `backend/tests/roomKeys.test.js`, `backend/tests/keys.test.js`, `backend/tests/e2ee/*.test.js`, `backend/tests/tools/wsClientE2ee.test.js` |
+
+**Continua visível ao servidor:** metadados (quem, quando, tamanho em blocos
+de 128 bytes) e quem é membro de cada sala; ver [`05-e2ee.md`](05-e2ee.md) §10.
 
 ## Pendente — propositalmente NÃO corrigido ainda
 
@@ -102,7 +115,7 @@ e 4a estão nas seções anteriores.
 | C | Servidor não define o remetente da mensagem — vem do corpo enviado pelo cliente (`message.user.id`), permitindo forjar identidade | ~~`routes/messages.js`~~, ~~socket~~ | ✅ HTTP: Etapa 2 · ✅ socket: Etapa 3 |
 | D | Nenhuma rota verifica se o usuário autenticado é membro da sala antes de ler/escrever (IDOR) | `routes/messages.js`, `routes/rooms.js` | ✅ **Resolvido na Etapa 2** |
 | E | `joinRooms` não valida a chave de convite da sala — qualquer usuário autenticado entra em qualquer sala só sabendo o `idRoom` | `routes/rooms.js` | ✅ **Resolvido na Etapa 2** |
-| F | Mensagens armazenadas em texto claro no Postgres — o admin do banco lê tudo | `database/migrations.sql` | Etapa 4b (E2EE) |
+| F | Mensagens armazenadas em texto claro no Postgres — o admin do banco lê tudo | `database/migrations.sql` | ✅ **Resolvido na Etapa 4b-1** |
 | G | Sem TLS — tráfego HTTP/WS em texto claro | infraestrutura | ✅ **Resolvido na Etapa 4a** |
 | H | Sessão assinada no cliente (cookie-session) sem possibilidade de revogação centralizada | `server.js` | ✅ **Resolvido na Etapa 2** |
 | I | Frontend React ainda não auditado | `frontend/` | Ainda pendente (fora do escopo das Etapas 3 e 4a) |
@@ -147,4 +160,5 @@ Ou com Docker:
 cp backend/.env.example backend/.env
 docker compose --env-file backend/.env up --build
 scripts/verify-tls.sh   # Etapa 4a: provas de TLS e da origem única
+scripts/verify-e2ee.sh  # Etapa 4b-1: provas da criptografia ponta a ponta
 ```
