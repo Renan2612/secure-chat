@@ -39,8 +39,7 @@ const insertIfMember = async (userId, room, cid, body) => {
 // Usuários com o wrap da versão ATUAL da chave da sala (podem distribuí-la).
 const keyHolders = async (room) => {
   const { rows } = await pool.query(
-    `SELECT w.recipient_id FROM room_key_wraps w JOIN rooms r ON r.id = w.room AND w.version = r.key_version
-     WHERE w.room = $1`,
+    "SELECT recipient_id FROM room_current_wraps WHERE room = $1",
     [room]
   );
   return new Set(rows.map((row) => row.recipient_id));
@@ -50,9 +49,9 @@ const keyHolders = async (room) => {
 const hasPendingMembers = async (room) =>
   (
     await pool.query(
-      `SELECT 1 FROM rooms_users m JOIN rooms r ON r.id = m.room
+      `SELECT 1 FROM rooms_users m
        WHERE m.room = $1 AND NOT EXISTS (
-         SELECT 1 FROM room_key_wraps w WHERE w.room = r.id AND w.version = r.key_version AND w.recipient_id = m.user_id)
+         SELECT 1 FROM room_current_wraps w WHERE w.room = m.room AND w.recipient_id = m.user_id)
        LIMIT 1`,
       [room]
     )

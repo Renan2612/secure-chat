@@ -204,3 +204,52 @@ test("nenhuma coluna de nenhuma tabela contém a chave da sala em claro (hex, ba
     for (const { row } of rows) for (const form of forms) expect({ tablename, leaks: row.includes(form) }).toEqual({ tablename, leaks: false });
   }
 });
+
+describe("wrap para a chave ANTIGA do destinatário (corrida com o reset)", () => {
+  // Simula o resultado da corrida: um wrap gravado com a época anterior do
+  // destinatário depois que ele trocou de chave.
+  const plantStaleWrap = async () => {
+    await join(bob, room);
+    const staleEpoch = bob.keyEpoch;
+    const wrap = await wrapFor(alice, { roomId: room.roomId, roomKey: room.roomKey, recipientId: bob.id, recipientEcdhPub: bob.pub.ecdhPub });
+    const fresh = await e2ee.generateIdentity();
+    bob.identity = fresh;
+    bob.pub = await e2ee.exportPublicKeys(fresh);
+    bob.keyEpoch = (await bob.call("post", "/keys/reset").send(bob.pub)).body.keyEpoch;
+    await pool.query(
+      `INSERT INTO room_key_wraps (room, version, recipient_id, sender_id, recipient_key_epoch, eph_pub, iv, wrapped, sig)
+       VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8)`,
+      [room.roomId, bob.id, alice.id, staleEpoch, wrap.ephPub, wrap.iv, wrap.wrapped, wrap.sig]
+    );
+  };
+
+  test("o wrap velho não conta: o destinatário continua pendente e não o recebe", async () => {
+    await plantStaleWrap();
+    expect((await alice.call("get", `/rooms/${room.roomId}/keys/pending`)).body.pending.map((p) => p.userId)).toEqual([bob.id]);
+    expect((await bob.call("get", `/rooms/${room.roomId}/keys`)).body.wraps).toEqual([]);
+  });
+
+  test("um wrap novo para a chave atual SUBSTITUI o velho (sem 409) e abre", async () => {
+    await plantStaleWrap();
+    expect((await grant(alice, room, bob)).status).toBe(201);
+    const key = await fetchRoomKey(bob, room.roomId);
+    expect(await e2ee.primitives.exportRaw(key)).toEqual(await e2ee.primitives.exportRaw(room.roomKey));
+  });
+
+  test("reset e wrap concorrentes nunca deixam um wrap válido para a chave antiga", async () => {
+    await join(bob, room);
+    for (let i = 0; i < 5; i += 1) {
+      const fresh = await e2ee.exportPublicKeys(await e2ee.generateIdentity());
+      await Promise.all([grant(alice, room, bob), bob.call("post", "/keys/reset").send(fresh)]);
+      const { rows } = await pool.query(
+        `SELECT w.recipient_key_epoch, k.key_epoch FROM room_key_wraps w JOIN user_keys k ON k.user_id = w.recipient_id
+         WHERE w.recipient_id = $1`,
+        [bob.id]
+      );
+      for (const row of rows) expect(row.recipient_key_epoch).toBe(row.key_epoch);
+      bob.pub = fresh;
+      bob.keyEpoch = (await pool.query("SELECT key_epoch FROM user_keys WHERE user_id = $1", [bob.id])).rows[0].key_epoch;
+      await pool.query("DELETE FROM room_key_wraps WHERE recipient_id = $1", [bob.id]);
+    }
+  });
+});

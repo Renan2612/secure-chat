@@ -18,8 +18,7 @@ const roomState = async (roomId, userId) => {
   const { rows } = await pool.query(
     `SELECT r.id, r.created_by, r.key_version,
             EXISTS (SELECT 1 FROM rooms_users m WHERE m.room = r.id AND m.user_id = $2) AS member,
-            EXISTS (SELECT 1 FROM room_key_wraps w
-                    WHERE w.room = r.id AND w.version = r.key_version AND w.recipient_id = $2) AS has_key
+            EXISTS (SELECT 1 FROM room_current_wraps w WHERE w.room = r.id AND w.recipient_id = $2) AS has_key
      FROM rooms r WHERE r.id = $1`,
     [roomId, userId]
   );
@@ -41,6 +40,8 @@ const publishRoomKey = async (req, res, next) => {
     const hasKeys = (await pool.query("SELECT 1 FROM user_keys WHERE user_id = $1", [me])).rowCount > 0;
     if (!hasKeys) return res.status(409).json({ message: "Registre suas chaves públicas (PUT /keys) antes" });
     const published = await withTransaction(async (client) => {
+      // FOR SHARE: um POST /keys/reset concorrente espera esta transação.
+      const { rows: mine } = await client.query("SELECT key_epoch FROM user_keys WHERE user_id = $1 FOR SHARE", [me]);
       const inserted = await client.query(
         `INSERT INTO room_key_versions (room, version, created_by) VALUES ($1, $2, $3)
          ON CONFLICT DO NOTHING RETURNING version`,
@@ -48,9 +49,9 @@ const publishRoomKey = async (req, res, next) => {
       );
       if (inserted.rowCount === 0) return false;
       await client.query(
-        `INSERT INTO room_key_wraps (room, version, recipient_id, sender_id, eph_pub, iv, wrapped, sig)
-         VALUES ($1, $2, $3, $3, $4, $5, $6, $7)`,
-        [roomId, version, me, wrap.ephPub, wrap.iv, wrap.wrapped, wrap.sig]
+        `INSERT INTO room_key_wraps (room, version, recipient_id, sender_id, recipient_key_epoch, eph_pub, iv, wrapped, sig)
+         VALUES ($1, $2, $3, $3, $4, $5, $6, $7, $8)`,
+        [roomId, version, me, mine[0].key_epoch, wrap.ephPub, wrap.iv, wrap.wrapped, wrap.sig]
       );
       return true;
     });
@@ -61,15 +62,17 @@ const publishRoomKey = async (req, res, next) => {
   }
 };
 
-// Só os wraps cujo destinatário é o próprio usuário.
+// Só os wraps cujo destinatário é o próprio usuário, cifrados para a chave
+// ATUAL dele (os de antes de um reset não abrem mais).
 const getMyWraps = async (req, res, next) => {
   const roomId = req.params.id;
   try {
     const room = await roomState(roomId, req.session.userId);
     if (!room?.member) return res.status(403).json(FORBIDDEN);
     const { rows } = await pool.query(
-      `SELECT version, sender_id, eph_pub, iv, wrapped, sig FROM room_key_wraps
-       WHERE room = $1 AND recipient_id = $2 ORDER BY version`,
+      `SELECT w.version, w.sender_id, w.eph_pub, w.iv, w.wrapped, w.sig FROM room_key_wraps w
+       JOIN user_keys k ON k.user_id = w.recipient_id AND k.key_epoch = w.recipient_key_epoch
+       WHERE w.room = $1 AND w.recipient_id = $2 ORDER BY w.version`,
       [roomId, req.session.userId]
     );
     return res.status(200).json({ room: roomId, currentVersion: room.key_version, wraps: rows.map(wrapRow) });
@@ -91,9 +94,9 @@ const getPending = async (req, res, next) => {
        FROM rooms_users m JOIN users u ON u.id = m.user_id
        LEFT JOIN user_keys k ON k.user_id = u.id
        WHERE m.room = $1 AND NOT EXISTS (
-         SELECT 1 FROM room_key_wraps w WHERE w.room = $1 AND w.version = $2 AND w.recipient_id = m.user_id)
+         SELECT 1 FROM room_current_wraps w WHERE w.room = $1 AND w.recipient_id = m.user_id)
        ORDER BY u.id`,
-      [roomId, room.key_version]
+      [roomId]
     );
     const pending = rows.map((r) => ({
       userId: r.id,
@@ -108,8 +111,11 @@ const getPending = async (req, res, next) => {
   }
 };
 
-// Nesta etapa a composição da sala só cresce (sem sair/remover: 4b-2), então
-// as checagens em sequência seguidas do INSERT ... ON CONFLICT bastam.
+// A época da chave do destinatário é conferida e o wrap gravado na MESMA
+// transação, com a linha dele em user_keys travada (FOR SHARE): um reset
+// concorrente (UPDATE nessa linha) espera, e então apaga este wrap. Um wrap
+// de época antiga que tenha ficado é substituído pelo novo, em vez de
+// bloquear o destinatário com 409 para sempre.
 const postWrap = async (req, res, next) => {
   const roomId = req.params.id;
   const me = req.session.userId;
@@ -119,21 +125,27 @@ const postWrap = async (req, res, next) => {
     if (!room?.member) return res.status(403).json(FORBIDDEN);
     if (version !== room.key_version) return res.status(409).json({ message: "Versão da chave diferente da atual da sala" });
     if (!room.has_key) return res.status(403).json(FORBIDDEN);
-    const { rows } = await pool.query(
-      `SELECT EXISTS (SELECT 1 FROM rooms_users WHERE room = $1 AND user_id = $2) AS member,
-              (SELECT key_epoch FROM user_keys WHERE user_id = $2) AS key_epoch`,
-      [roomId, recipientId]
-    );
-    if (!rows[0].member) return res.status(400).json({ message: "Destinatário inválido" });
-    if (rows[0].key_epoch !== recipientKeyEpoch) {
+    const isMember = (await pool.query("SELECT 1 FROM rooms_users WHERE room = $1 AND user_id = $2", [roomId, recipientId])).rowCount > 0;
+    if (!isMember) return res.status(400).json({ message: "Destinatário inválido" });
+    const outcome = await withTransaction(async (client) => {
+      const { rows } = await client.query("SELECT key_epoch FROM user_keys WHERE user_id = $1 FOR SHARE", [recipientId]);
+      if (rows[0]?.key_epoch !== recipientKeyEpoch) return "stale-recipient";
+      const inserted = await client.query(
+        `INSERT INTO room_key_wraps (room, version, recipient_id, sender_id, recipient_key_epoch, eph_pub, iv, wrapped, sig)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (room, version, recipient_id) DO UPDATE SET
+           sender_id = EXCLUDED.sender_id, recipient_key_epoch = EXCLUDED.recipient_key_epoch,
+           eph_pub = EXCLUDED.eph_pub, iv = EXCLUDED.iv, wrapped = EXCLUDED.wrapped, sig = EXCLUDED.sig, created_at = NOW()
+         WHERE room_key_wraps.recipient_key_epoch < EXCLUDED.recipient_key_epoch
+         RETURNING recipient_id`,
+        [roomId, version, recipientId, me, recipientKeyEpoch, wrap.ephPub, wrap.iv, wrap.wrapped, wrap.sig]
+      );
+      return inserted.rowCount > 0 ? "saved" : "duplicate";
+    });
+    if (outcome === "stale-recipient") {
       return res.status(409).json({ message: "As chaves do destinatário mudaram; busque-as de novo" });
     }
-    const inserted = await pool.query(
-      `INSERT INTO room_key_wraps (room, version, recipient_id, sender_id, eph_pub, iv, wrapped, sig)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING RETURNING recipient_id`,
-      [roomId, version, recipientId, me, wrap.ephPub, wrap.iv, wrap.wrapped, wrap.sig]
-    );
-    if (inserted.rowCount === 0) return res.status(409).json({ message: "Wrap já publicado para este destinatário" });
+    if (outcome === "duplicate") return res.status(409).json({ message: "Wrap já publicado para este destinatário" });
     req.app.locals.notify.keyReady(recipientId, roomId);
     return res.status(201).json({ room: roomId, version, recipientId });
   } catch (err) {

@@ -6,6 +6,7 @@
 -- \c messagewebapp;`, então as tabelas iam parar num banco diferente do
 -- DB_NAME usado pelo backend (secure_chat) e a aplicação não as encontrava.
 
+DROP VIEW IF EXISTS room_current_wraps;
 DROP TABLE IF EXISTS room_key_wraps;
 DROP TABLE IF EXISTS room_key_versions;
 DROP TABLE IF EXISTS user_keys;
@@ -86,6 +87,10 @@ CREATE TABLE IF NOT EXISTS room_key_wraps (
    version INTEGER NOT NULL,
    recipient_id INTEGER NOT NULL REFERENCES users (id),
    sender_id INTEGER NOT NULL REFERENCES users (id),
+   -- key_epoch do destinatário para o qual o wrap foi cifrado. Um wrap de
+   -- época antiga (o destinatário trocou de chave) não conta como chave e
+   -- pode ser substituído (ver room_current_wraps).
+   recipient_key_epoch INTEGER NOT NULL CHECK (recipient_key_epoch >= 1),
    eph_pub VARCHAR(200) NOT NULL CHECK (eph_pub ~ '^[A-Za-z0-9_-]+$'),
    iv CHAR(16) NOT NULL CHECK (iv ~ '^[A-Za-z0-9_-]{16}$'),
    wrapped CHAR(64) NOT NULL CHECK (wrapped ~ '^[A-Za-z0-9_-]{64}$'),
@@ -108,6 +113,14 @@ CREATE TABLE IF NOT EXISTS user_keys (
    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
    CHECK (ecdh_pub <> ecdsa_pub)
 );
+
+-- Wraps que valem como "tem a chave atual da sala": versão atual da sala E
+-- cifrados para a chave atual do destinatário. Toda checagem de autorização
+-- de chave (pendentes, quem distribui, ROOM_EVENT) usa esta view.
+CREATE VIEW room_current_wraps AS
+   SELECT w.* FROM room_key_wraps w
+   JOIN rooms r ON r.id = w.room AND r.key_version = w.version
+   JOIN user_keys k ON k.user_id = w.recipient_id AND k.key_epoch = w.recipient_key_epoch;
 
 -- Sessões armazenadas no servidor (express-session + connect-pg-simple).
 -- O cookie do cliente carrega só o ID assinado; os dados ficam aqui, o que

@@ -11,7 +11,7 @@ const notifyPendingRooms = async (req, userId) => {
   const { rows } = await pool.query(
     `SELECT m.room FROM rooms_users m JOIN rooms r ON r.id = m.room
      WHERE m.user_id = $1 AND NOT EXISTS (
-       SELECT 1 FROM room_key_wraps w WHERE w.room = r.id AND w.version = r.key_version AND w.recipient_id = $1)`,
+       SELECT 1 FROM room_current_wraps w WHERE w.room = r.id AND w.recipient_id = $1)`,
     [userId]
   );
   for (const { room } of rows) req.app.locals.notify.keyPending(room);
