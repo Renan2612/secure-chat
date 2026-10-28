@@ -142,7 +142,59 @@ Prova (`verify-tls.sh`, com `openssl s_client`):
 
 ## 6. Cabeçalhos de segurança: quem emite cada um
 
+Regra: **o proxy emite o que depende do transporte e vale para a origem
+inteira; o backend emite o que depende do conteúdo das respostas da API.**
+Assim nenhum cabeçalho sai duplicado ou com dois valores.
+
+| Cabeçalho | Página `/` | API `/api/*` | Quem emite |
+|---|---|---|---|
+| `Strict-Transport-Security: max-age=31536000; includeSubDomains` | ✓ | ✓ | **proxy** (o helmet do backend está com HSTS desligado) |
+| `Server` | removido | removido | **proxy** (`-Server`, também no 308 do HTTP); o Express não envia |
+| `X-Powered-By` | — | removido | backend (helmet) |
+| `X-Content-Type-Options: nosniff` | ✓ | ✓ | proxy na página; **helmet** na API |
+| `Referrer-Policy: no-referrer` | ✓ | ✓ | proxy na página; **helmet** na API |
+| `Content-Security-Policy` | `default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'` | padrão do helmet | proxy na página; **helmet** na API |
+
+A CSP da página é a mais restritiva possível porque a página é HTML puro,
+sem script, estilo nem imagem. Ela precisará ser revista quando o frontend
+real for servido daqui. O `max-age` de 1 ano com `includeSubDomains` é o
+recomendado; o `preload` não foi incluído porque exige domínio público e
+inscrição na lista dos navegadores.
+
 ## 7. Backend atrás do proxy
+
+- **`trust proxy` com o número exato de saltos.** `TRUST_PROXY=1` no
+  compose: o Express usa como IP do cliente o último endereço que o
+  **Caddy** acrescentou ao `X-Forwarded-For`, e ignora o que vier à
+  esquerda. Só inteiros ≥ 1 são aceitos; `true`, `loopback`, `0` ou listas
+  impedem o servidor de subir (`backend/app.js`, `tests/proxy.test.js`).
+  Com `true`, o cliente escolheria o próprio IP no rate limit.
+- **O Caddy não repassa o `X-Forwarded-For` do cliente.** Sem
+  `trusted_proxies`, ele **sobrescreve** o `X-Forwarded-For`,
+  `-Proto` e `-Host` com o que vê na conexão. Como o backend só é
+  alcançável pelo proxy (§2), não há como chegar a ele com um cabeçalho
+  forjado. Prova: `verify-tls.sh` manda dois `X-Forwarded-For` diferentes e
+  o `RateLimit-Remaining` cai de 1 (mesmo balde).
+- **Rate limit HTTP** (`/register`, `/login`): chaveado pelo IP real
+  (acima) e, no login, também pela conta.
+- **WebSocket**: o upgrade agora tem um limite de **tentativas por IP real**
+  (rajada de 20, reposição de 0,5/s), conferido **antes** de ler a sessão no
+  banco (protege contra inundação sem sessão). O IP é calculado com
+  `proxy-addr` e a mesma função de confiança do Express
+  (`app.get("trust proxy fn")`). Os limites por usuário (5 conexões), total
+  (1000) e o rate limit por conexão continuam como na Etapa 3
+  (`tests/ws/upgradeIp.test.js`).
+- **Cookie `sid` com `Secure`.** `NODE_ENV=production` no compose liga o
+  `secure: true`; o express-session só emite o cookie quando o proxy informa
+  `X-Forwarded-Proto: https`. Se a requisição chegou por HTTP, não há cookie
+  (`tests/proxy.test.js`).
+- **`CLIENT_URL=https://${PUBLIC_HOST}`** (padrão `https://localhost`):
+  é a origem do CORS e a comparada no `Origin` do upgrade do `/ws`. Com
+  origem única, página e API são *same-origin* e o CORS quase não entra em
+  jogo. A checagem de `Origin` do `/ws` continua essencial (CSWSH).
+- O `backend/.env` continua servindo para rodar **fora** do Docker (HTTP,
+  `NODE_ENV=development`, `CLIENT_URL=http://localhost:3000`). O compose
+  sobrescreve esses valores.
 
 ## 8. O que mudou no modelo de ameaças
 
