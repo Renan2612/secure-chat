@@ -426,6 +426,50 @@ Ameaças **não** cobertas nesta etapa estão na §9.
 
 ## 10. Mudanças de contrato para o frontend
 
+Complementa a §5 de [`02-autenticacao-autorizacao.md`](02-autenticacao-autorizacao.md).
+
+| Antes (Etapa 2) | Agora (Etapa 3) |
+|---|---|
+| Socket.IO (`socket.io-client`), sem autenticação, evento global | **WebSocket nativo** do navegador em `ws://<backend>/ws` (Etapa 4: `wss://`). Remover a dependência `socket.io-client`. |
+| `POST /messages { room, message }` → `201` | **Removido**: com sessão responde `404`, sem sessão `401`. Enviar com `MSG_SEND` pelo socket e tratar o `MSG_ACK`. |
+| Mensagem nova chegava por `broadcast` de todas as salas | Chega como `MSG_DELIVER` **só** das salas em que o cliente fez `SUBSCRIBE`. |
+| Remetente informado pelo cliente | Ignorado. Use `MSG_DELIVER.from` (definido pelo servidor). |
+| `GET /messages/:id` devolvia todas as mensagens | **Paginado**: `?limit=` (1 a 100, padrão 50) e `?before=<id>`; devolve as `limit` mais recentes com id menor que `before`, **em ordem cronológica**. Valores fora da regra → `400`. Campos de cada item inalterados: `username`, `userid`, `message`, `dtmessage`, `idmessage`, `roomname`, `roomid` (minúsculas, como o Postgres devolve). |
+| Mensagem até 500 caracteres | `body` até **8192 bytes UTF-8**, sem trim no servidor (§4.3). |
+
+Roteiro mínimo do cliente:
+
+```js
+const ws = new WebSocket(`${BACKEND_WS}/ws`);          // cookie sid vai sozinho
+const send = (p) => ws.send(JSON.stringify({ v: 1, ...p }));
+ws.onopen = () => send({ type: "HELLO", client: "web/1.0" });   // em até 5 s
+ws.onmessage = ({ data }) => {
+  const p = JSON.parse(data);
+  if (p.type === "WELCOME") send({ type: "SUBSCRIBE", room: salaAtual, id: "sub" });
+  if (p.type === "MSG_DELIVER") mostrar(p);           // deduplicar por p.id
+  if (p.type === "MSG_ACK") confirmar(p.cid, p.id);
+  if (p.type === "ERROR") tratarErro(p.code, p.ref);
+};
+// enviar: send({ type: "MSG_SEND", room, cid: crypto.randomUUID(), body: texto });
+// reenviar com o MESMO cid se o MSG_ACK não chegar (idempotente).
+ws.onclose = ({ code }) => {
+  if (code === 4401) irParaLogin();                   // não reconectar
+  else if (code !== 4426 && code !== 4429) reconectarComEspera();
+};
+```
+
+Observações para o frontend:
+
+- O navegador responde aos **pings de controle** sozinho; o `PING` do
+  protocolo é opcional.
+- Ao reconectar, refazer `HELLO` e os `SUBSCRIBE`, e buscar o histórico
+  pelo HTTP para cobrir o intervalo desconectado (não há entrega offline).
+- **Cookie entre sites:** o `sid` é `SameSite=Lax`. Frontend e backend
+  precisam ser o **mesmo site** (ex.: `localhost:3000` e `localhost:8000`,
+  ou subdomínios do mesmo domínio); senão o navegador não envia o cookie
+  no upgrade e a resposta é `401`.
+- O `Origin` da página precisa ser exatamente o `CLIENT_URL` do backend.
+
 ## 11. Captura no Wireshark
 
 ## 12. Testes
