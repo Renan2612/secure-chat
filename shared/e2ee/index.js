@@ -6,6 +6,8 @@ const primitives = require("./primitives");
 const identity = require("./identity");
 const roomKeys = require("./roomKeys");
 const messages = require("./messages");
+const keystore = require("./keystore");
+const trust = require("./trust");
 const { E2eeError } = require("./errors");
 
-module.exports = { ...identity, ...roomKeys, ...messages, encoding, primitives, E2eeError };
+module.exports = { ...identity, ...roomKeys, ...messages, ...keystore, ...trust, encoding, primitives, E2eeError };
