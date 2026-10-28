@@ -18,6 +18,9 @@ class Connection {
     this.ready = false;
     this.rooms = new Set(); // salas em que esta conexão está inscrita
     this.invalidPackets = 0;
+    this.tokens = limits.rateBurst;
+    this.lastRefill = Date.now();
+    this.rateViolations = 0;
 
     this.helloTimer = setTimeout(() => this.close(CLOSE.HELLO_TIMEOUT, "HELLO não recebido"), limits.helloTimeoutMs);
     socket.on("message", (data, isBinary) => this.onFrame(data, isBinary));
@@ -41,7 +44,33 @@ class Connection {
     if (this.socket.readyState === WebSocket.OPEN) this.socket.close(code, reason);
   }
 
+  // Token bucket: repõe fichas pelo tempo decorrido e tenta gastar uma.
+  // Balde cheio de novo = cliente se acalmou: a sequência de violações zera.
+  takeToken() {
+    const now = Date.now();
+    const { rateBurst, rateRefillPerSec } = this.limits;
+    this.tokens = Math.min(rateBurst, this.tokens + ((now - this.lastRefill) / 1000) * rateRefillPerSec);
+    this.lastRefill = now;
+    if (this.tokens === rateBurst) this.rateViolations = 0;
+    if (this.tokens < 1) return false;
+    this.tokens -= 1;
+    return true;
+  }
+
+  // Quadro acima do ritmo: descartado sem ser lido. Só a primeira violação
+  // de cada sequência recebe ERROR (responder a cada quadro amplificaria a
+  // inundação); quem persiste é desconectado.
+  rejectRateLimited() {
+    this.rateViolations += 1;
+    if (this.rateViolations === 1) this.error("RATE_LIMITED");
+    if (this.rateViolations >= this.limits.maxRateViolations) {
+      this.close(CLOSE.RATE_LIMITED, "pacotes demais");
+    }
+  }
+
   onFrame(data, isBinary) {
+    if (!this.takeToken()) return this.rejectRateLimited();
+
     let raw;
     try {
       raw = isBinary ? null : JSON.parse(data.toString("utf8"));

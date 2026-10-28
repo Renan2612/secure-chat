@@ -20,6 +20,10 @@ const DEFAULT_LIMITS = {
   maxPayloadBytes: 16 * 1024,
   maxBodyBytes: MAX_BODY_BYTES,
   maxInvalidPackets: 3, // no 3º pacote malformado/fora do schema: close 1008
+  // Token bucket por conexão: cada quadro gasta uma ficha.
+  rateBurst: 20, // capacidade do balde (rajada máxima)
+  rateRefillPerSec: 10, // fichas repostas por segundo (ritmo sustentado)
+  maxRateViolations: 20, // quadros descartados seguidos até o close 4429
 };
 
 // Códigos de fechamento (RFC 6455 §7.4; 4000–4999 = uso privado da aplicação).
@@ -37,6 +41,7 @@ const ERRORS = {
   BAD_REQUEST: "Pacote inválido",
   HELLO_REQUIRED: "Envie HELLO antes de qualquer outro pacote",
   UNSUPPORTED_VERSION: `Versão de protocolo não suportada (servidor: ${PROTOCOL_VERSION})`,
+  RATE_LIMITED: "Pacotes demais; aguarde",
   NOT_MEMBER: "Sem acesso a esta sala",
   CID_REUSED: "cid já usado em outra sala",
   INTERNAL: "Erro interno",
