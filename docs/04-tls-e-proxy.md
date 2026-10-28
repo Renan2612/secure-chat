@@ -198,7 +198,45 @@ inscrição na lista dos navegadores.
 
 ## 8. O que mudou no modelo de ameaças
 
+| Ameaça ([`00-modelo-ameacas.md`](00-modelo-ameacas.md)) | Antes (Etapa 3) | Agora (4a) | Prova |
+|---|---|---|---|
+| **Atacante na rede** lê senha, cookie e mensagens | tudo em claro | cifrado com TLS 1.2/1.3 e sigilo futuro | §10; `verify-tls.sh` (versões e suítes) |
+| Atacante na rede **sequestra a sessão** com o cookie capturado | cookie em claro | cookie só por HTTPS (`Secure`), `HttpOnly` e `SameSite` | `verify-tls.sh`, `tests/proxy.test.js` |
+| **Rebaixamento para HTTP** (SSL stripping) | — | 308 para HTTPS + HSTS de 1 ano: depois da 1ª visita, o navegador nem tenta HTTP | `verify-tls.sh` |
+| **Homem no meio com certificado falso** | — | o cliente verifica o certificado (sem modo inseguro); só a CA local (dev) ou pública (prod) é aceita | `verify-tls.sh`, `tests/tools/wsClientTls.test.js` |
+| Cliente rebaixa `wss://` → `ws://` e manda o cookie em claro | — | o ws-client recusa `ws://` com API `https://` | `tests/tools/wsClientTls.test.js` |
+| **Acesso direto** ao backend ou ao banco, contornando o proxy | 127.0.0.1:8000 e :5432 abertos | sem portas no host; rede interna sem saída | `verify-tls.sh` |
+| **IP forjado** (`X-Forwarded-For`) para fugir do rate limit | sem proxy, não se aplicava | o Caddy sobrescreve; `trust proxy` = 1 salto exato | `verify-tls.sh`, `tests/proxy.test.js`, `tests/ws/upgradeIp.test.js` |
+| **Inundação de upgrades** sem sessão (custa banco) | ilimitada | 20 de rajada + 0,5/s por IP real, antes do banco | `tests/ws/upgradeIp.test.js` |
+| **Cross-Site WebSocket Hijacking** | `Origin` = `http://localhost:3000` | `Origin` = `https://localhost` (origem única) | `verify-tls.sh`, `tests/ws/upgrade.test.js` |
+| **Comprometimento do proxy** | — | **novo ativo crítico**: a chave da CA local e o texto em claro passam por ele (§9) | — |
+
+Novos ativos a proteger: a **chave privada da CA local** (volume
+`caddy_data`) e o próprio **proxy** (vê tudo em claro). Contêiner do proxy
+sem capabilities extras, `no-new-privileges` e imagem fixada por digest.
+
 ## 9. Limitação: o TLS termina no proxy
+
+O TLS protege o **trajeto** cliente ↔ proxy, e só ele:
+
+- O Caddy **decifra** tudo. Do proxy ao backend, na rede `interna` do
+  Docker, o tráfego segue em **HTTP puro**, aceitável só porque essa rede
+  fica dentro da mesma máquina e não é publicada. Num ambiente com proxy e
+  backend em máquinas diferentes, esse trecho precisaria de TLS próprio
+  (ou mTLS).
+- O **proxy, o backend e o banco veem o texto em claro**: senha no login,
+  `body` das mensagens (gravado em claro na coluna `messages.message`),
+  quem fala com quem. O **administrador do servidor**, o ator mais
+  importante do modelo de ameaças, **continua lendo tudo**. O TLS não
+  muda nada para ele.
+- Só a **E2EE da Etapa 4b** protege o conteúdo contra o administrador: o
+  `body` sairá cifrado do cliente e o servidor nunca terá a chave. Mesmo
+  assim, os **metadados** continuarão visíveis ao servidor
+  ([`03-protocolo.md`](03-protocolo.md) §9).
+- Com `tls internal`, a confiança depende de cada cliente importar a raiz
+  certa. Um atacante que convença o usuário a importar a raiz **dele**
+  (engenharia social) ganha um homem no meio, risco fora do modelo
+  (Etapa 0, §5).
 
 ## 10. Wireshark: antes e agora
 
