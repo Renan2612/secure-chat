@@ -25,6 +25,11 @@ if grep -q "PRIVATE KEY" "$TMP"; then
   echo "erro: o arquivo exportado contém uma chave privada; abortado" >&2
   exit 1
 fi
+# Exatamente UM bloco PEM, e de certificado (openssl x509 só lê o primeiro).
+if [ "$(grep -c -- '-----BEGIN ' "$TMP")" != "1" ] || [ "$(grep -c -- '-----BEGIN CERTIFICATE-----' "$TMP")" != "1" ]; then
+  echo "erro: $SRC deveria conter exatamente um certificado" >&2
+  exit 1
+fi
 openssl x509 -in "$TMP" -noout 2>/dev/null || { echo "erro: $SRC não é um certificado X.509" >&2; exit 1; }
 
 install -m 0644 "$TMP" "$OUT"
