@@ -45,8 +45,10 @@ CREATE TABLE IF NOT EXISTS messages(
    id SERIAL PRIMARY KEY,
    room INTEGER NOT NULL,
    user_id INTEGER NOT NULL,
-   message VARCHAR(500) NOT NULL,
-   dt_message TIMESTAMP NOT NULL,
+   -- Conteúdo OPACO para o servidor (na Etapa 4, texto cifrado). Limite em
+   -- BYTES igual ao maxBodyBytes do protocolo (realtime/protocol.js).
+   message TEXT NOT NULL CHECK (octet_length(message) BETWEEN 1 AND 8192),
+   dt_message TIMESTAMPTZ NOT NULL DEFAULT NOW(),
    FOREIGN KEY (user_id)
       REFERENCES users (id),
    FOREIGN KEY (room)

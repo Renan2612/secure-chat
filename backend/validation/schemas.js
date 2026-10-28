@@ -34,8 +34,15 @@ const schemas = {
   createRoom: { body: z.object({ name: roomName }) },
   checkRoomExists: { body: z.object({ name: roomName }) },
   joinRooms: { body: z.object({ idRoom: id, key: z.string().min(1).max(128) }) },
-  getMessages: { params: z.object({ id: idParam }) },
-  postMessage: { body: z.object({ room: id, message: z.string().trim().min(1).max(500) }) },
+  // Histórico paginado: as `limit` mais recentes (padrão 50, máximo 100)
+  // com id menor que `before`, para paginar para trás.
+  getMessages: {
+    params: z.object({ id: idParam }),
+    query: z.object({
+      limit: z.string().regex(/^[0-9]{1,3}$/).transform(Number).pipe(z.number().int().min(1).max(100)).default(50),
+      before: idParam.optional(),
+    }),
+  },
   updateLastViewed: {
     body: z.object({ room: id, idLastMessage: z.number().int().nonnegative().max(INT_MAX) }),
   },

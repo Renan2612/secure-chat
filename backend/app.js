@@ -15,7 +15,7 @@ const {
   joinRooms,
   roomsUsers,
 } = require("./routes/rooms");
-const { getMessages, postMessages, updateLastRead } = require("./routes/messages");
+const { getMessages, updateLastRead } = require("./routes/messages");
 const requireAuth = require("./middleware/requireAuth");
 const requireRoomMember = require("./middleware/requireRoomMember");
 const validate = require("./middleware/validate");
@@ -110,7 +110,8 @@ const createApp = ({
   app.get("/rooms", getRooms);
   app.post("/logout", logoutUser); // era GET: logout por GET permite CSRF via <img>/<a>
   app.get("/messages/:id", validate(schemas.getMessages), requireRoomMember, getMessages);
-  app.post("/messages", validate(schemas.postMessage), requireRoomMember, postMessages);
+  // POST /messages foi REMOVIDO na Etapa 3: o envio é só por MSG_SEND no
+  // WebSocket (/ws), que grava e entrega — um único caminho para autorizar.
   app.post(
     "/updateLastViewed",
     validate(schemas.updateLastViewed),

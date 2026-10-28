@@ -90,29 +90,11 @@ describe("rotas de mensagem", () => {
   });
 
   test.each([
-    ["mensagem vazia", () => ({ room: roomId, message: "  " })],
-    ["mensagem acima de 500 caracteres", () => ({ room: roomId, message: "m".repeat(501) })],
-    ["mensagem não-string", () => ({ room: roomId, message: { texto: "oi" } })],
-    ["sala como texto", () => ({ room: `${roomId}; DROP TABLE messages`, message: "oi" })],
-    ["sala ausente", () => ({ message: "oi" })],
-  ])("POST /messages com %s → 400", async (_label, body) => {
-    const res = await alice.agent.post("/messages").send(body());
-    expect(res.status).toBe(400);
-    expect(res.body).toEqual(INVALID);
-    expect((await pool.query("SELECT 1 FROM messages")).rowCount).toBe(0);
-  });
-
-  test.each([
     ["idLastMessage negativo", () => ({ room: roomId, idLastMessage: -5 })],
     ["idLastMessage texto", () => ({ room: roomId, idLastMessage: "x" })],
   ])("POST /updateLastViewed com %s → 400", async (_label, body) => {
     const res = await alice.agent.post("/updateLastViewed").send(body());
     expect(res.status).toBe(400);
     expect(res.body).toEqual(INVALID);
-  });
-
-  test("mensagem com exatamente 500 caracteres é aceita", async () => {
-    const res = await alice.agent.post("/messages").send({ room: roomId, message: "m".repeat(500) });
-    expect(res.status).toBe(201);
   });
 });

@@ -1,7 +1,7 @@
 // Ataque: coleta de informação — rotas de debug, enumeração, vazamento de
 // hash de senha / chave de sala nas respostas e detalhes internos em erros.
 const request = require("supertest");
-const { app, pool, resetDb, createUser, failQueriesMatching, PASSWORD } = require("./helpers");
+const { app, pool, resetDb, createUser, insertMessage, failQueriesMatching, PASSWORD } = require("./helpers");
 
 beforeEach(resetDb);
 afterEach(() => jest.restoreAllMocks());
@@ -55,7 +55,7 @@ test("nenhuma resposta da API contém hash de senha nem room.key (exceto createR
     .then(record("login falho", 401));
   await bob.agent.post("/joinRooms").send({ idRoom: roomId, key }).then(record("joinRooms", 200));
   await bob.agent.post("/joinRooms").send({ idRoom: roomId, key: "x" }).then(record("joinRooms 403", 403));
-  await alice.agent.post("/messages").send({ room: roomId, message: "oi" }).then(record("POST /messages", 201));
+  await insertMessage(roomId, alice.id, "oi"); // envio agora é pelo /ws (tests/ws/)
   await alice.agent.get("/rooms").then(record("GET /rooms", 200));
   await alice.agent.get(`/messages/${roomId}`).then(record("GET /messages", 200));
   await alice.agent.get(`/roomUsers/${roomId}`).then(record("GET /roomUsers", 200));

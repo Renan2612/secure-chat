@@ -3,9 +3,12 @@ const pool = require("../db");
 // Erros inesperados seguem para o error handler central (next), que
 // responde 500 genérico e registra o erro sem dados da requisição.
 
-// Pertencimento à sala verificado antes, pelo middleware requireRoomMember.
-// CORRIGIDO: não grava mais req.session.room (estado desnecessário na sessão).
+// Histórico paginado (leitura). Pertencimento à sala verificado antes,
+// pelo middleware requireRoomMember; limit/before validados pelo zod.
+// Busca as `limit` mais recentes (antes de `before`, se informado) e as
+// devolve em ordem cronológica. O envio é só pelo WebSocket (MSG_SEND).
 const getMessages = async (req, res, next) => {
+  const { limit, before } = req.query;
   try {
     const { rows } = await pool.query(
       `SELECT users.name AS userName, users.id AS userId, message AS message, dt_message AS dtMessage, messages.id as idMessage, rooms.name AS roomName, rooms.id as roomId FROM messages
@@ -13,12 +16,13 @@ const getMessages = async (req, res, next) => {
     ON room = rooms.id
     JOIN users
     ON users.id = messages.user_id
-    WHERE rooms.id = $1
-    ;
+    WHERE rooms.id = $1 AND ($2::int IS NULL OR messages.id < $2)
+    ORDER BY messages.id DESC
+    LIMIT $3
     `,
-      [req.params.id]
+      [req.params.id, before ?? null, limit]
     );
-    return res.status(200).json(rows);
+    return res.status(200).json(rows.reverse());
   } catch (err) {
     return next(err);
   }
@@ -36,23 +40,4 @@ const updateLastRead = async (req, res, next) => {
   }
 };
 
-// CORRIGIDO (item C): o remetente é SEMPRE o usuário da sessão. Qualquer
-// "user"/"user_id" enviado pelo cliente no corpo é ignorado — antes, o
-// servidor gravava message.user.id do corpo e qualquer um forjava o autor.
-// Que a sala existe e que o usuário é membro já foi garantido pelo
-// middleware requireRoomMember (pertencer a rooms_users implica a sala
-// existir, pela chave estrangeira).
-const postMessages = async (req, res, next) => {
-  try {
-    const { rows } = await pool.query(
-      `INSERT INTO messages (room, user_id, message, dt_message) VALUES ($1, $2, $3, $4)
-       RETURNING id, room, user_id, message, dt_message`,
-      [req.body.room, req.session.userId, req.body.message, new Date().toUTCString()]
-    );
-    return res.status(201).json(rows[0]);
-  } catch (err) {
-    return next(err);
-  }
-};
-
-module.exports = { getMessages, postMessages, updateLastRead };
+module.exports = { getMessages, updateLastRead };

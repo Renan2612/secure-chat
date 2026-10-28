@@ -30,13 +30,6 @@ describe("usuário B (não membro) é barrado com 403", () => {
     expect(res.body).toEqual({ message: "Acesso negado" });
   });
 
-  test("não posta mensagem na sala alheia", async () => {
-    const res = await bob.agent.post("/messages").send({ room: roomId, message: "intruso" });
-    expect(res.status).toBe(403);
-    const { rows } = await pool.query("SELECT 1 FROM messages WHERE message = 'intruso'");
-    expect(rows).toHaveLength(0);
-  });
-
   test("não altera o marcador de leitura da sala alheia", async () => {
     const res = await bob.agent.post("/updateLastViewed").send({ room: roomId, idLastMessage: 1 });
     expect(res.status).toBe(403);
@@ -45,7 +38,6 @@ describe("usuário B (não membro) é barrado com 403", () => {
   test.each([
     ["GET /messages", (a) => a.get("/messages/999999")],
     ["GET /roomUsers", (a) => a.get("/roomUsers/999999")],
-    ["POST /messages", (a) => a.post("/messages").send({ room: 999999, message: "oi" })],
     ["POST /updateLastViewed", (a) => a.post("/updateLastViewed").send({ room: 999999, idLastMessage: 1 })],
   ])("sala inexistente em %s → mesma resposta 403 (não revela quais IDs existem)", async (_l, send) => {
     const res = await send(bob.agent);
