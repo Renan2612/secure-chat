@@ -261,7 +261,8 @@ class E2eeSession {
         this.announced.add(`${room}:${pending.userId}`);
         this.print(
           `usuário ${pending.userId} (${clean(pending.name)}) entrou na sala ${room} e aguarda a chave; ` +
-            `fingerprint ${pending.keys.fingerprint.slice(0, 16)} [${this.trustLabel(pending.userId)}]. ` +
+            // Fingerprint calculada AQUI a partir das chaves (a do servidor não é confiável).
+            `fingerprint ${this.trust.peers[pending.userId].fingerprint.slice(0, 16)} [${this.trustLabel(pending.userId)}]. ` +
             `Se você espera essa pessoa na sala: confira /safety ${pending.userId} e entregue com /approve ${pending.userId}`
         );
       }

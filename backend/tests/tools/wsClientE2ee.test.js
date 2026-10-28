@@ -236,10 +236,13 @@ test("ataque (membro fantasma): quem entra NÃO recebe a chave sem aprovação e
   const [, id, invite] = await waitUntil(() => out.stdout.match(/sala criada: id (\d+); convite: ([0-9a-f]+)/), "sala criada");
   await waitUntil(() => /inscrito na sala/.test(out.stdout), "inscrição");
   // O servidor (ou um admin) põe uma conta na sala: o cliente só a ANUNCIA.
+  // E mente a fingerprint no diretório: o cliente mostra a que ELE calcula.
+  await pool.query("UPDATE user_keys SET fingerprint = $1 WHERE user_id = $2", ["f".repeat(64), bob.id]);
   await join(bob, { roomId: Number(id), inviteKey: invite });
   await waitUntil(() => out.stdout.includes(`/approve ${bob.id}`), "anúncio");
   const bobFp = await e2ee.fingerprint(bob.pub);
   expect(out.stdout).toContain(bobFp.slice(0, 16));
+  expect(out.stdout).not.toContain("f".repeat(16));
   await new Promise((r) => setTimeout(r, 500));
   expect((await pool.query("SELECT 1 FROM room_key_wraps WHERE recipient_id = $1", [bob.id])).rowCount).toBe(0);
   expect(out.stdout).not.toMatch(/chave da sala entregue/);
@@ -264,10 +267,16 @@ test("/approve de quem não está pendente é recusado; de quem tem CHAVE ALTERA
   await out.exited;
 }, 40000);
 
-test("ataque: sequências de escape do terminal na mensagem aparecem neutralizadas", async () => {
+test("ataque: sequências de escape do terminal (na mensagem e no nome de um membro) aparecem neutralizadas", async () => {
   const { out, room } = await roomWithBob();
   await bobSays(room, "oi\u001b[2J\u001b]0;titulo\u0007\rFALSO", "esc");
   await waitUntil(() => out.stdout.includes("FALSO"), "mensagem");
+  const evil = await srv.http
+    .post("/register")
+    .send({ email: "esc@ws.example.com", password: PASSWORD, name: "Mal\u001b[31mVERMELHO\u001b]0;x\u0007" });
+  await addMemberIfMissing(room.roomId, evil.body.id);
+  child.stdin.write("/members\n");
+  await waitUntil(() => out.stdout.includes("VERMELHO"), "membro com escape");
   expect(out.stdout).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f]/);
   expect(out.stdout).toContain("\\u001b[2J");
   child.stdin.end();

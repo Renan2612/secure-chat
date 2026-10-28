@@ -245,7 +245,10 @@ const logout = async ({ server, origin, tlsCa }, cookie) => {
   }
 };
 
-const print = (line) => process.stdout.write(`${line}\n`);
+// TODA linha impressa passa pelo clean (caracteres de controle visíveis):
+// ids, nomes, textos e códigos podem vir do servidor ou de outro usuário.
+// As quebras de linha das mensagens do próprio cliente são preservadas.
+const print = (line) => process.stdout.write(`${String(line).split("\n").map(clean).join("\n")}\n`);
 
 // Requisição JSON autenticada para a sessão E2EE (chaves, salas).
 const apiFor = ({ server, origin, tlsCa }, cookie) => async (method, path, body) => {
