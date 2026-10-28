@@ -85,3 +85,32 @@ test.each([
   expect(await nextPacket(inbox, "ERROR")).toMatchObject({ code: "BAD_REQUEST" });
   ws.close();
 });
+
+test("conexão que fecha enquanto o SUBSCRIBE consulta o banco não fica inscrita", async () => {
+  const realQuery = pool.query.bind(pool);
+  let release;
+  const gate = new Promise((r) => {
+    release = r;
+  });
+  let delayed = false;
+  const { ws } = await connect(srv, alice.cookie);
+  const spy = jest.spyOn(pool, "query").mockImplementation(async (text, ...rest) => {
+    const sql = typeof text === "string" ? text : text?.text;
+    if (!delayed && /FROM rooms_users WHERE room/.test(sql || "")) {
+      delayed = true;
+      const result = await realQuery(text, ...rest);
+      await gate;
+      return result;
+    }
+    return realQuery(text, ...rest);
+  });
+  send(ws, { type: "SUBSCRIBE", room: aliceRoom });
+  while (!delayed) await new Promise((r) => setTimeout(r, 5));
+  ws.close();
+  await new Promise((r) => ws.once("close", r));
+  await new Promise((r) => setTimeout(r, 50));
+  release();
+  await new Promise((r) => setTimeout(r, 50));
+  spy.mockRestore();
+  expect(srv.realtime.registry.subscribers(aliceRoom)).toHaveLength(0);
+});

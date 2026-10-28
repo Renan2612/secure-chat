@@ -67,3 +67,38 @@ test("PING → PONG", async () => {
   expect(await nextPacket(inbox, "PONG")).toEqual({ v: 1, type: "PONG", ref: "p1" });
   ws.close();
 });
+
+test("HELLO aceito cancela o prazo: a conexão sobrevive além do helloTimeout", async () => {
+  const { ws, inbox } = await connect(srv, alice.cookie);
+  await new Promise((r) => setTimeout(r, 600)); // helloTimeoutMs = 300
+  send(ws, { type: "PING" });
+  await nextPacket(inbox, "PONG");
+  expect(inbox.closed).toBeNull();
+  ws.close();
+});
+
+test.each([
+  ["JSON inválido", (ws) => ws.send("{nao-json")],
+  ["quadro binário", (ws) => ws.send(Buffer.from('{"v":1,"type":"HELLO"}'), { binary: true })],
+])("%s antes do HELLO → ERROR HELLO_REQUIRED e close 1008", async (_label, act) => {
+  const { ws, inbox } = await openSocket(srv, { cookie: alice.cookie });
+  act(ws);
+  expect(await nextPacket(inbox, "ERROR")).toMatchObject({ code: "HELLO_REQUIRED" });
+  expect((await closed(inbox)).code).toBe(1008);
+});
+
+test("HELLO v=1 fora do schema (client longo demais) → ERROR BAD_REQUEST e close 1008", async () => {
+  const { ws, inbox } = await openSocket(srv, { cookie: alice.cookie });
+  send(ws, { type: "HELLO", client: "c".repeat(65) });
+  expect(await nextPacket(inbox, "ERROR")).toMatchObject({ code: "BAD_REQUEST" });
+  expect((await closed(inbox)).code).toBe(1008);
+});
+
+test.each([
+  ["v como texto", { v: "1", type: "HELLO" }],
+  ["sem v", { type: "HELLO" }],
+])("HELLO com %s → close 4426", async (_label, packet) => {
+  const { ws, inbox } = await openSocket(srv, { cookie: alice.cookie });
+  ws.send(JSON.stringify(packet));
+  expect((await closed(inbox)).code).toBe(4426);
+});

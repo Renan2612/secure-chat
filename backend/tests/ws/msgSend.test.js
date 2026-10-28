@@ -131,6 +131,7 @@ test("quem foi removido da sala deixa de receber, mesmo ainda inscrito", async (
   send(aliceConn.ws, { type: "MSG_SEND", room: roomX, cid: "c", body: "bob saiu" });
   await nextPacket(aliceConn.inbox, "MSG_DELIVER");
   await expectNoPacket(bobConn.inbox, "MSG_DELIVER");
+  expect(await nextPacket(bobConn.inbox, "UNSUBSCRIBED")).toEqual({ v: 1, type: "UNSUBSCRIBED", room: roomX });
   expect(srv.realtime.registry.subscribers(roomX)).not.toContain(
     srv.realtime.registry.forUser(bob.id)[0]
   );
@@ -143,4 +144,14 @@ test("ao entrar na sala depois, o novo membro pode enviar", async () => {
   send(bobConn.ws, { type: "MSG_SEND", room: roomY, cid: "c", body: "cheguei" });
   await expect(nextPacket(bobConn.inbox, "MSG_ACK")).resolves.toMatchObject({ cid: "c" });
   bobConn.ws.close();
+});
+
+test("membro de X e de Y, inscrito só em X, NÃO recebe mensagens de Y", async () => {
+  await addMember(roomY, bob.id);
+  const bobConn = await subscribed(bob, roomX);
+  const aliceConn = await subscribed(alice, roomY);
+  send(aliceConn.ws, { type: "MSG_SEND", room: roomY, cid: "y1", body: "só para quem está em Y" });
+  await nextPacket(aliceConn.inbox, "MSG_DELIVER");
+  await expectNoPacket(bobConn.inbox, "MSG_DELIVER");
+  [aliceConn, bobConn].forEach(({ ws }) => ws.close());
 });

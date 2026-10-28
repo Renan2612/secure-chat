@@ -100,6 +100,50 @@ describe("limites de conexões simultâneas", () => {
     [a2, b1, a3].forEach(({ ws }) => ws.close());
   });
 
+  // Segura as leituras de sessão dos upgrades e as solta juntas: assim as
+  // checagens de limite de todos rodam intercaladas (a corrida de verdade).
+  const releaseSessionsTogether = (count) => {
+    const realQuery = pool.query.bind(pool);
+    const waiting = [];
+    let release;
+    const gate = new Promise((r) => {
+      release = r;
+    });
+    const spy = jest.spyOn(pool, "query").mockImplementation(async (text, ...rest) => {
+      const sql = typeof text === "string" ? text : text?.text;
+      if (!/SELECT sess FROM/.test(sql || "")) return realQuery(text, ...rest);
+      const result = await realQuery(text, ...rest);
+      waiting.push(result);
+      if (waiting.length === count) release();
+      await gate;
+      return result;
+    });
+    return () => spy.mockRestore();
+  };
+
+  test("upgrades simultâneos não furam o limite por usuário", async () => {
+    srv = await startServer({ maxConnectionsPerUser: 2 });
+    const alice = await loginUser(srv, "alice");
+    const restore = releaseSessionsTogether(6);
+    const results = await Promise.all(Array.from({ length: 6 }, () => openSocket(srv, { cookie: alice.cookie })));
+    restore();
+    expect(results.filter((r) => r.ws)).toHaveLength(2);
+    expect(results.filter((r) => r.status === 429)).toHaveLength(4);
+    results.forEach((r) => r.ws?.close());
+  });
+
+  test("upgrades simultâneos não furam o limite total", async () => {
+    srv = await startServer({ maxConnections: 3 });
+    const users = [];
+    for (let i = 0; i < 6; i += 1) users.push(await loginUser(srv, `u${i}`));
+    const restore = releaseSessionsTogether(6);
+    const results = await Promise.all(users.map((u) => openSocket(srv, { cookie: u.cookie })));
+    restore();
+    expect(results.filter((r) => r.ws)).toHaveLength(3);
+    expect(results.filter((r) => r.status === 503)).toHaveLength(3);
+    results.forEach((r) => r.ws?.close());
+  });
+
   test("total: além do limite global, recusa com 503", async () => {
     srv = await startServer({ maxConnections: 1 });
     const alice = await loginUser(srv, "alice");
@@ -113,4 +157,31 @@ describe("limites de conexões simultâneas", () => {
     const { DEFAULT_LIMITS } = require("../../realtime/protocol");
     expect(DEFAULT_LIMITS.maxConnectionsPerUser).toBe(5);
   });
+});
+
+describe("falha fechada do Origin", () => {
+  test("CLIENT_URL ausente → 403 até para a origem que seria a correta", async () => {
+    srv = await startServer();
+    const { cookie } = await loginUser(srv, "alice");
+    const saved = process.env.CLIENT_URL;
+    delete process.env.CLIENT_URL;
+    try {
+      expect((await openSocket(srv, { cookie })).status).toBe(403);
+    } finally {
+      process.env.CLIENT_URL = saved;
+    }
+  });
+
+  test('Origin "null" (iframe sandbox, file://) → 403', async () => {
+    srv = await startServer();
+    const { cookie } = await loginUser(srv, "alice");
+    expect((await openSocket(srv, { cookie, origin: "null" })).status).toBe(403);
+  });
+});
+
+test("sessão expirada (ainda no banco) → 401 no upgrade", async () => {
+  srv = await startServer();
+  const { cookie } = await loginUser(srv, "alice");
+  await pool.query("UPDATE user_sessions SET expire = NOW() - INTERVAL '1 minute'");
+  expect((await openSocket(srv, { cookie })).status).toBe(401);
 });

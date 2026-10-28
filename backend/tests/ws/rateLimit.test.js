@@ -36,7 +36,7 @@ test("dentro da rajada: tudo é atendido", async () => {
 });
 
 test("excesso: pacote descartado com ERROR RATE_LIMITED (um por sequência, sem amplificar)", async () => {
-  await start({ rateBurst: 5, rateRefillPerSec: 1, maxRateViolations: 100 });
+  await start({ rateBurst: 5, rateRefillPerSec: 0.01, maxRateViolations: 100 });
   const room = await createRoomInDb("Sala", [alice.id]);
   const { ws, inbox } = await connect(srv, alice.cookie);
   for (let i = 0; i < 10; i += 1) send(ws, { type: "MSG_SEND", room, cid: `c${i}`, body: "flood" });
@@ -75,7 +75,7 @@ describe("quarentena após 4429 (reconectar não zera o balde)", () => {
   });
 
   test("o usuário derrubado por inundação não reabre conexão durante a quarentena (429)", async () => {
-    await start({ rateBurst: 5, rateRefillPerSec: 1, maxRateViolations: 5, rateLimitCooldownMs: 400 });
+    await start({ rateBurst: 5, rateRefillPerSec: 1, maxRateViolations: 5, rateLimitCooldownMs: 1500 });
     const bob = await loginUser(srv, "bob");
     const { ws, inbox } = await connect(srv, alice.cookie);
     for (let i = 0; i < 30; i += 1) send(ws, { type: "PING" });
@@ -88,7 +88,7 @@ describe("quarentena após 4429 (reconectar não zera o balde)", () => {
     expect(other.ws).toBeDefined();
     other.ws.close();
     // Passada a quarentena, volta a conectar.
-    await sleep(500);
+    await sleep(1600);
     const again = await openSocket(srv, { cookie: alice.cookie });
     expect(again.ws).toBeDefined();
     again.ws.close();

@@ -45,6 +45,7 @@ test("cliente com buffer de saída acima do limite é desconectado na próxima e
   send(fast.ws, { type: "MSG_SEND", room, cid: "c1", body: "oi" });
   await nextPacket(fast.inbox, "MSG_DELIVER");
   await closed(slow.inbox);
+  await new Promise((r) => setTimeout(r, 50));
   expect(slow.inbox.packets.filter((p) => p.type === "MSG_DELIVER")).toEqual([]);
   expect(srv.realtime.registry.countForUser(bob.id)).toBe(0);
   fast.ws.close();

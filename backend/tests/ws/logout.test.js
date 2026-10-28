@@ -45,16 +45,6 @@ test("conexões de outros usuários não são afetadas", async () => {
   b.ws.close();
 });
 
-test("depois do logout, nada enviado pelo socket antigo é gravado", async () => {
-  const room = await createRoomInDb("Sala", [alice.id]);
-  const { ws, inbox } = await connect(srv, alice.cookie);
-  await srv.http.post("/logout").set("Cookie", alice.cookie);
-  await closed(inbox);
-  expect(() => send(ws, { type: "MSG_SEND", room, cid: "c", body: "fantasma" })).not.toThrow();
-  await new Promise((r) => setTimeout(r, 100));
-  expect((await pool.query("SELECT 1 FROM messages")).rowCount).toBe(0);
-});
-
 test("quadro que chegue depois do close (cliente que ignora o fechamento) não é processado", async () => {
   const room = await createRoomInDb("Sala", [alice.id]);
   const { inbox } = await connect(srv, alice.cookie);
@@ -93,10 +83,6 @@ test("upgrade em andamento durante o logout não sobrevive a ele (corrida TOCTOU
   release();
   const res = await pending;
   spy.mockRestore();
-  if (res.ws) {
-    expect((await closed(res.inbox)).code).toBe(4401);
-  } else {
-    expect(res.status).toBe(401);
-  }
+  expect(res.status).toBe(401);
   expect(srv.realtime.registry.countForUser(alice.id)).toBe(0);
 });

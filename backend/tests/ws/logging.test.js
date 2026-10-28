@@ -20,6 +20,14 @@ beforeEach(async () => {
       logged.push(args.map((a) => (typeof a === "string" ? a : require("util").inspect(a, { depth: 5 }))).join(" "));
     });
   }
+  // Também o que for escrito direto na saída (um logger futuro, ex.: pino).
+  for (const stream of [process.stdout, process.stderr]) {
+    const realWrite = stream.write.bind(stream);
+    jest.spyOn(stream, "write").mockImplementation((chunk, ...rest) => {
+      logged.push(String(chunk));
+      return realWrite(chunk, ...rest);
+    });
+  }
   srv = await startServer({ rateBurst: 8, maxRateViolations: 1000 });
   alice = await loginUser(srv, "alice");
   bob = await loginUser(srv, "bob");

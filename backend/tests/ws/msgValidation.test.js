@@ -33,6 +33,7 @@ test.each([
   ["mensagem com byte NUL", () => ({ room, cid: "c", body: "a\u0000b" })],
   ["sala como texto (tentativa de SQL injection)", () => ({ room: `${room}; DROP TABLE messages`, cid: "c", body: "oi" })],
   ["sala ausente", () => ({ cid: "c", body: "oi" })],
+  ["sala acima do INTEGER do Postgres", () => ({ room: 2147483648, cid: "c", body: "oi" })],
   ["cid ausente", () => ({ room, body: "oi" })],
   ["cid vazio", () => ({ room, cid: "", body: "oi" })],
   ["cid longo demais", () => ({ room, cid: "c".repeat(65), body: "oi" })],

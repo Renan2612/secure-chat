@@ -41,7 +41,8 @@ test("cliente que responde aos pings continua conectado", async () => {
 
 test("cliente que não responde ao ping (conexão morta) é encerrado e sai do registro", async () => {
   const { inbox } = await connect(srv, alice.cookie, { autoPong: false });
-  await closed(inbox, INTERVAL * 6);
+  // terminate(): sem handshake de fechamento, o cliente vê 1006.
+  expect((await closed(inbox, INTERVAL * 6)).code).toBe(1006);
   await sleep(50);
   expect(srv.realtime.registry.countForUser(alice.id)).toBe(0);
 });
