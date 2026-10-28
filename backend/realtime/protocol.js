@@ -8,12 +8,17 @@ const { z } = require("zod");
 const PROTOCOL_VERSION = 1;
 const PROTOCOL_PATH = "/ws";
 
+// Tamanho máximo do body em BYTES UTF-8 — o mesmo do CHECK da coluna
+// messages.message (database/migrations.sql). Não é configurável por
+// instância porque o banco é compartilhado.
+const MAX_BODY_BYTES = 8192;
+
 const DEFAULT_LIMITS = {
   maxConnectionsPerUser: 5,
   maxConnections: 1000,
   helloTimeoutMs: 5000,
   maxPayloadBytes: 16 * 1024,
-  maxBodyBytes: 8 * 1024,
+  maxBodyBytes: MAX_BODY_BYTES,
 };
 
 // Códigos de fechamento (RFC 6455 §7.4; 4000–4999 = uso privado da aplicação).
@@ -44,19 +49,30 @@ const base = { v: z.literal(PROTOCOL_VERSION), id: z.string().min(1).max(64).opt
 
 const room = z.number().int().positive().max(INT_MAX);
 
+// Body OPACO: o servidor só confere tipo e tamanho (não apara, não
+// interpreta). O NUL é recusado porque o Postgres não o aceita em TEXT.
+const body = z
+  .string()
+  .min(1)
+  .refine((value) => Buffer.byteLength(value, "utf8") <= MAX_BODY_BYTES && !value.includes("\u0000"));
+
+// Gerado pelo cliente (ex.: UUID); charset restrito, ecoado no MSG_ACK.
+const cid = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
+
 const clientPacket = z.discriminatedUnion("type", [
   z.object({ ...base, type: z.literal("HELLO"), client: z.string().max(64).optional() }),
   z.object({ ...base, type: z.literal("PING") }),
   z.object({ ...base, type: z.literal("SUBSCRIBE"), room }),
   z.object({ ...base, type: z.literal("UNSUBSCRIBE"), room }),
   // Sem "from": o remetente é sempre o usuário da sessão (item C).
-  z.object({ ...base, type: z.literal("MSG_SEND"), room, cid: z.string(), body: z.string() }),
+  z.object({ ...base, type: z.literal("MSG_SEND"), room, cid, body }),
 ]);
 
 module.exports = {
   PROTOCOL_VERSION,
   PROTOCOL_PATH,
   DEFAULT_LIMITS,
+  MAX_BODY_BYTES,
   CLOSE,
   ERRORS,
   INT_MAX,
