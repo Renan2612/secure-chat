@@ -1,29 +1,58 @@
 #!/usr/bin/env node
 // Cliente de referência do protocolo de tempo real (docs/03-protocolo.md).
-// Faz login por HTTP, abre o WebSocket em /ws com o cookie da sessão,
+// Faz login por HTTP(S), abre o WebSocket com o cookie da sessão,
 // HELLO → WELCOME, SUBSCRIBE na sala e então: cada linha digitada vira um
 // MSG_SEND; cada MSG_DELIVER recebido é impresso. Fim da entrada (Ctrl+D)
 // encerra a conexão e faz logout.
 //
-// Uso (a partir de backend/):
-//   CHAT_PASSWORD=... node tools/ws-client.js --email alice@example.com --room 1 \
-//     [--server http://localhost:8000] [--origin http://localhost:3000]
+// Uso (a partir de backend/), pela origem única do proxy (Etapa 4a):
+//   CHAT_PASSWORD=... node tools/ws-client.js --server https://localhost/api \
+//     --ca ../certs/caddy-local-root.crt --origin https://localhost \
+//     --email alice@example.com --room 1
+// Opções: --server (base da API; padrão http://localhost:8000), --ws (URL do
+// WebSocket; padrão: /ws na mesma origem do --server, ws:// ou wss://),
+// --origin, --ca (certificado de uma CA extra em que confiar, além das do
+// sistema; NODE_EXTRA_CA_CERTS também vale), --ack-timeout-ms (padrão 10000).
+//
+// A verificação do certificado NUNCA é desligada (não existe --insecure), e
+// com --server https:// o WebSocket só pode ser wss:// (o cookie de sessão
+// não sai em claro).
 // Sem CHAT_PASSWORD, a senha é pedida no terminal (sem eco). Ela nunca é
 // aceita como argumento: argumentos ficam visíveis no `ps` e no histórico.
-// Envio sem MSG_ACK em --ack-timeout-ms (padrão 10000) é avisado como não
-// confirmado.
-//
-// Útil para a demonstração e para as capturas no Wireshark (hoje sem TLS:
-// todo o tráfego, inclusive o body, aparece em claro).
+// Envio sem MSG_ACK em --ack-timeout-ms é avisado como não confirmado.
 const crypto = require("crypto");
+const fs = require("fs");
+const http = require("http");
+const https = require("https");
 const readline = require("readline");
+const tls = require("tls");
 const WebSocket = require("ws");
 
 const PROTOCOL_VERSION = 1;
+const OPTIONS = ["server", "ws", "origin", "email", "room", "ca", "ack-timeout-ms"];
 
 const fail = (message) => {
   process.stderr.write(`erro: ${message}\n`);
   process.exit(1);
+};
+
+// O WebSocket fica em /ws na raiz da MESMA origem da API: com o proxy, a API
+// é https://host/api e o canal é wss://host/ws.
+const wsUrlFor = (server) => {
+  const url = new URL("/ws", server);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
+};
+
+const parseUrl = (value, schemes, option) => {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return fail(`--${option} não é uma URL válida`);
+  }
+  if (!schemes.includes(url.protocol)) fail(`--${option} deve usar ${schemes.map((s) => `${s}//`).join(" ou ")}`);
+  return url;
 };
 
 const parseArgs = (argv) => {
@@ -34,7 +63,7 @@ const parseArgs = (argv) => {
   };
   for (let i = 0; i < argv.length; i += 2) {
     const name = argv[i]?.replace(/^--/, "");
-    if (!["server", "origin", "email", "room", "ack-timeout-ms"].includes(name) || argv[i + 1] === undefined) {
+    if (!OPTIONS.includes(name) || argv[i + 1] === undefined) {
       fail(`argumento inválido: ${argv[i]}`);
     }
     args[name] = argv[i + 1];
@@ -44,6 +73,26 @@ const parseArgs = (argv) => {
   if (!Number.isInteger(args.room) || args.room <= 0) fail("--room deve ser um inteiro positivo");
   args.ackTimeoutMs = Number(args["ack-timeout-ms"]);
   if (!(args.ackTimeoutMs > 0)) fail("--ack-timeout-ms deve ser positivo");
+
+  const server = parseUrl(args.server, ["http:", "https:"], "server");
+  args.server = args.server.replace(/\/+$/, "");
+  args.ws = parseUrl(args.ws ?? wsUrlFor(args.server), ["ws:", "wss:"], "ws").toString();
+  // Sem rebaixamento: se a API é HTTPS, o cookie não pode ir por ws:// em claro.
+  if (server.protocol === "https:" && !args.ws.startsWith("wss:")) {
+    fail("com --server https:// o WebSocket deve ser wss:// (o cookie de sessão iria em claro)");
+  }
+  if (args.ca) {
+    let pem;
+    try {
+      pem = fs.readFileSync(args.ca, "utf8");
+    } catch (err) {
+      return fail(`não foi possível ler --ca (${err.code ?? err.message})`);
+    }
+    // Explicitar `ca` substitui as CAs padrão do Node: soma às do sistema
+    // (e à do NODE_EXTRA_CA_CERTS, se houver) em vez de trocá-las.
+    const extra = process.env.NODE_EXTRA_CA_CERTS ? [fs.readFileSync(process.env.NODE_EXTRA_CA_CERTS, "utf8")] : [];
+    args.tlsCa = [...tls.rootCertificates, ...extra, pem];
+  }
   return args;
 };
 
@@ -73,34 +122,54 @@ const askPassword = () =>
     stdin.on("data", onData);
   });
 
-const login = async ({ server, origin, email }, password) => {
-  const res = await fetch(`${server}/login`, {
+// Requisição HTTP(S) com a CA extra (o fetch do Node não aceita `ca`). Não
+// segue redirecionamentos: um 308 de http:// para https:// vira erro, em vez
+// de reenviar a senha por conta própria.
+const request = (url, { method, headers, body, ca, timeoutMs = 10000 }) =>
+  new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const transport = target.protocol === "https:" ? https : http;
+    const req = transport.request(target, { method, headers, ...(ca ? { ca } : {}) }, (res) => {
+      let data = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => {
+        data += chunk;
+      });
+      res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: data }));
+    });
+    req.setTimeout(timeoutMs, () => req.destroy(Object.assign(new Error("tempo esgotado"), { code: "ETIMEDOUT" })));
+    req.on("error", reject);
+    req.end(body);
+  });
+
+const login = async ({ server, origin, email, tlsCa }, password) => {
+  const res = await request(`${server}/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Origin: origin },
     body: JSON.stringify({ email, password }),
+    ca: tlsCa,
   });
   if (res.status !== 200) fail(`login falhou (${res.status})`);
-  const setCookies = res.headers.getSetCookie?.() ?? [res.headers.get("set-cookie") ?? ""];
-  const sid = setCookies.map((c) => c.split(";")[0]).find((c) => c.startsWith("sid="));
+  const sid = (res.headers["set-cookie"] ?? []).map((c) => c.split(";")[0]).find((c) => c.startsWith("sid="));
   if (!sid) fail("o servidor não devolveu o cookie de sessão");
-  const user = await res.json();
-  return { cookie: sid, user };
+  return { cookie: sid, user: JSON.parse(res.body) };
 };
 
-// Avisa se o logout falhar: sem ele, o cookie (que, sem TLS, passou em claro
-// pela rede) continua valendo até a sessão expirar.
-const logout = async ({ server, origin }, cookie) => {
+// Avisa se o logout falhar: sem ele, o cookie continua valendo até a sessão
+// expirar.
+const logout = async ({ server, origin, tlsCa }, cookie) => {
   const warn = (why) =>
     process.stderr.write(`aviso: logout falhou (${why}); a sessão pode continuar válida até expirar\n`);
   try {
-    const res = await fetch(`${server}/logout`, {
+    const res = await request(`${server}/logout`, {
       method: "POST",
       headers: { Cookie: cookie, Origin: origin },
-      signal: AbortSignal.timeout(3000),
+      ca: tlsCa,
+      timeoutMs: 3000,
     });
     if (res.status !== 204) warn(res.status);
   } catch (err) {
-    warn(err.cause?.code ?? err.message);
+    warn(err.code ?? err.message);
   }
 };
 
@@ -112,8 +181,11 @@ const main = async () => {
   const { cookie, user } = await login(args, password);
   print(`logado como ${user.name} (usuário ${user.id})`);
 
-  const wsUrl = `${args.server.replace(/^http/, "ws")}/ws`;
-  const ws = new WebSocket(wsUrl, { headers: { Cookie: cookie }, origin: args.origin });
+  const ws = new WebSocket(args.ws, {
+    headers: { Cookie: cookie },
+    origin: args.origin,
+    ...(args.tlsCa ? { ca: args.tlsCa } : {}),
+  });
   const send = (packet) => ws.send(JSON.stringify({ v: PROTOCOL_VERSION, ...packet }));
   const pending = new Map(); // cid → timer, para envios ainda sem MSG_ACK
   let inputEnded = false;
@@ -217,4 +289,8 @@ const main = async () => {
   });
 };
 
-main().catch((err) => fail(err.cause?.code ? `${err.message} (${err.cause.code})` : err.message));
+if (require.main === module) {
+  main().catch((err) => fail(err.code ? `${err.message} (${err.code})` : err.message));
+}
+
+module.exports = { wsUrlFor };
