@@ -22,8 +22,9 @@ Substituir o Socket.IO do projeto original (conexão sem autenticação,
 3. define o **remetente pelo servidor**, a partir da sessão, nunca pelo
    pacote;
 4. trata o conteúdo da mensagem (`body`) como **opaco**: o servidor guarda e
-   repassa, mas não interpreta nem registra em log. Na Etapa 4 ele passa a
-   ser texto cifrado (E2EE) sem mudança no protocolo;
+   repassa, mas não interpreta nem registra em log. Desde a Etapa 4b-1 ele é
+   um **envelope cifrado E2EE** e o servidor recusa o que não tiver essa
+   estrutura (§4.3, [`05-e2ee.md`](05-e2ee.md));
 5. resiste a abuso básico: quadros grandes, lixo, inundação, conexões
    mortas e clientes lentos.
 
@@ -197,27 +198,33 @@ Direção: **C→S** (cliente para servidor), **S→C** (servidor para cliente).
 | `SUBSCRIBED` | S→C | `room` | Inscrição aceita. |
 | `UNSUBSCRIBE` | C→S | `room` | Cancela a inscrição (idempotente). |
 | `UNSUBSCRIBED` | S→C | `room` | Inscrição cancelada, a pedido do cliente **ou pelo servidor** quando o usuário deixou de ser membro da sala (§7). |
-| `MSG_SEND` | C→S | `room`: inteiro; `cid`: `[A-Za-z0-9_-]{1,64}`; `body`: string, 1 a **8192 bytes UTF-8**, sem o caractere NUL | Envia uma mensagem. **Não tem campo `from`**. |
+| `MSG_SEND` | C→S | `room`: inteiro; `cid`: `[A-Za-z0-9_-]{1,64}`; `body`: string, 1 a **8192 bytes UTF-8**, sem o caractere NUL, e (Etapa 4b-1) um **envelope E2EE v1** bem formado com o `kv` da versão atual da chave da sala (§4.3) | Envia uma mensagem. **Não tem campo `from`**. |
 | `MSG_ACK` | S→C | `cid`; `id`: inteiro (id da mensagem no banco); `ts`: ISO 8601 | A mensagem foi **gravada**. Correlação pelo `cid`. Reenvio do mesmo `cid` → o mesmo ACK. |
-| `MSG_DELIVER` | S→C | `room`; `id`; `from`: inteiro (usuário **da sessão** do remetente, preenchido pelo servidor); `ts`; `body` (como veio) | Mensagem nova na sala. Vai a toda conexão inscrita cujo usuário é membro, **inclusive as do próprio remetente** (o cliente deduplica pelo `id`). |
+| `MSG_DELIVER` | S→C | `room`; `id`; `from`: inteiro (usuário **da sessão** do remetente, preenchido pelo servidor); `cid` (Etapa 4b-1: o do `MSG_SEND`); `ts`; `body` (como veio) | Mensagem nova na sala. Vai a toda conexão inscrita cujo usuário é membro, **inclusive as do próprio remetente**. O cliente deduplica por (`from`, `cid`), que também entram no AAD da E2EE. |
+| `ROOM_EVENT` | S→C | `room`; `kind`: `"KEY_PENDING"` ou `"KEY_READY"` | **Extensão do v1 (Etapa 4b-1).** `KEY_PENDING`: vai às conexões inscritas na sala cujo usuário **tem a chave atual**, quando há membro sem ela (alguém entrou, registrou chaves, trocou de chave, ou um portador se inscreveu com pendentes). `KEY_READY`: vai a **todas** as conexões do destinatário (inscritas ou não) quando chega um wrap para ele. Não carrega dado de chave: o cliente busca pela API ([`05-e2ee.md`](05-e2ee.md) §5). Clientes que não conhecem o tipo podem ignorá-lo. |
 | `ERROR` | S→C | `code` (§5.1); `message`: texto genérico; `ref?`: o `id` do pacote que causou o erro | Pacote recusado. Salvo os casos da §5.2, a conexão continua aberta. |
 
 Exemplo de troca:
 
 ```json
-C→S {"v":1,"type":"MSG_SEND","id":"r9","room":7,"cid":"5f0c…","body":"oi"}
+C→S {"v":1,"type":"MSG_SEND","id":"r9","room":7,"cid":"5f0c…","body":"{\"v\":1,\"kv\":1,\"iv\":\"…\",\"ct\":\"…\",\"sig\":\"…\"}"}
 S→C {"v":1,"type":"MSG_ACK","cid":"5f0c…","id":42,"ts":"2026-10-28T14:03:11.512Z"}
-S→C {"v":1,"type":"MSG_DELIVER","room":7,"id":42,"from":3,"ts":"2026-10-28T14:03:11.512Z","body":"oi"}
+S→C {"v":1,"type":"MSG_DELIVER","room":7,"id":42,"from":3,"cid":"5f0c…","ts":"2026-10-28T14:03:11.512Z","body":"{\"v\":1,…}"}
+S→C {"v":1,"type":"ROOM_EVENT","room":7,"kind":"KEY_PENDING"}
 ```
 
-### 4.3 `body` opaco
+### 4.3 `body` cifrado (Etapa 4b-1)
 
-O servidor confere **só tipo e tamanho** do `body`: não apara espaços, não
-normaliza, não interpreta, **não registra em log** e não compara reenvios.
-Uma mensagem só de espaços é aceita como veio. O caractere NUL (`\u0000`) é
-recusado porque o Postgres não o aceita em `TEXT` (sem a regra, viraria
-erro interno). Na Etapa 4 o `body` será texto cifrado (ex.: base64) e nada
-neste protocolo muda.
+O servidor não decifra, não interpreta, **não registra em log** e não
+compara reenvios. Ele confere só o tamanho (até 8192 bytes, sem NUL, que o
+Postgres recusa em `TEXT`) e, desde a Etapa 4b-1, a **estrutura** do
+envelope E2EE v1 (`backend/realtime/envelope.js`, formato em
+[`05-e2ee.md`](05-e2ee.md) §4): exatamente `{"v":1,"kv":…,"iv":…,"ct":…,"sig":…}`
+na forma canônica, `iv` de 12 bytes, `sig` de 64 e `ct` com tamanho de
+padding válido. Fora disso → `E2EE_REQUIRED` (falha fechada: um cliente
+com bug não consegue mandar texto puro). Com o `kv` diferente da versão
+atual da chave da sala → `KEY_VERSION_MISMATCH`. O banco repete a regra
+com um `CHECK` na coluna `messages.message`.
 
 ### 4.4 Idempotência (`cid`)
 
@@ -229,7 +236,7 @@ Portanto:
 - reenviar o mesmo `cid` na **mesma sala** (ex.: o ACK se perdeu) devolve o
   **mesmo `MSG_ACK`** (mesmo `id` e `ts`), sem gravar nem entregar de novo,
   mesmo que o `body` seja diferente (vale o primeiro; um reenvio cifrado
-  de novo na Etapa 4 teria outro texto cifrado);
+  de novo tem outro IV e, portanto, outro texto cifrado);
 - reenvios simultâneos gravam uma única vez (o banco resolve a corrida);
 - o `cid` é **por remetente**: dois usuários podem usar o mesmo valor;
 - **autorização primeiro**: se nada foi gravado, o servidor verifica a
@@ -250,10 +257,19 @@ Portanto:
 | `RATE_LIMITED` | Pacotes demais; aguarde | quadro acima do ritmo (§6). Enviado **só na 1ª violação** de cada sequência, para não amplificar a inundação | segue aberta; na 20ª violação seguida fecha com 4429 |
 | `NOT_MEMBER` | Sem acesso a esta sala | SUBSCRIBE ou MSG_SEND para sala da qual o usuário não é membro **ou que não existe** (mesma resposta) | segue aberta |
 | `CID_REUSED` | cid já usado em outra sala | MSG_SEND com `cid` que o usuário já usou em outra sala | segue aberta |
+| `E2EE_REQUIRED` | O body precisa ser um envelope E2EE v1 | **Etapa 4b-1.** MSG_SEND cujo `body` não é um envelope E2EE v1 bem formado (texto puro, JSON qualquer, campo extra, fora da forma canônica, tamanhos errados de `iv`, `sig` ou `ct`) — nada é gravado | segue aberta |
+| `KEY_VERSION_MISMATCH` | Versão da chave diferente da atual da sala | **Etapa 4b-1.** MSG_SEND de um membro com envelope válido, mas `kv` ≠ versão atual da chave da sala — nada é gravado | segue aberta |
 | `INTERNAL` | Erro interno | falha inesperada ao tratar o pacote (ex.: banco fora). Num `MSG_SEND`, significa sempre **"não gravado"** (reenviar com o mesmo `cid` é seguro). Uma falha só na **entrega**, depois de gravar e mandar o `MSG_ACK`, não gera ERROR: vai ao log como "falha na entrega" e os inscritos recuperam a mensagem pelo histórico. O log registra o tipo do pacote, o código (SQLSTATE) e a mensagem do erro, nunca o pacote | segue aberta |
 
 As mensagens são fixas e genéricas: nunca ecoam a entrada nem detalham
 qual regra falhou.
+
+Ordem das checagens do `MSG_SEND` (Etapa 4b-1): schema do pacote
+(`BAD_REQUEST`) → estrutura do envelope, sem consultar o banco
+(`E2EE_REQUIRED`) → pertinência à sala (`NOT_MEMBER`) → `cid` já gravado
+(mesmo `MSG_ACK`) ou de outra sala (`CID_REUSED`) → versão da chave
+(`KEY_VERSION_MISMATCH`). A gravação é condicional na mesma consulta
+(membro **e** `kv` = versão atual), sem janela entre checar e gravar.
 
 ### 5.2 Códigos de fechamento
 
@@ -380,9 +396,11 @@ Ameaças **não** cobertas nesta etapa estão na §9.
 
 ## 9. Limitações conhecidas
 
-1. **Sem E2EE (Etapa 4b); TLS resolvido na Etapa 4a.** O texto abaixo
-   descreve a Etapa 3. Desde a 4a, a rede vê só TLS, mas o proxy, o backend e
-   o banco continuam vendo tudo em claro ([`04-tls-e-proxy.md`](04-tls-e-proxy.md) §9).
+1. **TLS resolvido na Etapa 4a; E2EE na Etapa 4b-1.** O texto abaixo
+   descreve a Etapa 3. Desde a 4a, a rede vê só TLS; desde a 4b-1, o proxy,
+   o backend e o banco veem só o envelope cifrado do `body`
+   ([`05-e2ee.md`](05-e2ee.md)); os demais campos dos pacotes (sala,
+   remetente, `cid`, horários) continuam visíveis ao servidor.
    Na Etapa 3, o tráfego era `ws://` e `http://`:
    na rede passam em claro a senha do login, o cookie `sid` (que permite
    sequestrar a sessão), todos os pacotes e o `body` (ver §11). O banco
@@ -394,10 +412,10 @@ Ameaças **não** cobertas nesta etapa estão na §9.
    `messages` é mais um metadado. É uma limitação de qualquer arquitetura
    cliente-servidor ([`00-modelo-ameacas.md`](00-modelo-ameacas.md) §4);
    minimizar retenção e logs é a Etapa 5.
-3. **Body sem integridade fim a fim.** O servidor (ou o admin) pode alterar,
-   reordenar, descartar ou reinjetar mensagens (o `from` é definido por ele).
-   A autenticidade do conteúdo entre usuários depende da E2EE autenticada
-   da Etapa 4.
+3. **Integridade fim a fim desde a Etapa 4b-1.** O `body` é cifrado e
+   assinado pelo remetente; trocar o `from`, adulterar o conteúdo ou
+   reinjetar uma mensagem antiga é detectado pelo cliente. O servidor (ou o
+   admin) ainda pode **descartar, atrasar ou reordenar** mensagens.
 4. **Estado em memória, instância única.** Inscrições (`sala → conexões`),
    contagem de conexões, baldes do rate limit, quarentenas e o contador de
    revogações vivem no processo (`realtime/registry.js`). Com mais de uma
@@ -448,6 +466,16 @@ Complementa a §5 de [`02-autenticacao-autorizacao.md`](02-autenticacao-autoriza
 | Remetente informado pelo cliente | Ignorado. Use `MSG_DELIVER.from` (definido pelo servidor). |
 | `GET /messages/:id` devolvia todas as mensagens | **Paginado**: `?limit=` (1 a 100, padrão 50) e `?before=<id>`; devolve as `limit` mais recentes com id menor que `before`, **em ordem cronológica**. Valores fora da regra → `400`. Campos de cada item inalterados: `username`, `userid`, `message`, `dtmessage`, `idmessage`, `roomname`, `roomid` (minúsculas, como o Postgres devolve). |
 | Mensagem até 500 caracteres | `body` até **8192 bytes UTF-8**, sem trim no servidor (§4.3). |
+
+Etapa 4b-1 (E2EE; detalhes em [`05-e2ee.md`](05-e2ee.md) §7):
+
+| Antes (Etapa 4a) | Agora (Etapa 4b-1) |
+|---|---|
+| `MSG_SEND.body` com o texto da mensagem | `body` = envelope E2EE v1 cifrado e assinado no cliente; texto puro → `ERROR E2EE_REQUIRED`; versão da chave antiga → `ERROR KEY_VERSION_MISMATCH` |
+| `MSG_DELIVER` sem `cid` | Traz o `cid` (entra no AAD; deduplicar por `from` + `cid`) |
+| — | `ROOM_EVENT {room, kind}`: `KEY_PENDING` (entregar a chave a quem está pendente, depois de conferir as chaves dele) e `KEY_READY` (buscar o próprio wrap) |
+| `GET /messages/:id` com `message` em claro | `message` é o envelope; cada item traz também `cid` e `keyversion` |
+| — | Rotas de chaves: `PUT /keys`, `POST /keys/reset`, `GET /keys/:userId`, `POST`/`GET /rooms/:id/keys`, `GET /rooms/:id/keys/pending`, `POST /rooms/:id/keys/wraps`, `DELETE /rooms/:id/keys/wraps/mine` |
 
 Roteiro mínimo do cliente:
 
@@ -546,22 +574,21 @@ Ou seja, o protocolo da Etapa 3 resolve **quem pode** conectar, ler e
 enviar, mas **não** esconde nada de quem escuta a rede (item G) nem do
 servidor (item F).
 
-### 11.3 Comparação com a Etapa 4 (preencher)
+### 11.3 Comparação com a Etapa 4 (4a: TLS; 4b-1: E2EE)
 
-A coluna de rede da Etapa 4a (só TLS) está em
-[`04-tls-e-proxy.md`](04-tls-e-proxy.md) §10. Esta tabela será completada
-com a E2EE (4b), que muda o que o **servidor** vê.
+A captura da Etapa 4a está em [`04-tls-e-proxy.md`](04-tls-e-proxy.md) §10;
+a da 4b-1 é gerada pelo `scripts/verify-e2ee.sh` (`KEEP_CAPTURE=capturas`)
+na **rede interna proxy → backend**, onde o TLS já terminou.
 
-| Momento | Etapa 3 (hoje) | Etapa 4 (`wss://` + E2EE) |
-|---|---|---|
-| `POST /login` | senha em claro | |
-| Cookie `sid` | em claro | |
-| Upgrade `/ws` | cabeçalhos em claro | |
-| `MSG_SEND.body` | texto em claro | |
-| `MSG_DELIVER.body` | texto em claro | |
-| Metadados (sala, remetente, horário, tamanho) | em claro na rede | |
-| Coluna `messages.message` no banco | texto em claro | |
-| Captura (arquivo `.pcapng`) | | |
+| Momento | Etapa 3 | Etapa 4a, na rede | Etapa 4b-1, no servidor (rede interna, backend, banco) |
+|---|---|---|---|
+| `POST /login` | senha em claro | cifrado (TLS) | senha em claro (vai ao servidor; §9 do `05-e2ee.md`) |
+| Cookie `sid` | em claro | cifrado (TLS) | em claro (é o servidor que o valida) |
+| Upgrade `/ws` | cabeçalhos em claro | cifrado (TLS) | em claro |
+| `MSG_SEND.body` / `MSG_DELIVER.body` | texto em claro | cifrado (TLS) | **envelope E2EE** `{v,kv,iv,ct,sig}`: ilegível |
+| Metadados (sala, remetente, `cid`, horário, tamanho) | em claro | IPs, portas, tamanhos e horários | sala, remetente, `cid` e horários em claro; tamanho só em blocos de 128 bytes |
+| Coluna `messages.message` no banco | texto em claro | texto em claro | envelope (o `CHECK` recusa texto puro) |
+| Prova automatizada | — | `scripts/verify-tls.sh` | `scripts/verify-e2ee.sh` (marcador ausente, nem decodificado de base64) |
 
 ## 12. Testes
 
