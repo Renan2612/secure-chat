@@ -64,6 +64,12 @@ const createApp = ({
   // TRUST_PROXY = número de proxies na frente do app (ex.: 1). Não habilitar
   // sem proxy: o cliente poderia forjar X-Forwarded-For.
   const hops = trustProxyHops();
+  // Em produção o backend só existe atrás do proxy TLS: sem TRUST_PROXY, o
+  // Express acharia toda conexão HTTP e nunca emitiria o cookie Secure (o
+  // login "funcionaria" sem sessão). Melhor não subir.
+  if (hops === null && process.env.NODE_ENV === "production") {
+    throw new Error("NODE_ENV=production exige TRUST_PROXY (número de proxies reversos na frente do backend)");
+  }
   if (hops !== null) app.set("trust proxy", hops);
 
   // --- Segurança de cabeçalhos HTTP ---

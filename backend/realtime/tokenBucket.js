@@ -1,6 +1,12 @@
 // Balde de fichas: até `burst` de uma vez, repostas a `refillPerSec`.
+// Parâmetro inválido lança erro: um NaN faria take() aceitar tudo (sem limite).
+const valid = (n) => Number.isFinite(n) && n > 0;
+
 class TokenBucket {
   constructor(burst, refillPerSec) {
+    if (!valid(burst) || !valid(refillPerSec)) {
+      throw new Error(`TokenBucket: rajada e reposição devem ser números > 0 (${burst}, ${refillPerSec})`);
+    }
     this.burst = burst;
     this.refillPerSec = refillPerSec;
     this.tokens = burst;
@@ -9,7 +15,9 @@ class TokenBucket {
 
   refill() {
     const now = Date.now();
-    this.tokens = Math.min(this.burst, this.tokens + ((now - this.last) / 1000) * this.refillPerSec);
+    // Relógio que volta (ajuste de hora) não tira nem dá fichas.
+    const elapsed = Math.max(0, now - this.last);
+    this.tokens = Math.min(this.burst, this.tokens + (elapsed / 1000) * this.refillPerSec);
     this.last = now;
   }
 

@@ -30,14 +30,18 @@ test("padrões: rajada de 20 tentativas de upgrade por IP, repostas a 0,5/s", ()
 
 test("excesso de tentativas do mesmo IP → 429 antes de consultar a sessão no banco", async () => {
   srv = await startServer({ upgradeBurst: 3, upgradeRefillPerSec: 0.01 });
+  // Com cookie (de sessão já destruída), cada tentativa lê a sessão no banco:
+  // é isso que o limite precisa evitar.
+  const { cookie } = await loginUser(srv, "alice");
+  await srv.http.post("/logout").set("Cookie", cookie);
   const spy = jest.spyOn(pool, "query");
-  for (let i = 0; i < 3; i += 1) expect((await attempt()).status).toBe(401);
   const sessionReads = () => spy.mock.calls.filter(([sql]) => /SELECT sess FROM/.test(String(sql?.text ?? sql))).length;
-  const before = sessionReads();
-  const res = await attempt();
+  for (let i = 0; i < 3; i += 1) expect((await attempt(null, cookie)).status).toBe(401);
+  expect(sessionReads()).toBe(3); // controle: abaixo do limite, a sessão é lida
+  const res = await attempt(null, cookie);
   expect(res.status).toBe(429);
   expect(JSON.parse(res.body)).toEqual({ message: "Tentativas de conexão demais; aguarde" });
-  expect(sessionReads()).toBe(before);
+  expect(sessionReads()).toBe(3); // a recusa não tocou no banco
 });
 
 test("usuário legítimo também conta: a 4ª tentativa do mesmo IP é recusada", async () => {
@@ -62,6 +66,8 @@ describe("com TRUST_PROXY=1 (atrás do Caddy)", () => {
     expect((await attempt("3.3.3.3, 10.0.0.5")).status).toBe(429);
   });
 
+  // Junto com o teste "sem TRUST_PROXY" abaixo: lá, os mesmos dois IPs caem
+  // no mesmo balde; aqui, em baldes separados.
   test("clientes diferentes (IP real diferente) têm baldes separados", async () => {
     srv = await startServer({ upgradeBurst: 1, upgradeRefillPerSec: 0.01 });
     expect((await attempt("10.0.0.5")).status).toBe(401);

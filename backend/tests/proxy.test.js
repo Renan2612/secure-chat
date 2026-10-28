@@ -8,6 +8,7 @@ const { pool, resetDb, createUser, PASSWORD } = require("./helpers");
 
 const savedEnv = { TRUST_PROXY: process.env.TRUST_PROXY, NODE_ENV: process.env.NODE_ENV };
 afterEach(() => {
+  jest.restoreAllMocks();
   for (const [name, value] of Object.entries(savedEnv)) {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
@@ -21,6 +22,13 @@ describe("TRUST_PROXY aceita só um número inteiro de saltos (falha fechada)", 
     expect(() => createApp()).toThrow(/TRUST_PROXY/);
   });
 
+  test("NODE_ENV=production sem TRUST_PROXY → recusa subir (o cookie Secure nunca seria emitido)", () => {
+    process.env.NODE_ENV = "production";
+    delete process.env.TRUST_PROXY;
+    const session = { middleware: (req, res, next) => next() };
+    expect(() => createApp({ session })).toThrow(/TRUST_PROXY/);
+  });
+
   test.each(["1", "2"])("TRUST_PROXY=%s é aceito como número de saltos", (value) => {
     process.env.TRUST_PROXY = value;
     expect(createApp().get("trust proxy")).toBe(Number(value));
@@ -28,7 +36,13 @@ describe("TRUST_PROXY aceita só um número inteiro de saltos (falha fechada)", 
 });
 
 // O limitador de /register conta por IP; RateLimit-Remaining mostra o balde.
-const remaining = (res) => Number(res.headers["ratelimit-remaining"]);
+// Falha alto se o cabeçalho sumir: NaN === NaN no toBe tornaria vácuas as
+// comparações abaixo.
+const remaining = (res) => {
+  const value = Number(res.headers["ratelimit-remaining"]);
+  expect(Number.isInteger(value) && value >= 0).toBe(true);
+  return value;
+};
 const probe = (app, xff) =>
   request(app).post("/register").set("X-Forwarded-For", xff).send({}); // 400, mas conta no limite
 
@@ -61,7 +75,6 @@ test("sem TRUST_PROXY, X-Forwarded-For é ignorado (todos no mesmo balde)", asyn
   const a = await probe(app, "10.0.0.5");
   const b = await probe(app, "10.0.0.6");
   expect(remaining(b)).toBe(remaining(a) - 1);
-  jest.restoreAllMocks();
 });
 
 describe("cookie de sessão em produção, atrás do proxy TLS", () => {
