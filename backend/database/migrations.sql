@@ -6,6 +6,7 @@
 -- \c messagewebapp;`, então as tabelas iam parar num banco diferente do
 -- DB_NAME usado pelo backend (secure_chat) e a aplicação não as encontrava.
 
+DROP TABLE IF EXISTS user_keys;
 DROP TABLE IF EXISTS user_sessions;
 DROP TABLE IF EXISTS messages;
 DROP TABLE IF EXISTS rooms_users;
@@ -57,6 +58,20 @@ CREATE TABLE IF NOT EXISTS messages(
       REFERENCES users (id),
    FOREIGN KEY (room)
       REFERENCES rooms (id)
+);
+
+-- Diretório de chaves PÚBLICAS da E2EE (docs/05-e2ee.md, D3). As privadas
+-- nunca saem do cliente. SPKI P-256 em base64url (122 caracteres), validado
+-- pela API. fingerprint = SHA-256 calculado pelo servidor (shared/e2ee).
+-- key_epoch sobe a cada POST /keys/reset.
+CREATE TABLE IF NOT EXISTS user_keys (
+   user_id INTEGER PRIMARY KEY REFERENCES users (id),
+   ecdh_pub VARCHAR(200) NOT NULL CHECK (ecdh_pub ~ '^[A-Za-z0-9_-]+$'),
+   ecdsa_pub VARCHAR(200) NOT NULL CHECK (ecdsa_pub ~ '^[A-Za-z0-9_-]+$'),
+   fingerprint CHAR(64) NOT NULL CHECK (fingerprint ~ '^[0-9a-f]{64}$'),
+   key_epoch INTEGER NOT NULL DEFAULT 1 CHECK (key_epoch >= 1),
+   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+   CHECK (ecdh_pub <> ecdsa_pub)
 );
 
 -- Sessões armazenadas no servidor (express-session + connect-pg-simple).

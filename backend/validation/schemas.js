@@ -1,6 +1,7 @@
 // Formatos aceitos por cada rota. Campos não listados são descartados pelo
 // zod (ex.: um "user" forjado no corpo de POST /messages nem chega à rota).
 const { z } = require("zod");
+const { isP256Spki } = require("../helpers/publicKeys");
 
 const INT_MAX = 2147483647; // limite do tipo INTEGER do Postgres
 
@@ -25,6 +26,13 @@ const newPassword = z.string().min(10).refine(fitsBcrypt);
 // No login, só o limite do bcrypt: a regra de tamanho mínimo é do cadastro.
 const loginPassword = z.string().min(1).refine(fitsBcrypt);
 
+// Chaves públicas da E2EE: SPKI P-256 em base64url canônico (conferido com
+// o OpenSSL, não só pelo formato), e chaves distintas para ECDH e ECDSA.
+const publicKey = z.string().refine(isP256Spki);
+const publicKeys = z
+  .object({ ecdhPub: publicKey, ecdsaPub: publicKey })
+  .refine((keys) => keys.ecdhPub !== keys.ecdsaPub);
+
 const displayName = z.string().trim().min(1).max(100);
 const roomName = z.string().trim().min(1).max(100);
 
@@ -47,6 +55,8 @@ const schemas = {
     body: z.object({ room: id, idLastMessage: z.number().int().nonnegative().max(INT_MAX) }),
   },
   roomUsers: { params: z.object({ room: idParam }) },
+  putKeys: { body: publicKeys },
+  getKeys: { params: z.object({ userId: idParam }) },
 };
 
 module.exports = schemas;

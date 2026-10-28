@@ -16,6 +16,7 @@ const {
   roomsUsers,
 } = require("./routes/rooms");
 const { getMessages, updateLastRead } = require("./routes/messages");
+const { putKeys, resetKeys, getKeys } = require("./routes/keys");
 const requireAuth = require("./middleware/requireAuth");
 const requireRoomMember = require("./middleware/requireRoomMember");
 const validate = require("./middleware/validate");
@@ -143,6 +144,11 @@ const createApp = ({
   app.post("/createRoom", validate(schemas.createRoom), createRooms);
   app.post("/joinRooms", validate(schemas.joinRooms), joinRooms);
   app.get("/roomUsers/:room", validate(schemas.roomUsers), requireRoomMember, roomsUsers);
+
+  // --- Diretório de chaves públicas da E2EE (docs/05-e2ee.md) ---
+  app.put("/keys", validate(schemas.putKeys), putKeys);
+  app.post("/keys/reset", validate(schemas.putKeys), resetKeys);
+  app.get("/keys/:userId", validate(schemas.getKeys), getKeys);
 
   // As rotas de debug /session, /sessionRoom e /session (POST) foram REMOVIDAS.
   // A rota POST /session permitia que qualquer cliente definisse req.session.userId
