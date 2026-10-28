@@ -1,7 +1,15 @@
 // Ataque: o canal em tempo real sobrevive ao fim da sessão. Depois do
 // logout, quem tinha um socket aberto (ex.: computador compartilhado)
 // continuaria recebendo e enviando mensagens.
-const { pool, resetDb, createRoomInDb } = require("../helpers");
+const { pool, resetDb, createRoomInDb, fakeEnvelope } = require("../helpers");
+// Etapa 4b: o servidor só aceita envelope E2EE v1. Estes testes não decifram
+// nada, então cada rótulo vira um envelope estruturalmente válido (sempre o
+// mesmo para o mesmo rótulo, para comparar com o que foi gravado/entregue).
+const envs = new Map();
+const env = (label) => {
+  if (!envs.has(label)) envs.set(label, fakeEnvelope());
+  return envs.get(label);
+};
 const { startServer, loginUser, connect, nextPacket, closed, send, openSocket } = require("./helpers");
 
 let srv;
@@ -53,7 +61,7 @@ test("quadro que chegue depois do close (cliente que ignora o fechamento) não �
   await closed(inbox);
   // Simula o quadro de um cliente que não respeita o close: entregue
   // direto à conexão do lado do servidor, que está em CLOSING.
-  serverConn.onFrame(Buffer.from(JSON.stringify({ v: 1, type: "MSG_SEND", room, cid: "c", body: "pós-logout" })), false);
+  serverConn.onFrame(Buffer.from(JSON.stringify({ v: 1, type: "MSG_SEND", room, cid: "c", body: env("pós-logout") })), false);
   await new Promise((r) => setTimeout(r, 100));
   expect((await pool.query("SELECT 1 FROM messages")).rowCount).toBe(0);
 });

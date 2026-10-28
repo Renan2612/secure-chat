@@ -8,6 +8,7 @@ const roomKeys = require("./roomKeys");
 const messages = require("./messages");
 const keystore = require("./keystore");
 const trust = require("./trust");
+const receiver = require("./receiver");
 const { E2eeError } = require("./errors");
 
-module.exports = { ...identity, ...roomKeys, ...messages, ...keystore, ...trust, encoding, primitives, E2eeError };
+module.exports = { ...identity, ...roomKeys, ...messages, ...keystore, ...trust, ...receiver, encoding, primitives, E2eeError };

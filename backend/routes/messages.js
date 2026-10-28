@@ -11,7 +11,7 @@ const getMessages = async (req, res, next) => {
   const { limit, before } = req.query;
   try {
     const { rows } = await pool.query(
-      `SELECT users.name AS userName, users.id AS userId, message AS message, dt_message AS dtMessage, messages.id as idMessage, rooms.name AS roomName, rooms.id as roomId FROM messages
+      `SELECT users.name AS userName, users.id AS userId, message AS message, dt_message AS dtMessage, messages.id as idMessage, rooms.name AS roomName, rooms.id as roomId, messages.cid AS cid, messages.key_version AS keyVersion FROM messages
     JOIN rooms
     ON room = rooms.id
     JOIN users

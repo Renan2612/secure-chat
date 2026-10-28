@@ -65,7 +65,8 @@ describe("membro da sala continua com acesso", () => {
     await insertMessage(bobsRoom, bob.id, "segredo do bob");
     const res = await alice.agent.get(`/messages/${roomId}`);
     expect(res.status).toBe(200);
-    expect(res.body.map((m) => m.message)).toEqual(["segredo da alice"]);
+    // O body é cifrado: a mensagem é identificada pelo cid (= rótulo do insertMessage).
+    expect(res.body.map((m) => m.cid)).toEqual(["segredo-da-alice"]);
   });
 
   test("lista os membros da própria sala, e só dela", async () => {

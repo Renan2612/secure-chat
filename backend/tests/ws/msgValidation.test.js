@@ -2,7 +2,7 @@
 // derrubar a conexão na primeira ocorrência e sem gravar nada.
 // (Recria os testes de validação do antigo POST /messages, removido com a
 // rota, de tests/validation.test.js.)
-const { pool, resetDb, createRoomInDb } = require("../helpers");
+const { pool, resetDb, createRoomInDb, fakeEnvelope } = require("../helpers");
 const { startServer, loginUser, connect, nextPacket, send } = require("./helpers");
 const { MAX_BODY_BYTES } = require("../../realtime/protocol");
 
@@ -58,22 +58,15 @@ test("a tabela messages continua intacta após a tentativa de injeção", async 
   ws.close();
 });
 
-test.each([
-  ["ASCII", "m".repeat(MAX_BODY_BYTES)],
-  ["multibyte", "é".repeat(MAX_BODY_BYTES / 2)],
-])("body com exatamente o tamanho máximo (%s) é aceito", async (_label, body) => {
+// Etapa 4b: o body só é aceito como envelope E2EE v1 (tests/ws/e2eeMessages
+// cobre os recusados). O maior envelope possível ainda cabe no limite.
+test("o maior envelope possível (texto preenchido de 5888 bytes) cabe no limite do body e é aceito", async () => {
+  const body = fakeEnvelope({ paddedBytes: 5888 });
+  expect(Buffer.byteLength(body)).toBeLessThanOrEqual(MAX_BODY_BYTES);
   const { ws, inbox } = await connect(srv, alice.cookie);
   send(ws, { type: "MSG_SEND", room, cid: "max", body });
   await nextPacket(inbox, "MSG_ACK");
   const { rows } = await pool.query("SELECT message FROM messages");
   expect(rows).toEqual([{ message: body }]);
-  ws.close();
-});
-
-test("body só com espaços é aceito como veio (opaco: o servidor não apara nem interpreta)", async () => {
-  const { ws, inbox } = await connect(srv, alice.cookie);
-  send(ws, { type: "MSG_SEND", room, cid: "esp", body: "  " });
-  await nextPacket(inbox, "MSG_ACK");
-  expect((await pool.query("SELECT message FROM messages")).rows).toEqual([{ message: "  " }]);
   ws.close();
 });

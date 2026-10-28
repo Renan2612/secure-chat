@@ -47,10 +47,23 @@ const createRoomInDb = async (name, memberIds) => {
   return rows[0].id;
 };
 
-const insertMessage = async (roomId, userId, text) => {
+// Envelope E2EE v1 ESTRUTURALMENTE válido, com bytes aleatórios no lugar do
+// texto cifrado: o servidor só confere a estrutura (realtime/envelope.js),
+// então serve para os testes que não decifram. `paddedBytes` = tamanho do
+// texto claro preenchido (múltiplo de 128). Os testes que decifram usam
+// shared/e2ee de verdade (tests/e2ee/, tests/ws/e2eeMessages.test.js).
+const fakeEnvelope = ({ kv = 1, paddedBytes = 128 } = {}) => {
+  const b64 = (n) => require("node:crypto").randomBytes(n).toString("base64url");
+  return JSON.stringify({ v: 1, kv, iv: b64(12), ct: b64(paddedBytes + 16), sig: b64(64) });
+};
+
+// Grava uma mensagem direto no banco. `label` vira o cid (os testes de
+// histórico conferem a ordem pelos cids, já que o body é cifrado).
+const insertMessage = async (roomId, userId, label, body = fakeEnvelope()) => {
+  const cid = String(label).replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 64);
   const { rows } = await pool.query(
-    "INSERT INTO messages (room, user_id, message, dt_message) VALUES ($1, $2, $3, NOW()) RETURNING id",
-    [roomId, userId, text]
+    "INSERT INTO messages (room, user_id, message, cid, key_version, dt_message) VALUES ($1, $2, $3, $4, 1, NOW()) RETURNING id",
+    [roomId, userId, body, cid]
   );
   return rows[0].id;
 };
@@ -81,6 +94,7 @@ module.exports = {
   addMember,
   createRoomInDb,
   insertMessage,
+  fakeEnvelope,
   failQueriesMatching,
   PASSWORD,
 };

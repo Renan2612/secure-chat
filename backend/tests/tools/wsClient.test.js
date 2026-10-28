@@ -52,7 +52,10 @@ const waitUntil = async (check, label, timeoutMs = 5000) => {
   }
 };
 
-test("entra na sala, envia o que for digitado e mostra o que chega", async () => {
+// TRANSIÇÃO (Etapa 4b, item 5): o servidor só aceita envelope E2EE e este
+// cliente ainda manda texto puro — a linha digitada é recusada, nada é
+// gravado nem entregue. O item 6 (ws-client cifrado) reescreve este teste.
+test("texto puro digitado é recusado pelo servidor (E2EE_REQUIRED): nada gravado nem entregue", async () => {
   const out = run(alice.email, PASSWORD);
   await waitUntil(() => /inscrito na sala/.test(out.stdout), "inscrição");
 
@@ -61,18 +64,12 @@ test("entra na sala, envia o que for digitado e mostra o que chega", async () =>
   await nextPacket(bobConn.inbox, "SUBSCRIBED");
 
   child.stdin.write("olá do cliente de referência\n");
-  expect(await nextPacket(bobConn.inbox, "MSG_DELIVER", 5000)).toMatchObject({
-    from: alice.id,
-    body: "olá do cliente de referência",
-  });
-  await waitUntil(() => /enviada/.test(out.stdout), "confirmação");
-
-  send(bobConn.ws, { type: "MSG_SEND", room, cid: "b1", body: "resposta do bob" });
-  await waitUntil(() => out.stdout.includes("resposta do bob"), "entrega");
-  expect(out.stdout).toContain(`usuário ${bob.id}`);
+  await waitUntil(() => /E2EE_REQUIRED/.test(out.stdout), "recusa do texto puro");
+  expect((await pool.query("SELECT 1 FROM messages")).rowCount).toBe(0);
+  expect(bobConn.inbox.packets.filter((p) => p.type === "MSG_DELIVER")).toEqual([]);
 
   child.stdin.end();
-  expect(await out.exited).toBe(0);
+  expect(await out.exited).toBe(1);
   bobConn.ws.close();
 });
 

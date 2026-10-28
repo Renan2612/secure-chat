@@ -3,7 +3,15 @@
 // sair da sala e ler o fluxo de outra sala.
 // (O teste de remetente forjado era do antigo POST /messages —
 // messageSender.test.js — e renasce aqui sobre o MSG_SEND.)
-const { pool, resetDb, createRoomInDb, addMember } = require("../helpers");
+const { pool, resetDb, createRoomInDb, addMember, fakeEnvelope } = require("../helpers");
+// Etapa 4b: o servidor só aceita envelope E2EE v1. Estes testes não decifram
+// nada, então cada rótulo vira um envelope estruturalmente válido (sempre o
+// mesmo para o mesmo rótulo, para comparar com o que foi gravado/entregue).
+const envs = new Map();
+const env = (label) => {
+  if (!envs.has(label)) envs.set(label, fakeEnvelope());
+  return envs.get(label);
+};
 const { startServer, loginUser, connect, nextPacket, send, expectNoPacket } = require("./helpers");
 
 let srv;
@@ -38,10 +46,10 @@ const storedMessages = async () =>
 
 test("membro envia: grava no banco e recebe MSG_ACK { cid, id, ts }", async () => {
   const { ws, inbox } = await connect(srv, alice.cookie);
-  send(ws, { type: "MSG_SEND", room: roomX, cid: "c-1", body: "olá" });
+  send(ws, { type: "MSG_SEND", room: roomX, cid: "c-1", body: env("olá") });
   const ack = await nextPacket(inbox, "MSG_ACK");
   expect(ack).toEqual({ v: 1, type: "MSG_ACK", cid: "c-1", id: expect.any(Number), ts: expect.any(String) });
-  expect(await storedMessages()).toEqual([{ room: roomX, user_id: alice.id, message: "olá" }]);
+  expect(await storedMessages()).toEqual([{ room: roomX, user_id: alice.id, message: env("olá") }]);
   ws.close();
 });
 
@@ -52,7 +60,7 @@ test("campo from forjado é ignorado: a mensagem sai com o usuário da sessão",
     type: "MSG_SEND",
     room: roomX,
     cid: "forjada",
-    body: "eu sou a alice",
+    body: env("eu sou a alice"),
     from: alice.id,
     user_id: alice.id,
     user: { id: alice.id },
@@ -65,17 +73,18 @@ test("campo from forjado é ignorado: a mensagem sai com o usuário da sessão",
     room: roomX,
     id: expect.any(Number),
     from: bob.id,
+    cid: "forjada",
     ts: expect.any(String),
-    body: "eu sou a alice",
+    body: env("eu sou a alice"),
   });
-  expect(await storedMessages()).toEqual([{ room: roomX, user_id: bob.id, message: "eu sou a alice" }]);
+  expect(await storedMessages()).toEqual([{ room: roomX, user_id: bob.id, message: env("eu sou a alice") }]);
   [aliceConn, bobConn].forEach(({ ws }) => ws.close());
 });
 
 test("MSG_DELIVER vai para as conexões inscritas na sala, inclusive as do remetente", async () => {
   const aliceConn = await subscribed(alice, roomX);
   const bobConn = await subscribed(bob, roomX);
-  send(bobConn.ws, { type: "MSG_SEND", room: roomX, cid: "c", body: "para todos" });
+  send(bobConn.ws, { type: "MSG_SEND", room: roomX, cid: "c", body: env("para todos") });
   const ack = await nextPacket(bobConn.inbox, "MSG_ACK");
   expect(await nextPacket(aliceConn.inbox, "MSG_DELIVER")).toMatchObject({ id: ack.id, from: bob.id });
   expect(await nextPacket(bobConn.inbox, "MSG_DELIVER")).toMatchObject({ id: ack.id, ts: ack.ts });
@@ -85,7 +94,7 @@ test("MSG_DELIVER vai para as conexões inscritas na sala, inclusive as do remet
 test("B inscrito na sala X NÃO recebe mensagens da sala Y", async () => {
   const bobConn = await subscribed(bob, roomX);
   const aliceConn = await subscribed(alice, roomY);
-  send(aliceConn.ws, { type: "MSG_SEND", room: roomY, cid: "y1", body: "segredo da sala Y" });
+  send(aliceConn.ws, { type: "MSG_SEND", room: roomY, cid: "y1", body: env("segredo da sala Y") });
   await nextPacket(aliceConn.inbox, "MSG_DELIVER");
   await expectNoPacket(bobConn.inbox, "MSG_DELIVER");
   [aliceConn, bobConn].forEach(({ ws }) => ws.close());
@@ -94,7 +103,7 @@ test("B inscrito na sala X NÃO recebe mensagens da sala Y", async () => {
 test("membro conectado mas não inscrito na sala não recebe a entrega", async () => {
   const bobConn = await connect(srv, bob.cookie);
   const aliceConn = await connect(srv, alice.cookie);
-  send(aliceConn.ws, { type: "MSG_SEND", room: roomX, cid: "x1", body: "oi" });
+  send(aliceConn.ws, { type: "MSG_SEND", room: roomX, cid: "x1", body: env("oi") });
   await nextPacket(aliceConn.inbox, "MSG_ACK");
   await expectNoPacket(bobConn.inbox, "MSG_DELIVER");
   [aliceConn, bobConn].forEach(({ ws }) => ws.close());
@@ -102,7 +111,7 @@ test("membro conectado mas não inscrito na sala não recebe a entrega", async (
 
 test("não membro: ERROR NOT_MEMBER e nada é gravado", async () => {
   const { ws, inbox } = await connect(srv, bob.cookie);
-  send(ws, { type: "MSG_SEND", room: roomY, cid: "intruso", body: "intruso", id: "r1" });
+  send(ws, { type: "MSG_SEND", room: roomY, cid: "intruso", body: env("intruso"), id: "r1" });
   expect(await nextPacket(inbox, "ERROR")).toMatchObject({ code: "NOT_MEMBER", ref: "r1" });
   expect(await storedMessages()).toEqual([]);
   ws.close();
@@ -110,7 +119,7 @@ test("não membro: ERROR NOT_MEMBER e nada é gravado", async () => {
 
 test("sala inexistente recebe o mesmo NOT_MEMBER", async () => {
   const { ws, inbox } = await connect(srv, bob.cookie);
-  send(ws, { type: "MSG_SEND", room: 999999, cid: "c", body: "oi" });
+  send(ws, { type: "MSG_SEND", room: 999999, cid: "c", body: env("oi") });
   expect(await nextPacket(inbox, "ERROR")).toMatchObject({ code: "NOT_MEMBER" });
   ws.close();
 });
@@ -118,7 +127,7 @@ test("sala inexistente recebe o mesmo NOT_MEMBER", async () => {
 test("MSG_SEND de quem foi removido da sala (já inscrito) é rejeitado", async () => {
   const bobConn = await subscribed(bob, roomX);
   await removeMember(roomX, bob.id);
-  send(bobConn.ws, { type: "MSG_SEND", room: roomX, cid: "depois", body: "ainda estou aqui?" });
+  send(bobConn.ws, { type: "MSG_SEND", room: roomX, cid: "depois", body: env("ainda estou aqui?") });
   expect(await nextPacket(bobConn.inbox, "ERROR")).toMatchObject({ code: "NOT_MEMBER" });
   expect(await storedMessages()).toEqual([]);
   bobConn.ws.close();
@@ -128,7 +137,7 @@ test("quem foi removido da sala deixa de receber, mesmo ainda inscrito", async (
   const bobConn = await subscribed(bob, roomX);
   const aliceConn = await subscribed(alice, roomX);
   await removeMember(roomX, bob.id);
-  send(aliceConn.ws, { type: "MSG_SEND", room: roomX, cid: "c", body: "bob saiu" });
+  send(aliceConn.ws, { type: "MSG_SEND", room: roomX, cid: "c", body: env("bob saiu") });
   await nextPacket(aliceConn.inbox, "MSG_DELIVER");
   await expectNoPacket(bobConn.inbox, "MSG_DELIVER");
   expect(await nextPacket(bobConn.inbox, "UNSUBSCRIBED")).toEqual({ v: 1, type: "UNSUBSCRIBED", room: roomX });
@@ -141,7 +150,7 @@ test("quem foi removido da sala deixa de receber, mesmo ainda inscrito", async (
 test("ao entrar na sala depois, o novo membro pode enviar", async () => {
   const bobConn = await connect(srv, bob.cookie);
   await addMember(roomY, bob.id);
-  send(bobConn.ws, { type: "MSG_SEND", room: roomY, cid: "c", body: "cheguei" });
+  send(bobConn.ws, { type: "MSG_SEND", room: roomY, cid: "c", body: env("cheguei") });
   await expect(nextPacket(bobConn.inbox, "MSG_ACK")).resolves.toMatchObject({ cid: "c" });
   bobConn.ws.close();
 });
@@ -150,7 +159,7 @@ test("membro de X e de Y, inscrito só em X, NÃO recebe mensagens de Y", async 
   await addMember(roomY, bob.id);
   const bobConn = await subscribed(bob, roomX);
   const aliceConn = await subscribed(alice, roomY);
-  send(aliceConn.ws, { type: "MSG_SEND", room: roomY, cid: "y1", body: "só para quem está em Y" });
+  send(aliceConn.ws, { type: "MSG_SEND", room: roomY, cid: "y1", body: env("só para quem está em Y") });
   await nextPacket(aliceConn.inbox, "MSG_DELIVER");
   await expectNoPacket(bobConn.inbox, "MSG_DELIVER");
   [aliceConn, bobConn].forEach(({ ws }) => ws.close());

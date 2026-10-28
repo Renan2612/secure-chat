@@ -100,16 +100,19 @@ const waitUntil = async (check, label, timeoutMs = 5000) => {
 
 const sessions = async () => (await pool.query("SELECT COUNT(*)::int AS n FROM user_sessions")).rows[0].n;
 
+// TRANSIÇÃO (Etapa 4b, item 5): o servidor só aceita envelope E2EE e este
+// cliente ainda manda texto puro — o envio é recusado e nada é gravado. O
+// item 6 (ws-client cifrado) volta a exigir o envio confirmado.
 const sendOneMessage = async (out) => {
   await waitUntil(() => /inscrito na sala/.test(out.stdout), "inscrição");
   out.child.stdin.write("por wss\n");
-  await waitUntil(() => /enviada/.test(out.stdout), "confirmação");
+  await waitUntil(() => /E2EE_REQUIRED/.test(out.stdout), "recusa do texto puro");
   out.child.stdin.end();
-  expect(await out.exited).toBe(0);
-  expect((await pool.query("SELECT message FROM messages")).rows).toEqual([{ message: "por wss" }]);
+  expect(await out.exited).toBe(1);
+  expect((await pool.query("SELECT message FROM messages")).rows).toEqual([]);
 };
 
-test("https + wss com --ca: login, inscrição e envio funcionam", async () => {
+test("https + wss com --ca: login e inscrição funcionam (envio em texto puro recusado até o item 6)", async () => {
   const out = run(["--server", httpsUrl, "--ca", path.join(dir, "ca.crt")]);
   await sendOneMessage(out);
 });

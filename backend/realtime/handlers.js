@@ -2,6 +2,7 @@
 // A autorização é sempre consultada no banco (rooms_users), nunca em
 // estado guardado na conexão: quem é removido da sala perde o acesso na hora.
 const pool = require("../db");
+const { parseEnvelope } = require("./envelope");
 
 const isMember = async (userId, room) =>
   (await pool.query("SELECT 1 FROM rooms_users WHERE room = $1 AND user_id = $2", [room, userId]))
@@ -11,15 +12,17 @@ const isMember = async (userId, room) =>
 // checar a pertinência e gravar. O remetente vem da sessão (conn.userId),
 // nunca do pacote. Devolve { saved } (nova), { duplicate } (o cid já foi
 // gravado nesta sala: reenvio), { reused } (cid já usado em outra sala) ou
-// {} (não é membro da sala pedida).
-const insertIfMember = async (userId, room, cid, body) => {
+// {} (não é membro da sala pedida) ou { staleKey } (é membro, cid novo, mas
+// o kv do envelope não é a versão atual da chave da sala).
+const insertIfMember = async (userId, room, cid, body, kv) => {
   const inserted = await pool.query(
-    `INSERT INTO messages (room, user_id, message, cid)
-     SELECT $1, $2, $3, $4
+    `INSERT INTO messages (room, user_id, message, cid, key_version)
+     SELECT $1, $2, $3, $4, $5
      WHERE EXISTS (SELECT 1 FROM rooms_users WHERE room = $1 AND user_id = $2)
+       AND (SELECT key_version FROM rooms WHERE id = $1) = $5
      ON CONFLICT (user_id, cid) DO NOTHING
      RETURNING id, dt_message`,
-    [room, userId, body, cid]
+    [room, userId, body, cid, kv]
   );
   if (inserted.rowCount > 0) return { saved: inserted.rows[0] };
   // Nada gravado: ou não é membro, ou o cid já existe. Autorização primeiro:
@@ -32,7 +35,8 @@ const insertIfMember = async (userId, room, cid, body) => {
     [userId, cid]
   );
   const original = rows[0];
-  if (!original) return {};
+  // Membro, cid novo: só pode ter faltado a versão da chave.
+  if (!original) return { staleKey: true };
   return original.room === room ? { duplicate: original } : { reused: true };
 };
 
@@ -119,8 +123,14 @@ const createHandlers = (registry) => {
     // Reenvio do mesmo cid: devolve o MSG_ACK original, sem gravar nem
     // entregar de novo.
     async MSG_SEND(conn, { room, cid, body, id }) {
-      const { saved, duplicate, reused } = await insertIfMember(conn.userId, room, cid, body);
+      // Falha fechada (E2EE): sem envelope cifrado v1 bem formado, nada é
+      // gravado — impede mandar texto puro por engano. Só estrutura: o
+      // servidor não decifra (não tem a chave da sala).
+      const envelope = parseEnvelope(body);
+      if (!envelope) return conn.error("E2EE_REQUIRED", id);
+      const { saved, duplicate, reused, staleKey } = await insertIfMember(conn.userId, room, cid, body, envelope.kv);
       if (reused) return conn.error("CID_REUSED", id);
+      if (staleKey) return conn.error("KEY_VERSION_MISMATCH", id);
       const message = saved ?? duplicate;
       if (!message) return conn.error("NOT_MEMBER", id);
       const ts = message.dt_message.toISOString();
@@ -130,7 +140,9 @@ const createHandlers = (registry) => {
       // ERROR para o remetente (seria ACK + ERROR para o mesmo envio). Os
       // inscritos a recuperam pelo histórico HTTP.
       try {
-        return await deliver(room, { type: "MSG_DELIVER", room, id: message.id, from: conn.userId, ts, body });
+        // cid vai junto: o destinatário precisa dele para remontar o AAD e
+        // para ignorar reentregas (mesmo remetente e cid).
+        return await deliver(room, { type: "MSG_DELIVER", room, id: message.id, from: conn.userId, cid, ts, body });
       } catch (err) {
         console.error(`[ws] falha na entrega da mensagem ${message.id}: code=${err.code ?? "-"} ${err.message}`);
         return undefined;

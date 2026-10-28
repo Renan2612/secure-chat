@@ -54,13 +54,18 @@ CREATE TABLE IF NOT EXISTS messages(
    id SERIAL PRIMARY KEY,
    room INTEGER NOT NULL,
    user_id INTEGER NOT NULL,
-   -- Conteúdo OPACO para o servidor (na Etapa 4, texto cifrado). Limite em
-   -- BYTES igual ao maxBodyBytes do protocolo (realtime/protocol.js).
+   -- Envelope E2EE v1 (docs/05-e2ee.md): o servidor guarda só texto cifrado.
+   -- Limite em BYTES igual ao maxBodyBytes do protocolo; o CHECK de formato
+   -- é a falha fechada do banco: nem um bug no app grava texto puro, e o kv
+   -- do envelope tem de ser o key_version da linha. (Tamanhos exatos de iv,
+   -- ct e sig: realtime/envelope.js; o regex do Postgres não repete > 255.)
    message TEXT NOT NULL CHECK (octet_length(message) BETWEEN 1 AND 8192),
+   key_version INTEGER NOT NULL CHECK (key_version >= 1),
+   CHECK (message ~ ('^\{"v":1,"kv":' || key_version::text || ',"iv":"[A-Za-z0-9_-]{16}","ct":"[A-Za-z0-9_-]+","sig":"[A-Za-z0-9_-]{86}"\}$')),
    dt_message TIMESTAMPTZ NOT NULL DEFAULT NOW(),
    -- ID gerado pelo cliente para idempotência (MSG_SEND): reenviar com o
-   -- mesmo cid não duplica. Único por remetente; NULL fora do protocolo.
-   cid VARCHAR(64) NULL,
+   -- mesmo cid não duplica. Único por remetente. Faz parte do AAD da E2EE.
+   cid VARCHAR(64) NOT NULL,
    UNIQUE (user_id, cid),
    FOREIGN KEY (user_id)
       REFERENCES users (id),

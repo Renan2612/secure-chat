@@ -1,6 +1,14 @@
 // Ataque: inundação de pacotes numa conexão autenticada (cada MSG_SEND e
 // SUBSCRIBE custa uma consulta ao banco). Limite por conexão (token bucket).
-const { pool, resetDb, createRoomInDb } = require("../helpers");
+const { pool, resetDb, createRoomInDb, fakeEnvelope } = require("../helpers");
+// Etapa 4b: o servidor só aceita envelope E2EE v1. Estes testes não decifram
+// nada, então cada rótulo vira um envelope estruturalmente válido (sempre o
+// mesmo para o mesmo rótulo, para comparar com o que foi gravado/entregue).
+const envs = new Map();
+const env = (label) => {
+  if (!envs.has(label)) envs.set(label, fakeEnvelope());
+  return envs.get(label);
+};
 const { startServer, loginUser, connect, nextPacket, closed, send } = require("./helpers");
 const { DEFAULT_LIMITS } = require("../../realtime/protocol");
 
@@ -39,7 +47,7 @@ test("excesso: pacote descartado com ERROR RATE_LIMITED (um por sequência, sem 
   await start({ rateBurst: 5, rateRefillPerSec: 0.01, maxRateViolations: 100 });
   const room = await createRoomInDb("Sala", [alice.id]);
   const { ws, inbox } = await connect(srv, alice.cookie);
-  for (let i = 0; i < 10; i += 1) send(ws, { type: "MSG_SEND", room, cid: `c${i}`, body: "flood" });
+  for (let i = 0; i < 10; i += 1) send(ws, { type: "MSG_SEND", room, cid: `c${i}`, body: env("flood") });
   await nextPacket(inbox, "ERROR");
   await sleep(300);
   expect(rateErrors(inbox)).toHaveLength(1);

@@ -1,7 +1,15 @@
 // Caminhos de erro do canal em tempo real: falhas do banco ou de código não
 // podem derrubar o processo, mandar respostas contraditórias nem sumir sem
 // registro (achados da revisão "errors").
-const { pool, resetDb, createRoomInDb, failQueriesMatching } = require("../helpers");
+const { pool, resetDb, createRoomInDb, failQueriesMatching, fakeEnvelope } = require("../helpers");
+// Etapa 4b: o servidor só aceita envelope E2EE v1. Estes testes não decifram
+// nada, então cada rótulo vira um envelope estruturalmente válido (sempre o
+// mesmo para o mesmo rótulo, para comparar com o que foi gravado/entregue).
+const envs = new Map();
+const env = (label) => {
+  if (!envs.has(label)) envs.set(label, fakeEnvelope());
+  return envs.get(label);
+};
 const { startServer, loginUser, connect, openSocket, nextPacket, closed, send, expectNoPacket } = require("./helpers");
 
 let srv;
@@ -33,7 +41,7 @@ test("falha na entrega depois de gravar: remetente recebe só o MSG_ACK, sem ERR
   await nextPacket(b.inbox, "SUBSCRIBED");
   const injected = failQueriesMatching(/SELECT user_id FROM rooms_users/, Object.assign(new Error("banco instável"), { code: "57P01" }));
   const a = await connect(srv, alice.cookie);
-  send(a.ws, { type: "MSG_SEND", room, cid: "c1", body: "gravada", id: "r1" });
+  send(a.ws, { type: "MSG_SEND", room, cid: "c1", body: env("gravada"), id: "r1" });
   await nextPacket(a.inbox, "MSG_ACK");
   await expectNoPacket(a.inbox, "ERROR");
   expect(injected.count).toBe(1);
@@ -45,7 +53,7 @@ test("falha na entrega depois de gravar: remetente recebe só o MSG_ACK, sem ERR
 test("log de erro interno traz o código do erro (SQLSTATE), não só a mensagem", async () => {
   failQueriesMatching(/INSERT INTO messages/, Object.assign(new Error("x"), { code: "53300" }));
   const { ws, inbox } = await connect(srv, alice.cookie);
-  send(ws, { type: "MSG_SEND", room, cid: "c1", body: "oi" });
+  send(ws, { type: "MSG_SEND", room, cid: "c1", body: env("oi") });
   await nextPacket(inbox, "ERROR");
   expect(logged.join("\n")).toMatch(/MSG_SEND.*code=53300/);
   ws.close();

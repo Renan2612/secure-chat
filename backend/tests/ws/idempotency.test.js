@@ -1,6 +1,14 @@
 // Reenvio (ex.: o cliente não recebeu o MSG_ACK por queda de rede e manda
 // de novo) não pode duplicar a mensagem: o cid identifica o envio.
-const { pool, resetDb, createRoomInDb } = require("../helpers");
+const { pool, resetDb, createRoomInDb, fakeEnvelope } = require("../helpers");
+// Etapa 4b: o servidor só aceita envelope E2EE v1. Estes testes não decifram
+// nada, então cada rótulo vira um envelope estruturalmente válido (sempre o
+// mesmo para o mesmo rótulo, para comparar com o que foi gravado/entregue).
+const envs = new Map();
+const env = (label) => {
+  if (!envs.has(label)) envs.set(label, fakeEnvelope());
+  return envs.get(label);
+};
 const { startServer, loginUser, connect, nextPacket, send, expectNoPacket } = require("./helpers");
 
 let srv;
@@ -26,9 +34,9 @@ test("reenvio do mesmo cid não duplica: mesmo MSG_ACK, uma linha, uma entrega",
   await nextPacket(bobConn.inbox, "SUBSCRIBED");
 
   const { ws, inbox } = await connect(srv, alice.cookie);
-  send(ws, { type: "MSG_SEND", room, cid: "abc-123", body: "uma vez só" });
+  send(ws, { type: "MSG_SEND", room, cid: "abc-123", body: env("uma vez só") });
   const first = await nextPacket(inbox, "MSG_ACK");
-  send(ws, { type: "MSG_SEND", room, cid: "abc-123", body: "uma vez só" });
+  send(ws, { type: "MSG_SEND", room, cid: "abc-123", body: env("uma vez só") });
   const second = await nextPacket(inbox, "MSG_ACK");
 
   expect(second).toEqual(first);
@@ -41,9 +49,9 @@ test("reenvio do mesmo cid não duplica: mesmo MSG_ACK, uma linha, uma entrega",
 test("reenvio por outra conexão do mesmo usuário também não duplica", async () => {
   const c1 = await connect(srv, alice.cookie);
   const c2 = await connect(srv, alice.cookie);
-  send(c1.ws, { type: "MSG_SEND", room, cid: "multi", body: "x" });
+  send(c1.ws, { type: "MSG_SEND", room, cid: "multi", body: env("x") });
   const first = await nextPacket(c1.inbox, "MSG_ACK");
-  send(c2.ws, { type: "MSG_SEND", room, cid: "multi", body: "x" });
+  send(c2.ws, { type: "MSG_SEND", room, cid: "multi", body: env("x") });
   expect(await nextPacket(c2.inbox, "MSG_ACK")).toEqual(first);
   expect(await count()).toBe(1);
   [c1, c2].forEach(({ ws }) => ws.close());
@@ -51,7 +59,7 @@ test("reenvio por outra conexão do mesmo usuário também não duplica", async 
 
 test("reenvios simultâneos do mesmo cid gravam uma única vez", async () => {
   const { ws, inbox } = await connect(srv, alice.cookie);
-  for (let i = 0; i < 5; i += 1) send(ws, { type: "MSG_SEND", room, cid: "rajada", body: "x" });
+  for (let i = 0; i < 5; i += 1) send(ws, { type: "MSG_SEND", room, cid: "rajada", body: env("x") });
   const acks = [];
   for (let i = 0; i < 5; i += 1) acks.push(await nextPacket(inbox, "MSG_ACK"));
   expect(new Set(acks.map((a) => a.id)).size).toBe(1);
@@ -62,8 +70,8 @@ test("reenvios simultâneos do mesmo cid gravam uma única vez", async () => {
 test("o cid é por usuário: o mesmo cid de outro usuário é outra mensagem", async () => {
   const a = await connect(srv, alice.cookie);
   const b = await connect(srv, bob.cookie);
-  send(a.ws, { type: "MSG_SEND", room, cid: "1", body: "da alice" });
-  send(b.ws, { type: "MSG_SEND", room, cid: "1", body: "do bob" });
+  send(a.ws, { type: "MSG_SEND", room, cid: "1", body: env("da alice") });
+  send(b.ws, { type: "MSG_SEND", room, cid: "1", body: env("do bob") });
   const ackA = await nextPacket(a.inbox, "MSG_ACK");
   const ackB = await nextPacket(b.inbox, "MSG_ACK");
   expect(ackA.id).not.toBe(ackB.id);
@@ -73,8 +81,8 @@ test("o cid é por usuário: o mesmo cid de outro usuário é outra mensagem", a
 
 test("cids diferentes com o mesmo conteúdo são mensagens diferentes", async () => {
   const { ws, inbox } = await connect(srv, alice.cookie);
-  send(ws, { type: "MSG_SEND", room, cid: "a", body: "igual" });
-  send(ws, { type: "MSG_SEND", room, cid: "b", body: "igual" });
+  send(ws, { type: "MSG_SEND", room, cid: "a", body: env("igual") });
+  send(ws, { type: "MSG_SEND", room, cid: "b", body: env("igual") });
   await nextPacket(inbox, "MSG_ACK");
   await nextPacket(inbox, "MSG_ACK");
   expect(await count()).toBe(2);
@@ -84,9 +92,9 @@ test("cids diferentes com o mesmo conteúdo são mensagens diferentes", async ()
 test("mesmo cid em outra sala → ERROR CID_REUSED, nada gravado nem entregue", async () => {
   const other = await createRoomInDb("Outra", [alice.id]);
   const { ws, inbox } = await connect(srv, alice.cookie);
-  send(ws, { type: "MSG_SEND", room, cid: "k", body: "x" });
+  send(ws, { type: "MSG_SEND", room, cid: "k", body: env("x") });
   await nextPacket(inbox, "MSG_ACK");
-  send(ws, { type: "MSG_SEND", room: other, cid: "k", body: "y", id: "r" });
+  send(ws, { type: "MSG_SEND", room: other, cid: "k", body: env("y"), id: "r" });
   expect(await nextPacket(inbox, "ERROR")).toMatchObject({ code: "CID_REUSED", ref: "r" });
   expect(await count()).toBe(1);
   ws.close();
@@ -94,10 +102,10 @@ test("mesmo cid em outra sala → ERROR CID_REUSED, nada gravado nem entregue", 
 
 test("reenvio de quem saiu da sala é rejeitado (NOT_MEMBER), não reconhecido", async () => {
   const { ws, inbox } = await connect(srv, bob.cookie);
-  send(ws, { type: "MSG_SEND", room, cid: "z", body: "x" });
+  send(ws, { type: "MSG_SEND", room, cid: "z", body: env("x") });
   await nextPacket(inbox, "MSG_ACK");
   await pool.query("DELETE FROM rooms_users WHERE room = $1 AND user_id = $2", [room, bob.id]);
-  send(ws, { type: "MSG_SEND", room, cid: "z", body: "x" });
+  send(ws, { type: "MSG_SEND", room, cid: "z", body: env("x") });
   expect(await nextPacket(inbox, "ERROR")).toMatchObject({ code: "NOT_MEMBER" });
   ws.close();
 });
@@ -105,10 +113,10 @@ test("reenvio de quem saiu da sala é rejeitado (NOT_MEMBER), não reconhecido",
 test("cid de uma sala que o usuário deixou, reusado em sala onde é membro → CID_REUSED (não NOT_MEMBER)", async () => {
   const other = await createRoomInDb("Outra", [alice.id]);
   const { ws, inbox } = await connect(srv, alice.cookie);
-  send(ws, { type: "MSG_SEND", room, cid: "k", body: "x" });
+  send(ws, { type: "MSG_SEND", room, cid: "k", body: env("x") });
   await nextPacket(inbox, "MSG_ACK");
   await pool.query("DELETE FROM rooms_users WHERE room = $1 AND user_id = $2", [room, alice.id]);
-  send(ws, { type: "MSG_SEND", room: other, cid: "k", body: "y" });
+  send(ws, { type: "MSG_SEND", room: other, cid: "k", body: env("y") });
   expect(await nextPacket(inbox, "ERROR")).toMatchObject({ code: "CID_REUSED" });
   ws.close();
 });
@@ -116,9 +124,9 @@ test("cid de uma sala que o usuário deixou, reusado em sala onde é membro → 
 test("não membro de uma sala recebe NOT_MEMBER mesmo reusando um cid seu de outra sala", async () => {
   const foreign = await createRoomInDb("Alheia", [bob.id]);
   const { ws, inbox } = await connect(srv, alice.cookie);
-  send(ws, { type: "MSG_SEND", room, cid: "k", body: "x" });
+  send(ws, { type: "MSG_SEND", room, cid: "k", body: env("x") });
   await nextPacket(inbox, "MSG_ACK");
-  send(ws, { type: "MSG_SEND", room: foreign, cid: "k", body: "y" });
+  send(ws, { type: "MSG_SEND", room: foreign, cid: "k", body: env("y") });
   expect(await nextPacket(inbox, "ERROR")).toMatchObject({ code: "NOT_MEMBER" });
   ws.close();
 });

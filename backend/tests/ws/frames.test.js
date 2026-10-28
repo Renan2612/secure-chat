@@ -1,6 +1,14 @@
 // Abuso no nível do quadro: payload gigante, JSON inválido, quadros
 // binários e insistência em mandar lixo.
-const { pool, resetDb } = require("../helpers");
+const { pool, resetDb, fakeEnvelope } = require("../helpers");
+// Etapa 4b: o servidor só aceita envelope E2EE v1. Estes testes não decifram
+// nada, então cada rótulo vira um envelope estruturalmente válido (sempre o
+// mesmo para o mesmo rótulo, para comparar com o que foi gravado/entregue).
+const envs = new Map();
+const env = (label) => {
+  if (!envs.has(label)) envs.set(label, fakeEnvelope());
+  return envs.get(label);
+};
 const { startServer, loginUser, connect, nextPacket, closed, send } = require("./helpers");
 const { DEFAULT_LIMITS } = require("../../realtime/protocol");
 
@@ -59,7 +67,7 @@ test("quadro binário → ERROR BAD_REQUEST (o protocolo só usa texto)", async 
 
 test("tipo desconhecido → ERROR BAD_REQUEST", async () => {
   const { ws, inbox } = await connect(srv, alice.cookie);
-  send(ws, { type: "BROADCAST_ALL", body: "oi" });
+  send(ws, { type: "BROADCAST_ALL", body: env("oi") });
   expect(await nextPacket(inbox, "ERROR")).toMatchObject({ code: "BAD_REQUEST" });
   ws.close();
 });

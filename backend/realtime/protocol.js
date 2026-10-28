@@ -58,6 +58,10 @@ const ERRORS = {
   RATE_LIMITED: "Pacotes demais; aguarde",
   NOT_MEMBER: "Sem acesso a esta sala",
   CID_REUSED: "cid já usado em outra sala",
+  // E2EE (docs/05-e2ee.md): o body tem de ser um envelope cifrado v1 com a
+  // versão atual da chave da sala; o servidor confere só a estrutura.
+  E2EE_REQUIRED: "O body precisa ser um envelope E2EE v1",
+  KEY_VERSION_MISMATCH: "Versão da chave diferente da atual da sala",
   INTERNAL: "Erro interno",
 };
 

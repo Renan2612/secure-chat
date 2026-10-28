@@ -1,6 +1,6 @@
 // Item 5: um único caminho de envio (MSG_SEND no /ws). O HTTP fica só com a
 // leitura do histórico, paginada e com limite máximo.
-const { pool, resetDb, createUser, createRoomInDb, insertMessage } = require("./helpers");
+const { pool, resetDb, createUser, createRoomInDb, insertMessage, fakeEnvelope } = require("./helpers");
 
 let alice;
 let roomId;
@@ -23,7 +23,8 @@ test("POST /messages não existe mais (404): envio só pelo WebSocket", async ()
 });
 
 describe("GET /messages/:id paginado", () => {
-  const texts = (res) => res.body.map((m) => m.message);
+  // O body é cifrado: cada mensagem é identificada pelo cid (= rótulo).
+  const texts = (res) => res.body.map((m) => m.cid);
 
   test("sem parâmetros: as mais recentes, em ordem cronológica", async () => {
     const res = await alice.agent.get(`/messages/${roomId}`);
@@ -57,12 +58,25 @@ describe("GET /messages/:id paginado", () => {
   );
 });
 
-describe("coluna messages.message comporta o body opaco do protocolo", () => {
-  test("aceita até 8192 bytes", async () => {
-    await expect(insertMessage(roomId, alice.id, "x".repeat(8192))).resolves.toEqual(expect.any(Number));
+describe("coluna messages.message: só envelope E2EE v1, até 8192 bytes", () => {
+  test("aceita o maior envelope do protocolo", async () => {
+    await expect(insertMessage(roomId, alice.id, "max", fakeEnvelope({ paddedBytes: 5888 }))).resolves.toEqual(expect.any(Number));
   });
 
-  test("recusa acima de 8192 bytes (multibyte conta em bytes)", async () => {
-    await expect(insertMessage(roomId, alice.id, "é".repeat(4097))).rejects.toThrow(/check/i);
+  test("recusa acima de 8192 bytes", async () => {
+    await expect(insertMessage(roomId, alice.id, "big", fakeEnvelope({ paddedBytes: 6144 }))).rejects.toThrow(/check/i);
+  });
+
+  test("recusa texto puro (falha fechada no banco)", async () => {
+    await expect(insertMessage(roomId, alice.id, "puro", "oi, em claro")).rejects.toThrow(/check/i);
+  });
+
+  test("recusa envelope cujo kv não é o key_version da linha", async () => {
+    await expect(insertMessage(roomId, alice.id, "kv", fakeEnvelope({ kv: 2 }))).rejects.toThrow(/check/i);
+  });
+
+  test("histórico devolve cid e keyversion", async () => {
+    const [first] = (await alice.agent.get(`/messages/${roomId}?limit=1`)).body;
+    expect(first).toMatchObject({ cid: "m5", keyversion: 1 });
   });
 });
