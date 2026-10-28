@@ -35,7 +35,27 @@ beforeAll(() => {
   fs.writeFileSync(path.join(dir, "ext.cnf"), "subjectAltName=DNS:localhost,IP:127.0.0.1\n");
   openssl("x509", "-req", "-in", "srv.csr", "-CA", "ca.crt", "-CAkey", "ca.key", "-CAcreateserial",
     "-out", "srv.crt", "-days", "1", "-extfile", "ext.cnf");
+  // Certificado autoassinado, de fora da CA de teste: o "impostor".
+  openssl("req", "-x509", ...ec, "-keyout", "rogue.key", "-out", "rogue.crt", "-days", "1", "-subj", "/CN=localhost",
+    "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1");
 });
+
+// Terminador TLS na frente do backend de teste, com o certificado dado.
+const startTerminator = async (keyFile, certFile) => {
+  const backendPort = Number(new URL(srv.wsUrl).port);
+  const server = tls.createServer(
+    { key: fs.readFileSync(path.join(dir, keyFile)), cert: fs.readFileSync(path.join(dir, certFile)) },
+    (client) => {
+      const upstream = net.connect(backendPort, "127.0.0.1");
+      client.pipe(upstream).pipe(client);
+      client.on("error", () => upstream.destroy());
+      upstream.on("error", () => client.destroy());
+    }
+  );
+  server.on("tlsClientError", () => {});
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  return server;
+};
 afterAll(async () => {
   fs.rmSync(dir, { recursive: true, force: true });
   await pool.end();
@@ -46,17 +66,7 @@ beforeEach(async () => {
   srv = await startServer();
   alice = await loginUser(srv, "alice");
   room = await createRoomInDb("Sala", [alice.id]);
-  const backendPort = Number(new URL(srv.wsUrl).port);
-  terminator = tls.createServer(
-    { key: fs.readFileSync(path.join(dir, "srv.key")), cert: fs.readFileSync(path.join(dir, "srv.crt")) },
-    (client) => {
-      const upstream = net.connect(backendPort, "127.0.0.1");
-      client.pipe(upstream).pipe(client);
-      client.on("error", () => upstream.destroy());
-      upstream.on("error", () => client.destroy());
-    }
-  );
-  await new Promise((r) => terminator.listen(0, "127.0.0.1", r));
+  terminator = await startTerminator("srv.key", "srv.crt");
   httpsUrl = `https://localhost:${terminator.address().port}`;
 });
 afterEach(async () => {
@@ -119,8 +129,36 @@ test("sem confiar na CA: recusa o certificado, sai com 1 e nem chega a fazer log
   const out = run(["--server", httpsUrl]);
   expect(await out.exited).toBe(1);
   expect(out.stderr).toMatch(/certificate|certificado/i);
+  expect(out.stderr).toMatch(/--ca/); // dica de como confiar na CA local
   expect(out.stderr).not.toMatch(/\n\s+at /);
   expect(await sessions()).toBe(before);
+});
+
+test("o WebSocket também verifica o certificado: wss:// com certificado impostor é recusado", async () => {
+  const rogue = await startTerminator("rogue.key", "rogue.crt");
+  const before = await sessions();
+  const out = run([
+    "--server", httpsUrl,
+    "--ws", `wss://localhost:${rogue.address().port}/ws`,
+    "--ca", path.join(dir, "ca.crt"),
+  ]);
+  expect(await out.exited).toBe(1);
+  expect(out.stderr).toMatch(/certificate|certificado/i);
+  expect((await pool.query("SELECT 1 FROM messages")).rowCount).toBe(0);
+  expect(await sessions()).toBe(before); // o login aconteceu, mas houve logout
+  await new Promise((r) => rogue.close(r));
+});
+
+test("NODE_TLS_REJECT_UNAUTHORIZED=0 no ambiente → o cliente se recusa a rodar", async () => {
+  const out = run(["--server", httpsUrl, "--ca", path.join(dir, "ca.crt")], { NODE_TLS_REJECT_UNAUTHORIZED: "0" });
+  expect(await out.exited).toBe(1);
+  expect(out.stderr).toMatch(/NODE_TLS_REJECT_UNAUTHORIZED/);
+});
+
+test("NODE_EXTRA_CA_CERTS apontando para arquivo inexistente, com --ca → erro claro", async () => {
+  const out = run(["--server", httpsUrl, "--ca", path.join(dir, "ca.crt")], { NODE_EXTRA_CA_CERTS: path.join(dir, "nada.crt") });
+  expect(await out.exited).toBe(1);
+  expect(out.stderr).toMatch(/erro: não foi possível ler NODE_EXTRA_CA_CERTS/);
 });
 
 test("não existe opção para desligar a verificação (--insecure é argumento inválido)", async () => {

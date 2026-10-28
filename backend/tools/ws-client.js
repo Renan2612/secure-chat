@@ -29,6 +29,20 @@ const tls = require("tls");
 const WebSocket = require("ws");
 
 const PROTOCOL_VERSION = 1;
+// Erros de certificado comuns quando a CA local não está configurada.
+const CERT_ERRORS = new Set([
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+]);
+const describeError = (err) => {
+  const base = err.code ? `${err.message} (${err.code})` : err.message;
+  return CERT_ERRORS.has(err.code)
+    ? `${base}; para a CA local do Caddy use --ca certs/caddy-local-root.crt (scripts/export-ca.sh)`
+    : base;
+};
+const LOOPBACK = /^(localhost|127(\.\d{1,3}){3}|\[::1\])$/;
 const OPTIONS = ["server", "ws", "origin", "email", "room", "ca", "ack-timeout-ms"];
 
 const fail = (message) => {
@@ -52,10 +66,19 @@ const parseUrl = (value, schemes, option) => {
     return fail(`--${option} não é uma URL válida`);
   }
   if (!schemes.includes(url.protocol)) fail(`--${option} deve usar ${schemes.map((s) => `${s}//`).join(" ou ")}`);
+  // Sem TLS, a senha (login) e o cookie (WebSocket) iriam em claro: só na
+  // própria máquina.
+  if ((url.protocol === "http:" || url.protocol === "ws:") && !LOOPBACK.test(url.hostname)) {
+    fail(`--${option} ${url.protocol}// só é aceito para localhost (a senha e o cookie iriam em claro); use https:// ou wss://`);
+  }
   return url;
 };
 
 const parseArgs = (argv) => {
+  // O Node desligaria a verificação de certificado de TODO o processo.
+  if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
+    fail("NODE_TLS_REJECT_UNAUTHORIZED=0 desliga a verificação de certificado; remova-o (use --ca)");
+  }
   const args = {
     server: "http://localhost:8000",
     origin: process.env.CLIENT_URL || "http://localhost:3000",
@@ -90,7 +113,12 @@ const parseArgs = (argv) => {
     }
     // Explicitar `ca` substitui as CAs padrão do Node: soma às do sistema
     // (e à do NODE_EXTRA_CA_CERTS, se houver) em vez de trocá-las.
-    const extra = process.env.NODE_EXTRA_CA_CERTS ? [fs.readFileSync(process.env.NODE_EXTRA_CA_CERTS, "utf8")] : [];
+    let extra = [];
+    try {
+      extra = process.env.NODE_EXTRA_CA_CERTS ? [fs.readFileSync(process.env.NODE_EXTRA_CA_CERTS, "utf8")] : [];
+    } catch (err) {
+      return fail(`não foi possível ler NODE_EXTRA_CA_CERTS (${err.code ?? err.message})`);
+    }
     args.tlsCa = [...tls.rootCertificates, ...extra, pem];
   }
   return args;
@@ -136,6 +164,13 @@ const request = (url, { method, headers, body, ca, timeoutMs = 10000 }) =>
         data += chunk;
       });
       res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: data }));
+      // Conexão cortada no meio da resposta: sem isto a promessa nunca
+      // terminava e o processo saía 0, calado.
+      const incomplete = () => reject(Object.assign(new Error("resposta incompleta do servidor"), { code: "ECONNRESET" }));
+      res.on("error", incomplete);
+      res.on("close", () => {
+        if (!res.complete) incomplete();
+      });
     });
     req.setTimeout(timeoutMs, () => req.destroy(Object.assign(new Error("tempo esgotado"), { code: "ETIMEDOUT" })));
     req.on("error", reject);
@@ -149,10 +184,13 @@ const login = async ({ server, origin, email, tlsCa }, password) => {
     body: JSON.stringify({ email, password }),
     ca: tlsCa,
   });
+  if (res.status >= 300 && res.status < 400) {
+    fail(`login falhou (${res.status}): o cliente não segue redirecionamentos; use --server https://…/api`);
+  }
   if (res.status !== 200) fail(`login falhou (${res.status})`);
   const sid = (res.headers["set-cookie"] ?? []).map((c) => c.split(";")[0]).find((c) => c.startsWith("sid="));
   if (!sid) fail("o servidor não devolveu o cookie de sessão");
-  return { cookie: sid, user: JSON.parse(res.body) };
+  return { cookie: sid, body: res.body };
 };
 
 // Avisa se o logout falhar: sem ele, o cookie continua valendo até a sessão
@@ -176,9 +214,18 @@ const logout = async ({ server, origin, tlsCa }, cookie) => {
 const print = (line) => process.stdout.write(`${line}\n`);
 
 const main = async () => {
+  // Se alguma promessa ficar pendente e o processo acabar sozinho, sai com 1.
+  process.exitCode = 1;
   const args = parseArgs(process.argv.slice(2));
   const password = process.env.CHAT_PASSWORD || (await askPassword());
-  const { cookie, user } = await login(args, password);
+  const { cookie, body } = await login(args, password);
+  let user;
+  try {
+    user = JSON.parse(body);
+  } catch {
+    await logout(args, cookie); // a sessão já existe: não largá-la viva
+    fail("resposta inválida do login");
+  }
   print(`logado como ${user.name} (usuário ${user.id})`);
 
   const ws = new WebSocket(args.ws, {
@@ -237,7 +284,7 @@ const main = async () => {
   };
 
   ws.on("unexpected-response", (req, res) => abort(`upgrade recusado (${res.statusCode})`));
-  ws.on("error", (err) => abort(`conexão: ${err.message}`));
+  ws.on("error", (err) => abort(`conexão: ${describeError(err)}`));
   ws.on("open", () => send({ type: "HELLO", client: "ws-client.js" }));
   ws.on("close", (code, reason) => {
     print(`conexão encerrada (${code}${reason.length ? ` ${reason}` : ""})`);
@@ -290,7 +337,7 @@ const main = async () => {
 };
 
 if (require.main === module) {
-  main().catch((err) => fail(err.code ? `${err.message} (${err.code})` : err.message));
+  main().catch((err) => fail(describeError(err)));
 }
 
 module.exports = { wsUrlFor };
