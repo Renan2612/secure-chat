@@ -76,7 +76,7 @@ envelope e do body opaco (`tests/ws/msgValidation.test.js`,
 ## Resolvido na Etapa 4a — TLS, proxy reverso e origem única
 
 Detalhes em [`04-tls-e-proxy.md`](04-tls-e-proxy.md). Os controles de rede
-são provados por `scripts/verify-tls.sh` contra a stack no ar (28 provas;
+são provados por `scripts/verify-tls.sh` contra a stack no ar (33 provas;
 sai com código != 0 se alguma falhar); os do backend, por testes
 automatizados.
 

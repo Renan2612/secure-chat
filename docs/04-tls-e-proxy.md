@@ -94,8 +94,16 @@ git) e mostra o fingerprint SHA-256. A raiz é diferente em cada máquina
   `NODE_EXTRA_CA_CERTS=certs/caddy-local-root.crt`
 - navegador: importar a raiz **num perfil de testes** (ver o risco abaixo).
 
-A verificação do certificado **nunca é desligada**: não há `--insecure` no
-ws-client, e o `verify-tls.sh` prova que, sem a CA, o `curl` recusa.
+A verificação do certificado **nunca é desligada**:
+
+- o ws-client não tem `--insecure` (opções desconhecidas são recusadas) e
+  se recusa a rodar com `NODE_TLS_REJECT_UNAUTHORIZED=0` no ambiente;
+- `http://` e `ws://` só são aceitos para o loopback (a senha e o cookie
+  iriam em claro);
+- `https://` nunca rebaixa para `ws://`;
+- o cliente não segue redirecionamentos (não reenvia a senha);
+- o `verify-tls.sh` prova que, sem a CA, o `curl` falha **por
+  certificado** (código 60).
 
 **Risco da CA local.** Quem tiver o `root.key` emite certificados aceitos
 por **qualquer** cliente que confie nessa raiz, para qualquer domínio, não
@@ -168,6 +176,9 @@ inscrição na lista dos navegadores.
   **Caddy** acrescentou ao `X-Forwarded-For`, e ignora o que vier à
   esquerda. Só inteiros ≥ 1 são aceitos; `true`, `loopback`, `0` ou listas
   impedem o servidor de subir (`backend/app.js`, `tests/proxy.test.js`).
+  `NODE_ENV=production` **sem** `TRUST_PROXY` também não sobe: sem ele o
+  Express acharia toda conexão HTTP e nunca emitiria o cookie `Secure`,
+  e o login "funcionaria" sem sessão, calado.
   Com `true`, o cliente escolheria o próprio IP no rate limit.
 - **O Caddy não repassa o `X-Forwarded-For` do cliente.** Sem
   `trusted_proxies`, ele **sobrescreve** o `X-Forwarded-For`,
@@ -296,7 +307,7 @@ Esse arquivo é tão sensível quanto o tráfego: não commitar e apagar depois.
 cp backend/.env.example backend/.env       # e preencha SESSION_SECRET e DB_PASSWORD
 docker compose --env-file backend/.env up --build -d
 scripts/export-ca.sh                       # → certs/caddy-local-root.crt (fora do git)
-scripts/verify-tls.sh                      # 28 provas; sai com != 0 se alguma falhar
+scripts/verify-tls.sh                      # 33 provas; sai com != 0 se alguma falhar
 curl --cacert certs/caddy-local-root.crt https://localhost/api/health
 docker compose --env-file backend/.env down   # sem -v: preserva o banco e a CA
 ```
