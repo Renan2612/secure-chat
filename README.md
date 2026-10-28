@@ -84,7 +84,8 @@ sala já criados):
 CHAT_PASSWORD='sua-senha' node tools/ws-client.js --email voce@example.com --room 1
 ```
 
-> Vindo da Etapa 1? O schema mudou (tabela de sessões, e-mail único) e o
+> Vindo de uma etapa anterior? O schema mudou (Etapa 2: tabela de sessões,
+> e-mail único; Etapa 3: `messages.message` em TEXT e coluna `cid`) e o
 > script de init só roda num volume vazio: recrie com
 > `docker compose down -v && docker compose up --build` (apaga os dados de
 > desenvolvimento).

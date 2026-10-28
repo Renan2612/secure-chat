@@ -4,6 +4,12 @@
 > [`01-baseline-seguranca.md`](01-baseline-seguranca.md), além de validação
 > de entrada, endurecimento do login e higiene de erros/logs.
 > O Socket.IO (itens A e B) **não** foi alterado: é a Etapa 3.
+>
+> **Atualização (Etapa 3):** o Socket.IO foi substituído por um protocolo
+> próprio em `/ws` e o **`POST /messages` foi removido**: o envio é só
+> pelo `MSG_SEND` e `GET /messages/:id` passou a ser paginado. As
+> menções ao `POST /messages` abaixo descrevem a Etapa 2; o contrato
+> atual está em [`03-protocolo.md`](03-protocolo.md) §10.
 
 Cada correção tem um **teste de ataque** automatizado em `backend/tests/`,
 escrito antes da correção (TDD) e visto falhando contra o código antigo.
