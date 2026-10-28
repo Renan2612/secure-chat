@@ -10,7 +10,7 @@
 // Recusas respondem HTTP com corpo JSON genérico e fecham o TCP: o socket
 // WebSocket nunca chega a abrir.
 const { WebSocketServer } = require("ws");
-const { PROTOCOL_PATH, DEFAULT_LIMITS } = require("./protocol");
+const { PROTOCOL_PATH, DEFAULT_LIMITS, CLOSE } = require("./protocol");
 const { ConnectionRegistry } = require("./registry");
 const { Connection } = require("./connection");
 const { createHandlers } = require("./handlers");
@@ -94,6 +94,10 @@ const attachRealtime = (server, { session, ...options } = {}) => {
 
   return {
     registry,
+    // Fim da sessão (logout): fecha todas as conexões do usuário.
+    closeUser: (userId) => {
+      for (const conn of registry.forUser(userId)) conn.close(CLOSE.SESSION_ENDED, "sessão encerrada");
+    },
     close: () => {
       server.off("upgrade", onUpgrade);
       for (const conn of registry.all) conn.socket.terminate();

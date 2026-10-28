@@ -69,6 +69,10 @@ class Connection {
   }
 
   onFrame(data, isBinary) {
+    // Depois que o servidor manda o close (logout, abuso...), a ws ainda
+    // emite os quadros que chegarem até o fim do handshake de fechamento;
+    // um cliente que ignore o close não pode continuar agindo.
+    if (!this.isOpen()) return undefined;
     if (!this.takeToken()) return this.rejectRateLimited();
 
     let raw;

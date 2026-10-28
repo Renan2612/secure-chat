@@ -55,10 +55,13 @@ const loginUser = async (req, res, next) => {
 // duplicado (409), então a rota não era essencial.
 
 // Apaga a sessão no servidor (revogação real: um cookie copiado deixa de
-// funcionar) e pede ao navegador para descartar o cookie.
+// funcionar), derruba os sockets em tempo real do usuário (close 4401) e
+// pede ao navegador para descartar o cookie.
 const logoutUser = (req, res, next) => {
+  const { userId } = req.session;
   req.session.destroy((err) => {
     if (err) return next(err);
+    req.app.locals.onSessionEnd(userId);
     res.clearCookie(SESSION_COOKIE_NAME, cookieOptions());
     return res.status(204).send();
   });

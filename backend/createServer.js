@@ -7,9 +7,12 @@ const { attachRealtime } = require("./realtime");
 
 const createServer = ({ appOptions = {}, realtimeOptions = {} } = {}) => {
   const session = createSession();
-  const app = createApp({ ...appOptions, session });
+  // O app nasce antes do realtime; o logout chama o realtime já montado.
+  let realtime;
+  const onSessionEnd = (userId) => realtime.closeUser(userId);
+  const app = createApp({ ...appOptions, session, onSessionEnd });
   const server = http.createServer(app);
-  const realtime = attachRealtime(server, { session, ...realtimeOptions });
+  realtime = attachRealtime(server, { session, ...realtimeOptions });
   return { app, server, realtime };
 };
 
