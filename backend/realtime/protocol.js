@@ -16,6 +16,10 @@ const MAX_BODY_BYTES = 8192;
 const DEFAULT_LIMITS = {
   maxConnectionsPerUser: 5,
   maxConnections: 1000,
+  // Tentativas de upgrade por IP real do cliente (com ou sem sessão),
+  // antes de ler a sessão no banco: rajada e reposição por segundo.
+  upgradeBurst: 20,
+  upgradeRefillPerSec: 0.5,
   helloTimeoutMs: 5000,
   maxPayloadBytes: 16 * 1024,
   maxBodyBytes: MAX_BODY_BYTES,

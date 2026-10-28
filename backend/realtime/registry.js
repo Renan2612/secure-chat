@@ -1,6 +1,8 @@
 // Registro em memória das conexões abertas: por usuário (limite de conexões,
 // derrubar tudo no logout) e por sala (para quem entregar cada mensagem —
 // nunca broadcast global). Cada conexão é uma instância de Connection.
+const { TokenBucket } = require("./tokenBucket");
+
 class ConnectionRegistry {
   constructor() {
     this.byUser = new Map(); // userId → Set<conexão>
@@ -12,6 +14,19 @@ class ConnectionRegistry {
     // usuário é recusado (ver revokedSince).
     this.revocations = 0;
     this.revokedAt = new Map(); // userId → valor de this.revocations
+    this.upgradeBuckets = new Map(); // IP real → TokenBucket de tentativas de upgrade
+  }
+
+  // Gasta uma ficha de tentativa de upgrade do IP; false = acima do ritmo.
+  takeUpgradeToken(ip, burst, refillPerSec) {
+    if (!this.upgradeBuckets.has(ip)) this.upgradeBuckets.set(ip, new TokenBucket(burst, refillPerSec));
+    return this.upgradeBuckets.get(ip).take();
+  }
+
+  // Esquece IPs com o balde cheio (equivale a não ter balde): o mapa não
+  // cresce sem limite com IPs que tentaram uma vez e sumiram.
+  sweepUpgradeBuckets() {
+    for (const [ip, bucket] of this.upgradeBuckets) if (bucket.isFull()) this.upgradeBuckets.delete(ip);
   }
 
   revoke(userId) {

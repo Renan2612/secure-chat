@@ -12,7 +12,8 @@ const createServer = ({ appOptions = {}, realtimeOptions = {} } = {}) => {
   const onSessionEnd = (userId) => realtime.closeUser(userId);
   const app = createApp({ ...appOptions, session, onSessionEnd });
   const server = http.createServer(app);
-  realtime = attachRealtime(server, { session, ...realtimeOptions });
+  // Mesma regra de confiança no X-Forwarded-For das rotas HTTP (TRUST_PROXY).
+  realtime = attachRealtime(server, { session, trustProxy: app.get("trust proxy fn"), ...realtimeOptions });
   return { app, server, realtime };
 };
 

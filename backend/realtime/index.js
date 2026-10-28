@@ -4,6 +4,7 @@
 //
 // O upgrade HTTP → WebSocket só é aceito depois de, nesta ordem:
 //   1. caminho == /ws                          (senão 404)
+//   1b. ritmo de tentativas do IP real         (senão 429, sem tocar no banco)
 //   2. Origin == CLIENT_URL                    (senão 403 — Cross-Site WebSocket Hijacking)
 //   3. cookie "sid" com sessão válida no store (senão 401 — mesma sessão da API)
 //   4. quarentena após close 4429 (429) e limites de conexões (por usuário:
@@ -11,6 +12,7 @@
 // Recusas respondem HTTP com corpo JSON genérico e fecham o TCP: o socket
 // WebSocket nunca chega a abrir.
 const { WebSocketServer } = require("ws");
+const proxyaddr = require("proxy-addr");
 const { PROTOCOL_PATH, DEFAULT_LIMITS, CLOSE } = require("./protocol");
 const { ConnectionRegistry } = require("./registry");
 const { Connection } = require("./connection");
@@ -45,7 +47,10 @@ const loadSession = (sessionMiddleware, req) =>
     sessionMiddleware(req, {}, (err) => (err ? reject(err) : resolve(req.session)));
   });
 
-const attachRealtime = (server, { session, ...options } = {}) => {
+// trustProxy: a função de confiança que o Express compilou a partir de
+// TRUST_PROXY (app.get("trust proxy fn")); o IP do upgrade é calculado com a
+// MESMA regra das rotas HTTP. Sem ela, não confia em nenhum proxy.
+const attachRealtime = (server, { session, trustProxy = proxyaddr.compile([]), ...options } = {}) => {
   const limits = { ...DEFAULT_LIMITS, ...options };
   const registry = new ConnectionRegistry();
   const handlers = createHandlers(registry);
@@ -65,6 +70,9 @@ const attachRealtime = (server, { session, ...options } = {}) => {
     try {
       const { pathname } = new URL(req.url, "http://localhost");
       if (pathname !== PROTOCOL_PATH) return rejectUpgrade(socket, 404, "Não encontrado");
+      if (!registry.takeUpgradeToken(proxyaddr(req, trustProxy), limits.upgradeBurst, limits.upgradeRefillPerSec)) {
+        return rejectUpgrade(socket, 429, "Tentativas de conexão demais; aguarde");
+      }
       if (!isAllowedOrigin(req.headers.origin)) return rejectUpgrade(socket, 403, "Origem não permitida");
 
       // Um logout que aconteça enquanto a sessão é lida (await abaixo) não
@@ -160,6 +168,7 @@ const attachRealtime = (server, { session, ...options } = {}) => {
       conn.alive = false;
       conn.socket.ping();
     }
+    registry.sweepUpgradeBuckets();
     if (revalidating) return;
     revalidating = true;
     revalidateSessions()
