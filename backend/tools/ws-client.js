@@ -8,9 +8,10 @@
 // Uso (a partir de backend/):
 //   CHAT_PASSWORD=... node tools/ws-client.js --email alice@example.com --room 1 \
 //     [--server http://localhost:8000] [--origin http://localhost:3000]
-// Sem CHAT_PASSWORD, a senha é pedida no terminal (sem eco). Envio sem
-// MSG_ACK em --ack-timeout-ms (padrão 10000) é avisado como não confirmado. Ela nunca é
+// Sem CHAT_PASSWORD, a senha é pedida no terminal (sem eco). Ela nunca é
 // aceita como argumento: argumentos ficam visíveis no `ps` e no histórico.
+// Envio sem MSG_ACK em --ack-timeout-ms (padrão 10000) é avisado como não
+// confirmado.
 //
 // Útil para a demonstração e para as capturas no Wireshark (hoje sem TLS:
 // todo o tráfego, inclusive o body, aparece em claro).

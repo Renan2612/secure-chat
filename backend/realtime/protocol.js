@@ -91,6 +91,5 @@ module.exports = {
   MAX_BODY_BYTES,
   CLOSE,
   ERRORS,
-  INT_MAX,
   clientPacket,
 };

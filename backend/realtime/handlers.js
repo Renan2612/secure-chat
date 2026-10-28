@@ -95,4 +95,4 @@ const createHandlers = (registry) => {
   };
 };
 
-module.exports = { createHandlers, isMember };
+module.exports = { createHandlers };

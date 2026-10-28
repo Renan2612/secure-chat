@@ -52,7 +52,7 @@ class Connection {
   }
 
   close(code, reason) {
-    if (this.socket.readyState === WebSocket.OPEN) this.socket.close(code, reason);
+    if (this.isOpen()) this.socket.close(code, reason);
   }
 
   // Token bucket: repõe fichas pelo tempo decorrido e tenta gastar uma.
