@@ -12,18 +12,19 @@ saneado de [asafebxd/MessageWebApp](https://github.com/asafebxd/MessageWebApp)
 - [x] **Etapa 0** — Modelo de ameaças ([`docs/00-modelo-ameacas.md`](docs/00-modelo-ameacas.md))
 - [x] **Etapa 1** — Saneamento do projeto base ([`docs/01-baseline-seguranca.md`](docs/01-baseline-seguranca.md))
 - [x] **Etapa 2** — Autenticação e autorização ([`docs/02-autenticacao-autorizacao.md`](docs/02-autenticacao-autorizacao.md))
-- [ ] Etapa 3 — Camada de comunicação (protocolo / socket autenticado)
+- [x] **Etapa 3** — Camada de comunicação: protocolo próprio sobre WebSocket ([`docs/03-protocolo.md`](docs/03-protocolo.md))
 - [ ] Etapa 4 — Criptografia ponta a ponta (E2EE) + TLS
 - [ ] Etapa 5 — Privacidade adicional
 - [ ] Etapa 6 — Infraestrutura e validação
 - [ ] Etapa 7 — Entrega
 
-> **Importante**: a Etapa 2 fechou a API HTTP (sessão no servidor,
-> autenticação e autorização por sala, convite com chave), mas o
-> **Socket.IO continua sem autenticação e com broadcast global** — quem
-> conecta no socket ainda recebe as mensagens de todas as salas. Isso é a
-> Etapa 3 e está registrado em
-> [`docs/01-baseline-seguranca.md`](docs/01-baseline-seguranca.md).
+> **Importante**: a Etapa 3 trocou o Socket.IO por um protocolo próprio
+> sobre WebSocket em `/ws`, autenticado pela mesma sessão da API e com
+> entrega só aos membros de cada sala. **Ainda não há TLS nem criptografia
+> ponta a ponta**: senha, cookie e mensagens trafegam e ficam no banco em
+> claro (Etapa 4). O `POST /messages` foi removido; o envio é só pelo
+> WebSocket (contrato para o frontend em
+> [`docs/03-protocolo.md`](docs/03-protocolo.md) §10).
 
 ## Estrutura
 
@@ -32,17 +33,21 @@ secure-chat/
 ├── docs/
 │   ├── 00-modelo-ameacas.md          # Etapa 0
 │   ├── 01-baseline-seguranca.md      # Etapa 1 — registro antes/depois
-│   └── 02-autenticacao-autorizacao.md # Etapa 2
+│   ├── 02-autenticacao-autorizacao.md # Etapa 2
+│   └── 03-protocolo.md           # Etapa 3 — especificação do protocolo
 ├── backend/
-│   ├── server.js                  # HTTP + Socket.IO
+│   ├── server.js                  # ponto de entrada (sobe o createServer)
+│   ├── createServer.js            # HTTP (Express) + tempo real (/ws), mesma sessão
 │   ├── app.js                     # montagem do Express (rotas, middlewares)
+│   ├── realtime/                  # protocolo sobre WebSocket: upgrade, conexão, pacotes, salas
 │   ├── db.js                      # pool único de conexão ao Postgres
 │   ├── config/session.js          # sessão no servidor (express-session + Postgres)
 │   ├── middleware/                # requireAuth, requireRoomMember, validate, errorHandler
 │   ├── validation/schemas.js      # schemas zod de cada rota
 │   ├── routes/
 │   ├── helpers/
-│   ├── tests/                     # testes de ataque (jest + supertest)
+│   ├── tests/                     # testes de ataque (jest + supertest + ws)
+│   ├── tools/ws-client.js         # cliente de referência do protocolo (CLI)
 │   ├── database/
 │   │   ├── migrations.sql
 │   │   └── seeds.sql
@@ -55,7 +60,8 @@ secure-chat/
 ```
 
 O frontend React do projeto original ainda não foi incorporado nem
-auditado — é o próximo passo antes da Etapa 3.
+auditado; ao incorporá-lo, ele precisa seguir o contrato da
+[Etapa 3](docs/03-protocolo.md#10-mudanças-de-contrato-para-o-frontend).
 
 ## Como rodar
 
@@ -68,7 +74,15 @@ cp backend/.env.example backend/.env
 docker compose up --build
 ```
 
-O backend sobe em `http://localhost:8000` (`GET /health` responde `{"status":"ok"}`).
+O backend sobe em `http://localhost:8000` (`GET /health` responde `{"status":"ok"}`);
+o canal em tempo real fica em `ws://localhost:8000/ws`.
+
+Para testar o chat pelo terminal (a partir de `backend/`, com usuário e
+sala já criados):
+
+```bash
+CHAT_PASSWORD='sua-senha' node tools/ws-client.js --email voce@example.com --room 1
+```
 
 > Vindo da Etapa 1? O schema mudou (tabela de sessões, e-mail único) e o
 > script de init só roda num volume vazio: recrie com
@@ -91,8 +105,8 @@ npm run dev
 
 ## Testes
 
-Testes de ataque automatizados (jest + supertest) contra um Postgres de
-teste separado:
+Testes de ataque automatizados (jest + supertest, e WebSocket real para o
+protocolo) contra um Postgres de teste separado:
 
 ```bash
 docker compose -f docker-compose.test.yml up -d --wait
@@ -111,3 +125,4 @@ conforme o modelo de ameaças e o roteiro de etapas da disciplina.
 - [Modelo de ameaças](docs/00-modelo-ameacas.md)
 - [Linha de base de segurança (antes/depois)](docs/01-baseline-seguranca.md)
 - [Autenticação e autorização (Etapa 2)](docs/02-autenticacao-autorizacao.md)
+- [Protocolo de tempo real (Etapa 3)](docs/03-protocolo.md)
