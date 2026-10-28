@@ -21,6 +21,11 @@ beforeEach(async () => {
 
 afterAll(() => pool.end());
 
+// Corpo de publicação com compromisso válido do signatário (para que os
+// testes de autorização cheguem à checagem que pretendem testar).
+const commitFor = (signer, roomId, version, roomKey) =>
+  e2ee.commitRoomKey({ roomId, version, roomKey, creatorEcdsaKey: signer.identity.ecdsa.privateKey });
+
 const wrapsOf = async (userId) =>
   (await pool.query("SELECT room, version, sender_id FROM room_key_wraps WHERE recipient_id = $1", [userId])).rows;
 
@@ -42,7 +47,8 @@ describe("criação da sala e versão 1", () => {
   test("ataque: publicar a versão 1 de novo (substituir a chave) → 409", async () => {
     const evilKey = await e2ee.generateRoomKey();
     const wrap = await wrapFor(alice, { roomId: room.roomId, roomKey: evilKey, recipientId: alice.id, recipientEcdhPub: alice.pub.ecdhPub });
-    expect((await alice.call("post", `/rooms/${room.roomId}/keys`).send({ version: 1, wrap })).status).toBe(409);
+    const c = await commitFor(alice, room.roomId, 1, evilKey);
+    expect((await alice.call("post", `/rooms/${room.roomId}/keys`).send({ version: 1, wrap, ...c })).status).toBe(409);
   });
 
   test("ataque: membro que não é o criador não publica a versão 1 de uma sala nova", async () => {
@@ -50,19 +56,22 @@ describe("criação da sala e versão 1", () => {
     await join(bob, { roomId: created.body.id, inviteKey: created.body.key });
     const roomKey = await e2ee.generateRoomKey();
     const wrap = await wrapFor(bob, { roomId: created.body.id, roomKey, recipientId: bob.id, recipientEcdhPub: bob.pub.ecdhPub });
-    expect((await bob.call("post", `/rooms/${created.body.id}/keys`).send({ version: 1, wrap })).status).toBe(403);
+    const c = await commitFor(bob, created.body.id, 1, roomKey);
+    expect((await bob.call("post", `/rooms/${created.body.id}/keys`).send({ version: 1, wrap, ...c })).status).toBe(403);
   });
 
   test("ataque: não-membro não publica chave de sala alheia", async () => {
     const created = await alice.call("post", "/createRoom").send({ name: "Outra" });
     const wrap = await wrapFor(carol, { roomId: created.body.id, roomKey: room.roomKey, recipientId: carol.id, recipientEcdhPub: carol.pub.ecdhPub });
-    expect((await carol.call("post", `/rooms/${created.body.id}/keys`).send({ version: 1, wrap })).status).toBe(403);
+    const c = await commitFor(carol, created.body.id, 1, room.roomKey);
+    expect((await carol.call("post", `/rooms/${created.body.id}/keys`).send({ version: 1, wrap, ...c })).status).toBe(403);
   });
 
   test("versão diferente da atual (2) → 409", async () => {
     const created = await alice.call("post", "/createRoom").send({ name: "Outra" });
     const wrap = await wrapFor(alice, { roomId: created.body.id, version: 2, roomKey: room.roomKey, recipientId: alice.id, recipientEcdhPub: alice.pub.ecdhPub });
-    expect((await alice.call("post", `/rooms/${created.body.id}/keys`).send({ version: 2, wrap })).status).toBe(409);
+    const c = await commitFor(alice, created.body.id, 2, room.roomKey);
+    expect((await alice.call("post", `/rooms/${created.body.id}/keys`).send({ version: 2, wrap, ...c })).status).toBe(409);
   });
 });
 
@@ -76,7 +85,7 @@ describe("GET /rooms/:id/keys (os próprios wraps)", () => {
     await join(bob, room);
     const res = await bob.call("get", `/rooms/${room.roomId}/keys`);
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ room: room.roomId, currentVersion: 1, wraps: [] });
+    expect(res.body).toEqual({ room: room.roomId, currentVersion: 1, versions: [expect.objectContaining({ version: 1, createdBy: alice.id })], wraps: [] });
   });
 });
 
@@ -251,5 +260,64 @@ describe("wrap para a chave ANTIGA do destinatário (corrida com o reset)", () =
       bob.keyEpoch = (await pool.query("SELECT key_epoch FROM user_keys WHERE user_id = $1", [bob.id])).rows[0].key_epoch;
       await pool.query("DELETE FROM room_key_wraps WHERE recipient_id = $1", [bob.id]);
     }
+  });
+});
+
+describe("compromisso da chave: wrap com chave falsa é detectado e pode ser descartado", () => {
+  beforeEach(async () => {
+    await join(carol, room);
+    await grant(alice, room, carol);
+    await join(bob, room);
+  });
+
+  // Carol (membro com a chave) "ocupa" o wrap do Bob com uma chave que ela
+  // escolheu, assinada por ela mesma: a assinatura do wrap confere.
+  const squat = async () => {
+    const evilKey = await e2ee.generateRoomKey();
+    const evil = await wrapFor(carol, { roomId: room.roomId, roomKey: evilKey, recipientId: bob.id, recipientEcdhPub: bob.pub.ecdhPub });
+    const res = await carol
+      .call("post", `/rooms/${room.roomId}/keys/wraps`)
+      .send({ version: 1, recipientId: bob.id, recipientKeyEpoch: bob.keyEpoch, wrap: evil });
+    expect(res.status).toBe(201);
+  };
+
+  test("ataque: o cliente do Bob recusa a chave falsa (não confere com o compromisso do criador)", async () => {
+    await squat();
+    await expect(fetchRoomKey(bob, room.roomId)).rejects.toMatchObject({ code: "KEY_COMMITMENT_MISMATCH" });
+  });
+
+  test("Bob descarta o próprio wrap, volta a ser pendente e recebe a chave certa", async () => {
+    await squat();
+    expect((await bob.call("delete", `/rooms/${room.roomId}/keys/wraps/mine`)).status).toBe(204);
+    expect((await alice.call("get", `/rooms/${room.roomId}/keys/pending`)).body.pending.map((p) => p.userId)).toEqual([bob.id]);
+    expect((await grant(alice, room, bob)).status).toBe(201);
+    const key = await fetchRoomKey(bob, room.roomId);
+    expect(await e2ee.primitives.exportRaw(key)).toEqual(await e2ee.primitives.exportRaw(room.roomKey));
+  });
+
+  test("ataque (servidor malicioso): trocar o compromisso no banco faz a chave certa ser recusada (assinatura do criador)", async () => {
+    await grant(alice, room, bob);
+    const other = await e2ee.commitRoomKey({ roomId: room.roomId, version: 1, roomKey: await e2ee.generateRoomKey(), creatorEcdsaKey: carol.identity.ecdsa.privateKey });
+    await pool.query("UPDATE room_key_versions SET commitment = $1 WHERE room = $2", [other.commitment, room.roomId]);
+    await expect(fetchRoomKey(bob, room.roomId)).rejects.toMatchObject({ code: "KEY_COMMITMENT_MISMATCH" });
+  });
+
+  test("GET /rooms/:id/keys devolve o compromisso e o criador de cada versão", async () => {
+    const res = await bob.call("get", `/rooms/${room.roomId}/keys`);
+    expect(res.body.versions).toEqual([
+      { version: 1, createdBy: alice.id, commitment: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/), commitmentSig: expect.stringMatching(/^[A-Za-z0-9_-]{86}$/) },
+    ]);
+  });
+
+  test("descartar sem ter wrap → 404; não-membro → 403", async () => {
+    expect((await bob.call("delete", `/rooms/${room.roomId}/keys/wraps/mine`)).status).toBe(404);
+    const dave = await registerKeys(asAgent(await createUser("dave")));
+    expect((await dave.call("delete", `/rooms/${room.roomId}/keys/wraps/mine`)).status).toBe(403);
+  });
+
+  test("publicar a versão sem compromisso → 400", async () => {
+    const created = await alice.call("post", "/createRoom").send({ name: "Sem compromisso" });
+    const wrap = await wrapFor(alice, { roomId: created.body.id, roomKey: room.roomKey, recipientId: alice.id, recipientEcdhPub: alice.pub.ecdhPub });
+    expect((await alice.call("post", `/rooms/${created.body.id}/keys`).send({ version: 1, wrap })).status).toBe(400);
   });
 });

@@ -63,7 +63,10 @@ const schemas = {
   },
   roomUsers: { params: z.object({ room: idParam }) },
   putKeys: { body: publicKeys },
-  publishRoomKey: { params: z.object({ id: idParam }), body: z.object({ version: keyVersion, wrap }) },
+  publishRoomKey: {
+    params: z.object({ id: idParam }),
+    body: z.object({ version: keyVersion, wrap, commitment: b64urlBytes(32), commitmentSig: b64urlBytes(64) }),
+  },
   roomKeys: { params: z.object({ id: idParam }) },
   postWrap: {
     params: z.object({ id: idParam }),

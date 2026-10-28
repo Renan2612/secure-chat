@@ -319,3 +319,48 @@ describe("mensagens: envelope cifrado e assinado", () => {
     expect(() => e2ee.parseEnvelope(body)).toThrow(e2ee.E2eeError);
   });
 });
+
+describe("compromisso da chave da sala (contra wrap com chave falsa)", () => {
+  let creator;
+  let mallory;
+  let roomKey;
+  let evilKey;
+  const ctx = { roomId: 7, version: 1 };
+
+  beforeAll(async () => {
+    creator = await e2ee.generateIdentity();
+    creator.pub = await e2ee.exportPublicKeys(creator);
+    mallory = await e2ee.generateIdentity();
+    roomKey = await e2ee.generateRoomKey();
+    evilKey = await e2ee.generateRoomKey();
+  });
+
+  const commit = (signer = creator) => e2ee.commitRoomKey({ ...ctx, roomKey, creatorEcdsaKey: signer.ecdsa.privateKey });
+  const verify = (c, overrides = {}) =>
+    e2ee.verifyRoomKeyCommitment({ ...ctx, roomKey, ...c, creatorEcdsaPub: creator.pub.ecdsaPub, ...overrides });
+
+  test("a chave certa confere com o compromisso assinado pelo criador", async () => {
+    const c = await commit();
+    expect(c.commitment).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(c.commitmentSig).toMatch(/^[A-Za-z0-9_-]{86}$/);
+    await expect(verify(c)).resolves.toBeUndefined();
+  });
+
+  test("ataque: outra chave (wrap falso de um membro) não confere", async () => {
+    await expect(verify(await commit(), { roomKey: evilKey })).rejects.toMatchObject({ code: "KEY_COMMITMENT_MISMATCH" });
+  });
+
+  test("ataque: compromisso assinado por outro que não o criador não confere", async () => {
+    await expect(verify(await commit(mallory))).rejects.toMatchObject({ code: "KEY_COMMITMENT_MISMATCH" });
+  });
+
+  test("ataque: servidor troca o compromisso pelo de outra chave → assinatura não confere", async () => {
+    const c = await commit();
+    const other = await e2ee.commitRoomKey({ ...ctx, roomKey: evilKey, creatorEcdsaKey: mallory.ecdsa.privateKey });
+    await expect(verify({ ...c, commitment: other.commitment }, { roomKey: evilKey })).rejects.toMatchObject({ code: "KEY_COMMITMENT_MISMATCH" });
+  });
+
+  test.each([["roomId", { roomId: 8 }], ["version", { version: 2 }]])("compromisso de outro contexto (%s) não confere", async (_l, o) => {
+    await expect(verify(await commit(), o)).rejects.toMatchObject({ code: "KEY_COMMITMENT_MISMATCH" });
+  });
+});

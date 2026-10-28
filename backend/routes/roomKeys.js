@@ -6,6 +6,8 @@
 //   publicar a versão 1  → criador da sala, membro, com chaves registradas
 //   ler os próprios wraps → membro
 //   ver pendentes        → membro que JÁ TEM o wrap da versão atual
+//   descartar o próprio  → membro com wrap da versão atual (ex.: a chave não
+//                          conferiu com o compromisso do criador)
 //   publicar um wrap     → remetente membro com o wrap da versão atual;
 //                          destinatário membro, com o key_epoch informado;
 //                          um wrap por (sala, versão, destinatário)
@@ -31,7 +33,7 @@ const wrapRow = (w) => ({ version: w.version, senderId: w.sender_id, ephPub: w.e
 const publishRoomKey = async (req, res, next) => {
   const roomId = req.params.id;
   const me = req.session.userId;
-  const { version, wrap } = req.body;
+  const { version, wrap, commitment, commitmentSig } = req.body;
   try {
     const room = await roomState(roomId, me);
     // Sala inexistente, alheia ou de outro criador: o mesmo 403.
@@ -43,9 +45,9 @@ const publishRoomKey = async (req, res, next) => {
       // FOR SHARE: um POST /keys/reset concorrente espera esta transação.
       const { rows: mine } = await client.query("SELECT key_epoch FROM user_keys WHERE user_id = $1 FOR SHARE", [me]);
       const inserted = await client.query(
-        `INSERT INTO room_key_versions (room, version, created_by) VALUES ($1, $2, $3)
+        `INSERT INTO room_key_versions (room, version, created_by, commitment, commitment_sig) VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT DO NOTHING RETURNING version`,
-        [roomId, version, me]
+        [roomId, version, me, commitment, commitmentSig]
       );
       if (inserted.rowCount === 0) return false;
       await client.query(
@@ -75,7 +77,21 @@ const getMyWraps = async (req, res, next) => {
        WHERE w.room = $1 AND w.recipient_id = $2 ORDER BY w.version`,
       [roomId, req.session.userId]
     );
-    return res.status(200).json({ room: roomId, currentVersion: room.key_version, wraps: rows.map(wrapRow) });
+    const versions = await pool.query(
+      "SELECT version, created_by, commitment, commitment_sig FROM room_key_versions WHERE room = $1 ORDER BY version",
+      [roomId]
+    );
+    return res.status(200).json({
+      room: roomId,
+      currentVersion: room.key_version,
+      versions: versions.rows.map((v) => ({
+        version: v.version,
+        createdBy: v.created_by,
+        commitment: v.commitment,
+        commitmentSig: v.commitment_sig,
+      })),
+      wraps: rows.map(wrapRow),
+    });
   } catch (err) {
     return next(err);
   }
@@ -153,4 +169,25 @@ const postWrap = async (req, res, next) => {
   }
 };
 
-module.exports = { publishRoomKey, getMyWraps, getPending, postWrap };
+// O destinatário descarta o PRÓPRIO wrap da versão atual (a chave não
+// conferiu com o compromisso: um membro lhe entregou uma chave falsa) e
+// volta a ser pendente; quem tem a chave é avisado (KEY_PENDING).
+const discardMyWrap = async (req, res, next) => {
+  const roomId = req.params.id;
+  const me = req.session.userId;
+  try {
+    const room = await roomState(roomId, me);
+    if (!room?.member) return res.status(403).json(FORBIDDEN);
+    const deleted = await pool.query(
+      "DELETE FROM room_key_wraps WHERE room = $1 AND version = $2 AND recipient_id = $3",
+      [roomId, room.key_version, me]
+    );
+    if (deleted.rowCount === 0) return res.status(404).json({ message: "Não encontrado" });
+    req.app.locals.notify.keyPending(roomId);
+    return res.status(204).send();
+  } catch (err) {
+    return next(err);
+  }
+};
+
+module.exports = { publishRoomKey, getMyWraps, getPending, postWrap, discardMyWrap };

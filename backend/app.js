@@ -17,7 +17,7 @@ const {
 } = require("./routes/rooms");
 const { getMessages, updateLastRead } = require("./routes/messages");
 const { putKeys, resetKeys, getKeys } = require("./routes/keys");
-const { publishRoomKey, getMyWraps, getPending, postWrap } = require("./routes/roomKeys");
+const { publishRoomKey, getMyWraps, getPending, postWrap, discardMyWrap } = require("./routes/roomKeys");
 const requireAuth = require("./middleware/requireAuth");
 const requireRoomMember = require("./middleware/requireRoomMember");
 const validate = require("./middleware/validate");
@@ -161,6 +161,7 @@ const createApp = ({
   app.get("/rooms/:id/keys", validate(schemas.roomKeys), getMyWraps);
   app.get("/rooms/:id/keys/pending", validate(schemas.roomKeys), getPending);
   app.post("/rooms/:id/keys/wraps", validate(schemas.postWrap), postWrap);
+  app.delete("/rooms/:id/keys/wraps/mine", validate(schemas.roomKeys), discardMyWrap);
 
   // As rotas de debug /session, /sessionRoom e /session (POST) foram REMOVIDAS.
   // A rota POST /session permitia que qualquer cliente definisse req.session.userId

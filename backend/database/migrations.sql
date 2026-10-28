@@ -74,6 +74,11 @@ CREATE TABLE IF NOT EXISTS room_key_versions (
    room INTEGER NOT NULL REFERENCES rooms (id),
    version INTEGER NOT NULL CHECK (version >= 1),
    created_by INTEGER NOT NULL REFERENCES users (id),
+   -- Compromisso da chave (SHA-256 em base64url, 43 caracteres) e a
+   -- assinatura ECDSA do criador sobre ele: o cliente confere a chave que
+   -- desembrulhou contra isto (shared/e2ee/roomKeys.js).
+   commitment CHAR(43) NOT NULL CHECK (commitment ~ '^[A-Za-z0-9_-]{43}$'),
+   commitment_sig CHAR(86) NOT NULL CHECK (commitment_sig ~ '^[A-Za-z0-9_-]{86}$'),
    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
    PRIMARY KEY (room, version)
 );

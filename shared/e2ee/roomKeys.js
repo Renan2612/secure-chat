@@ -8,13 +8,21 @@
 //   wrapped = AES-256-GCM(KEK, iv, chave crua, AAD = [rótulo, roomId, versão, R, S])
 //   sig  = ECDSA(S.ecdsaPriv, [rótulo-sig, roomId, versão, R, S, E.pub, iv, wrapped])
 // O servidor guarda o wrap, mas sem a privada ECDH de R não deriva a KEK.
+//
+// Compromisso da chave (contra um MEMBRO que entregue a um novato um wrap
+// válido, assinado por ele, mas com OUTRA chave): o criador publica com a
+// versão  commitment = SHA-256(["secure-chat/v1/key-commitment", sala, versão] || chave)
+// e o assina. Quem abre um wrap confere a chave obtida contra o compromisso
+// (com a chave FIXADA do criador) antes de usá-la.
 const p = require("./primitives");
-const { toB64url, fromB64url, canonical } = require("./encoding");
+const { toB64url, fromB64url, concat, canonical } = require("./encoding");
 const { importAgreementKey, importVerifyKey } = require("./identity");
 const { E2eeError } = require("./errors");
 
 const WRAP_LABEL = "secure-chat/v1/wrap";
 const WRAP_SIG_LABEL = "secure-chat/v1/wrap-sig";
+const COMMIT_LABEL = "secure-chat/v1/key-commitment";
+const COMMIT_SIG_LABEL = "secure-chat/v1/key-commitment-sig";
 const ROOM_KEY_BYTES = 32;
 const IV_BYTES = 12;
 const SIG_BYTES = 64;
@@ -76,4 +84,38 @@ const unwrapRoomKey = async ({ wrap, roomId, version, senderId, recipientId, rec
   }
 };
 
-module.exports = { generateRoomKey, wrapRoomKey, unwrapRoomKey, WRAP: { IV_BYTES, SIG_BYTES, WRAPPED_BYTES } };
+const commitmentOf = async (roomKey, roomId, version) =>
+  toB64url(await p.sha256(concat(canonical([COMMIT_LABEL, roomId, version]), await p.exportRaw(roomKey))));
+
+const commitRoomKey = async ({ roomKey, roomId, version, creatorEcdsaKey }) => {
+  const commitment = await commitmentOf(roomKey, roomId, version);
+  const sig = await p.ecdsaSign(creatorEcdsaKey, canonical([COMMIT_SIG_LABEL, roomId, version, commitment]));
+  return { commitment, commitmentSig: toB64url(sig) };
+};
+
+// Falha (KEY_COMMITMENT_MISMATCH) se a assinatura não for do criador ou se a
+// chave não for a comprometida. Não distingue os dois casos.
+const verifyRoomKeyCommitment = async ({ roomKey, roomId, version, commitment, commitmentSig, creatorEcdsaPub }) => {
+  const mismatch = () => new E2eeError("KEY_COMMITMENT_MISMATCH", "a chave da sala não confere com o compromisso do criador");
+  const verifyKey = await importVerifyKey(creatorEcdsaPub);
+  let ok;
+  try {
+    const sig = fromB64url(commitmentSig);
+    ok =
+      sig.length === SIG_BYTES &&
+      (await p.ecdsaVerify(verifyKey, sig, canonical([COMMIT_SIG_LABEL, roomId, version, commitment]))) &&
+      (await commitmentOf(roomKey, roomId, version)) === commitment;
+  } catch {
+    ok = false;
+  }
+  if (!ok) throw mismatch();
+};
+
+module.exports = {
+  generateRoomKey,
+  wrapRoomKey,
+  unwrapRoomKey,
+  commitRoomKey,
+  verifyRoomKeyCommitment,
+  WRAP: { IV_BYTES, SIG_BYTES, WRAPPED_BYTES },
+};

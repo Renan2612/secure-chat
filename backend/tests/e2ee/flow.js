@@ -34,7 +34,8 @@ const createKeyedRoom = async (owner, name = "Sala cifrada") => {
   const roomId = created.body.id;
   const roomKey = await e2ee.generateRoomKey();
   const wrap = await wrapFor(owner, { roomId, roomKey, recipientId: owner.id, recipientEcdhPub: owner.pub.ecdhPub });
-  const published = await owner.call("post", `/rooms/${roomId}/keys`).send({ version: 1, wrap });
+  const commitment = await e2ee.commitRoomKey({ roomId, version: 1, roomKey, creatorEcdsaKey: owner.identity.ecdsa.privateKey });
+  const published = await owner.call("post", `/rooms/${roomId}/keys`).send({ version: 1, wrap, ...commitment });
   if (published.status !== 201) throw new Error(`POST /rooms/${roomId}/keys: ${published.status} ${JSON.stringify(published.body)}`);
   return { roomId, inviteKey: created.body.key, roomKey };
 };
@@ -58,13 +59,14 @@ const grant = async (sender, room, recipient) => {
 };
 
 // Busca os próprios wraps e abre o da versão atual, conferindo a assinatura
-// com a chave pública ECDSA do remetente (obtida do diretório).
+// com a chave pública ECDSA do remetente e, depois de abrir, o compromisso
+// da chave assinado pelo criador da versão (chaves obtidas do diretório).
 const fetchRoomKey = async (user, roomId) => {
   const res = await user.call("get", `/rooms/${roomId}/keys`);
   if (res.status !== 200) throw new Error(`GET /rooms/${roomId}/keys: ${res.status}`);
   const wrap = res.body.wraps.find((w) => w.version === res.body.currentVersion);
   const sender = await user.call("get", `/keys/${wrap.senderId}`);
-  return e2ee.unwrapRoomKey({
+  const roomKey = await e2ee.unwrapRoomKey({
     wrap,
     roomId,
     version: wrap.version,
@@ -73,6 +75,17 @@ const fetchRoomKey = async (user, roomId) => {
     recipientEcdhKey: user.identity.ecdh.privateKey,
     senderEcdsaPub: sender.body.ecdsaPub,
   });
+  const info = res.body.versions.find((v) => v.version === wrap.version);
+  const creator = await user.call("get", `/keys/${info.createdBy}`);
+  await e2ee.verifyRoomKeyCommitment({
+    roomKey,
+    roomId,
+    version: wrap.version,
+    commitment: info.commitment,
+    commitmentSig: info.commitmentSig,
+    creatorEcdsaPub: creator.body.ecdsaPub,
+  });
+  return roomKey;
 };
 
 module.exports = { asAgent, asCookie, registerKeys, wrapFor, createKeyedRoom, join, grant, fetchRoomKey };
