@@ -1,6 +1,6 @@
 // Ponta a ponta com DOIS processos do ws-client (opt-in: E2E=1, ou
-// `npm run test:e2e`). Alice cria a sala; Bob entra com o convite; o
-// cliente da Alice entrega a chave sozinho; os dois trocam mensagens
+// `npm run test:e2e`). Alice cria a sala; Bob entra com o convite; Alice o
+// aprova (/approve) e o cliente dela entrega a chave; os dois trocam mensagens
 // cifradas e cada um decifra a do outro. O banco nunca vê o texto.
 const path = require("path");
 const { spawn } = require("child_process");
@@ -57,6 +57,9 @@ maybe("e2e: dois clientes de referência", () => {
     const a = start(alice.email, ["--create-room", "Sala e2e"]);
     const [, id, invite] = await waitUntil(() => a.stdout.match(/sala criada: id (\d+); convite: ([0-9a-f]+)/), "sala criada");
     const b = start(bob.email, ["--room", id, "--join", invite]);
+    // Quem decide quem é membro é o servidor: Alice aprova o Bob explicitamente.
+    await waitUntil(() => a.stdout.includes(`/approve ${bob.id}`), "Alice vê o Bob aguardando a chave");
+    a.child.stdin.write(`/approve ${bob.id}\n`);
     await waitUntil(() => /chave da sala \d+ disponível/.test(b.stdout), "Bob recebe a chave");
 
     const fromAlice = `ALICE-${Date.now()}`;

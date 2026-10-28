@@ -21,8 +21,10 @@
 // dentro de um repositório git), --reset-keys (substitui as chaves públicas
 // no servidor pelas deste keystore).
 // Comandos (linhas que começam com /): /members, /safety <id>, /trust <id>,
-// /keys. O /trust só confirma a chave cujo número de segurança o /safety
-// mostrou.
+// /approve <id>, /keys. O /trust só confirma a chave cujo número de
+// segurança o /safety mostrou. A chave da sala só é entregue sozinha a
+// membros VERIFICADOS; os demais precisam de /approve (quem decide quem é
+// membro é o servidor).
 //
 // A verificação do certificado NUNCA é desligada (não existe --insecure), e
 // com --server https:// o WebSocket só pode ser wss:// (o cookie de sessão
@@ -41,7 +43,7 @@ const tls = require("tls");
 const WebSocket = require("ws");
 const e2ee = require("../../shared/e2ee");
 const { defaultKeystorePath } = require("../../shared/e2ee/node");
-const { E2eeSession } = require("./e2ee-session");
+const { E2eeSession, clean } = require("./e2ee-session");
 
 const PROTOCOL_VERSION = 1;
 // Erros de certificado comuns quando a CA local não está configurada.
@@ -277,7 +279,7 @@ const main = async () => {
     await logout(args, cookie); // a sessão já existe: não largá-la viva
     fail("resposta inválida do login");
   }
-  print(`logado como ${user.name} (usuário ${user.id})`);
+  print(`logado como ${clean(user.name)} (usuário ${clean(user.id)})`);
 
   const session = new E2eeSession({
     api: apiFor(args, cookie),
@@ -381,12 +383,12 @@ const main = async () => {
         print(`membros da sala ${room}:`);
         for (const member of res.body) {
           if (member.id === user.id) {
-            print(`  ${member.id} ${member.name} ${(await e2ee.fingerprint(session.pub)).slice(0, 16)} [você]`);
+            print(`  ${member.id} ${clean(member.name)} ${(await e2ee.fingerprint(session.pub)).slice(0, 16)} [você]`);
             continue;
           }
           const status = await session.observe(member.id);
           const fp = session.trust.peers[member.id]?.fingerprint ?? "sem chave pública";
-          print(`  ${member.id} ${member.name} ${status === null ? fp : fp.slice(0, 16)} [${session.trustLabel(member.id)}]`);
+          print(`  ${member.id} ${clean(member.name)} ${status === null ? fp : fp.slice(0, 16)} [${session.trustLabel(member.id)}]`);
         }
         return undefined;
       }
@@ -408,8 +410,16 @@ const main = async () => {
         print(`usuário ${userId} marcado como verificado`);
         return session.distribute(room); // pode ter ficado sem chave por causa da mudança
       }
+      case "/approve": {
+        if (!Number.isInteger(userId) || userId <= 0) return print("uso: /approve <userId>");
+        try {
+          return await session.approve(room, userId);
+        } catch (err) {
+          return print(`! ${err.message}`);
+        }
+      }
       default:
-        return print("comandos: /members, /safety <userId>, /trust <userId>, /keys");
+        return print("comandos: /members, /safety <userId>, /trust <userId>, /approve <userId>, /keys");
     }
   };
 
@@ -442,8 +452,10 @@ const main = async () => {
   };
 
   const announceKey = async () => {
-    if (await session.ensureRoomKey(room)) {
-      print(`chave da sala ${room} disponível (v${session.currentVersion.get(room)})`);
+    const got = await session.ensureRoomKey(room);
+    if (got.ok) {
+      const from = got.sender === undefined || got.sender === user.id ? "" : `; entregue por usuário ${got.sender} [${session.trustLabel(got.sender)}]`;
+      print(`chave da sala ${room} disponível (v${session.currentVersion.get(room)}${from})`);
       await session.distribute(room);
     } else {
       print(`sem a chave da sala ${room}: aguardando um membro entregá-la`);
@@ -452,10 +464,10 @@ const main = async () => {
 
   const showDelivery = async (packet) => {
     const result = await session.accept(packet);
-    const who = `sala ${packet.room} · usuário ${packet.from}`;
+    const who = `sala ${clean(packet.room)} · usuário ${clean(packet.from)}`;
     switch (result.status) {
       case "ok":
-        return print(`[${packet.ts}] ${who} [${result.verified ? "verificado" : "não verificado"}]: ${result.text}`);
+        return print(`[${clean(packet.ts)}] ${who} [${result.verified ? "verificado" : "não verificado"}]: ${clean(result.text)}`);
       case "duplicate":
         return undefined; // reentrega: já foi mostrada
       case "untrusted":
@@ -463,7 +475,7 @@ const main = async () => {
       case "missing_key":
         return print(`! ${who}: mensagem com a chave v${result.kv}, que este cliente não tem`);
       default:
-        return print(`! ${who}: mensagem inválida descartada (${result.reason ?? "não confere"})`);
+        return print(`! ${who}: mensagem inválida descartada (${clean(result.reason ?? "não confere")})`);
     }
   };
 
@@ -471,7 +483,7 @@ const main = async () => {
   ws.on("error", (err) => abort(`conexão: ${describeError(err)}`));
   ws.on("open", () => send({ type: "HELLO", client: "ws-client.js" }));
   ws.on("close", (code, reason) => {
-    print(`conexão encerrada (${code}${reason.length ? ` ${reason}` : ""})`);
+    print(`conexão encerrada (${code}${reason.length ? ` ${clean(reason)}` : ""})`);
     // Pendentes podem ter sido gravados ou não: reenviar com o mesmo cid
     // seria seguro (idempotente), mas este cliente não guarda os cids.
     if (pending.size > 0) {
@@ -492,7 +504,7 @@ const main = async () => {
     if (!packet || typeof packet !== "object") return print("! quadro inválido recebido do servidor");
     switch (packet.type) {
       case "WELCOME":
-        print(`protocolo v${packet.v}; limites: ${JSON.stringify(packet.limits)}`);
+        print(`protocolo v${clean(packet.v)}; limites: ${clean(JSON.stringify(packet.limits))}`);
         return setup().catch((err) => {
           print(`! ${err.message}`);
           exitCode = 1;
@@ -514,7 +526,7 @@ const main = async () => {
       case "MSG_DELIVER":
         return enqueue(() => showDelivery(packet));
       case "ERROR":
-        print(`! ${packet.code}: ${packet.message}`);
+        print(`! ${clean(packet.code)}: ${clean(packet.message)}`);
         if (packet.ref === "subscribe") {
           exitCode = 1; // sem a inscrição não há o que fazer
           return ws.close(1000);

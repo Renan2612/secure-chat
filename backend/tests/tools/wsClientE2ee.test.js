@@ -9,6 +9,9 @@ const e2ee = require("../../../shared/e2ee");
 const { pool, resetDb, PASSWORD } = require("../helpers");
 const { startServer, loginUser, connect, nextPacket, send, ORIGIN } = require("../ws/helpers");
 const { asCookie, registerKeys, join, fetchRoomKey } = require("../e2ee/flow");
+
+const addMemberIfMissing = (room, userId) =>
+  pool.query("INSERT INTO rooms_users (room, user_id, last_msg_viewed) VALUES ($1, $2, 0) ON CONFLICT DO NOTHING", [room, userId]);
 const { clientSetup, KEY_PASSPHRASE } = require("./clientEnv");
 
 const CLIENT = path.join(__dirname, "..", "..", "tools", "ws-client.js");
@@ -57,14 +60,16 @@ const waitUntil = async (check, label, timeoutMs = 8000) => {
   }
 };
 
-// Alice (ws-client) cria a sala; Bob (teste) entra com o convite e recebe
-// a chave entregue AUTOMATICAMENTE pelo cliente da Alice.
+// Alice (ws-client) cria a sala; Bob (teste) entra com o convite; o cliente
+// da Alice o anuncia e só entrega a chave depois do /approve.
 const roomWithBob = async (setup = clientSetup()) => {
   const out = run(setup, ["--create-room", "Sala E2EE"]);
   const [, id, invite] = await waitUntil(() => out.stdout.match(/sala criada: id (\d+); convite: ([0-9a-f]+)/), "sala criada");
   await waitUntil(() => /inscrito na sala/.test(out.stdout), "inscrição");
   const room = { roomId: Number(id), inviteKey: invite };
   await join(bob, room);
+  await waitUntil(() => out.stdout.includes(`/approve ${bob.id}`), "anúncio do pendente");
+  child.stdin.write(`/approve ${bob.id}\n`);
   await waitUntil(() => /chave da sala entregue a usuário/.test(out.stdout), "entrega da chave");
   room.roomKey = await fetchRoomKey(bob, room.roomId);
   return { out, room, setup };
@@ -225,3 +230,98 @@ test("/keys e /members", async () => {
   child.stdin.end();
   await out.exited;
 }, 30000);
+
+test("ataque (membro fantasma): quem entra NÃO recebe a chave sem aprovação explícita", async () => {
+  const out = run(clientSetup(), ["--create-room", "Sala"]);
+  const [, id, invite] = await waitUntil(() => out.stdout.match(/sala criada: id (\d+); convite: ([0-9a-f]+)/), "sala criada");
+  await waitUntil(() => /inscrito na sala/.test(out.stdout), "inscrição");
+  // O servidor (ou um admin) põe uma conta na sala: o cliente só a ANUNCIA.
+  await join(bob, { roomId: Number(id), inviteKey: invite });
+  await waitUntil(() => out.stdout.includes(`/approve ${bob.id}`), "anúncio");
+  const bobFp = await e2ee.fingerprint(bob.pub);
+  expect(out.stdout).toContain(bobFp.slice(0, 16));
+  await new Promise((r) => setTimeout(r, 500));
+  expect((await pool.query("SELECT 1 FROM room_key_wraps WHERE recipient_id = $1", [bob.id])).rowCount).toBe(0);
+  expect(out.stdout).not.toMatch(/chave da sala entregue/);
+  child.stdin.end();
+  await out.exited;
+}, 30000);
+
+test("/approve de quem não está pendente é recusado; de quem tem CHAVE ALTERADA também", async () => {
+  const { out, room } = await roomWithBob();
+  child.stdin.write("/approve 999999\n");
+  await waitUntil(() => /não está aguardando a chave/.test(out.stdout), "recusa de não pendente");
+  await bobSays(room, "fixa a chave do bob", "b1");
+  await waitUntil(() => out.stdout.includes("fixa a chave do bob"), "pin");
+  bob.identity = await e2ee.generateIdentity();
+  bob.pub = await e2ee.exportPublicKeys(bob.identity);
+  await bob.call("post", "/keys/reset").send(bob.pub);
+  await waitUntil(() => /CHAVE ALTERADA de usuário/.test(out.stdout), "chave alterada");
+  child.stdin.write(`/approve ${bob.id}\n`);
+  await waitUntil(() => /CHAVE ALTERADA: confira/.test(out.stdout), "recusa do /approve");
+  expect((await pool.query("SELECT 1 FROM room_key_wraps WHERE recipient_id = $1", [bob.id])).rowCount).toBe(0);
+  child.stdin.end();
+  await out.exited;
+}, 40000);
+
+test("ataque: sequências de escape do terminal na mensagem aparecem neutralizadas", async () => {
+  const { out, room } = await roomWithBob();
+  await bobSays(room, "oi\u001b[2J\u001b]0;titulo\u0007\rFALSO", "esc");
+  await waitUntil(() => out.stdout.includes("FALSO"), "mensagem");
+  expect(out.stdout).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f]/);
+  expect(out.stdout).toContain("\\u001b[2J");
+  child.stdin.end();
+  await out.exited;
+}, 30000);
+
+test("ataque (servidor malicioso): o criador da sala é fixado; outro 'criador' para a mesma sala é recusado", async () => {
+  // Bob é o ws-client agora; Alice (teste) cria a sala e lhe entrega a chave.
+  const flowAlice = await registerKeys(asCookie(srv, alice));
+  const { createKeyedRoom, grant } = require("../e2ee/flow");
+  const keyed = await createKeyedRoom(flowAlice);
+  const setup = clientSetup();
+  const runBob = (args) => {
+    const httpUrl = srv.wsUrl.replace(/^ws/, "http").replace(/\/ws$/, "");
+    child = spawn(process.execPath, [CLIENT, "--server", httpUrl, "--email", bob.email, "--origin", ORIGIN, ...setup.args, ...args], {
+      env: { ...process.env, CHAT_PASSWORD: PASSWORD, ...setup.env },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const o = { stdout: "" };
+    child.stdout.on("data", (d) => {
+      o.stdout += d;
+    });
+    o.exited = new Promise((r) => child.on("exit", r));
+    return o;
+  };
+  // Bob precisa de um keystore próprio: o do teste (bob.identity) não serve.
+  await pool.query("DELETE FROM user_keys WHERE user_id = $1", [bob.id]);
+  let o = runBob(["--room", String(keyed.roomId), "--join", keyed.inviteKey]);
+  await waitUntil(() => /sem a chave da sala/.test(o.stdout), "sem chave");
+  const bobDir = (await bob.call("get", `/keys/${bob.id}`)).body;
+  bob.pub = { ecdhPub: bobDir.ecdhPub, ecdsaPub: bobDir.ecdsaPub };
+  bob.keyEpoch = bobDir.keyEpoch;
+  expect((await grant(flowAlice, keyed, bob)).status).toBe(201);
+  await waitUntil(() => /chave da sala \d+ disponível/.test(o.stdout), "chave recebida");
+  child.stdin.end();
+  await o.exited;
+
+  // O servidor "troca" o criador da versão 1 pela Carol (que assina um
+  // compromisso e um wrap com outra chave) e o Bob perde a chave local.
+  const carol = await registerKeys(asCookie(srv, await loginUser(srv, "carol")));
+  const evilKey = await e2ee.generateRoomKey();
+  const c = await e2ee.commitRoomKey({ roomId: keyed.roomId, version: 1, roomKey: evilKey, creatorEcdsaKey: carol.identity.ecdsa.privateKey });
+  const w = await e2ee.wrapRoomKey({ roomKey: evilKey, roomId: keyed.roomId, version: 1, senderId: carol.id, recipientId: bob.id, recipientEcdhPub: bob.pub.ecdhPub, senderEcdsaKey: carol.identity.ecdsa.privateKey });
+  await pool.query("UPDATE room_key_versions SET created_by = $1, commitment = $2, commitment_sig = $3 WHERE room = $4", [carol.id, c.commitment, c.commitmentSig, keyed.roomId]);
+  await pool.query("UPDATE room_key_wraps SET sender_id = $1, eph_pub = $2, iv = $3, wrapped = $4, sig = $5 WHERE recipient_id = $6", [carol.id, w.ephPub, w.iv, w.wrapped, w.sig, bob.id]);
+  await addMemberIfMissing(keyed.roomId, carol.id);
+  const files = require("../../../shared/e2ee/node");
+  const data = await files.readSealedFile(setup.keystore, KEY_PASSPHRASE);
+  delete data.roomKeys[keyed.roomId];
+  await files.writeSealedFile(setup.keystore, KEY_PASSPHRASE, data);
+
+  o = runBob(["--room", String(keyed.roomId)]);
+  await waitUntil(() => /criador da sala .* mudou/.test(o.stdout), "recusa do novo criador");
+  expect(o.stdout).not.toMatch(/chave da sala \d+ disponível/);
+  child.stdin.end();
+  await o.exited;
+}, 40000);
