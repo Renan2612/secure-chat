@@ -159,9 +159,153 @@ handshake de fechamento, que pode levar até 30 s).
 
 ## 4. Formato e tipos de pacote
 
+### 4.1 Envelope
+
+- Cada pacote é **um quadro de texto** WebSocket (UTF-8) contendo **um
+  objeto JSON**. Quadros binários são inválidos (`ERROR BAD_REQUEST`).
+- Todo pacote tem o envelope:
+
+  ```json
+  { "v": 1, "type": "TIPO", "id": "opcional", "...": "campos do tipo" }
+  ```
+
+  | Campo | Regra |
+  |---|---|
+  | `v` | **DEVE** ser o número `1` (versão do protocolo). |
+  | `type` | um dos tipos da §4.2, em maiúsculas. |
+  | `id` | opcional, só em pacotes do cliente: string de 1 a 64 caracteres escolhida pelo cliente. É devolvida como **`ref`** no `ERROR` (e no `PONG`) que responde àquele pacote. |
+
+- Os pacotes do cliente são validados com **zod** (`clientPacket` em
+  `protocol.js`). **Campos não previstos são descartados** antes de chegar
+  ao tratamento: um `from`, `user_id` ou `user` enviado pelo cliente é
+  simplesmente ignorado.
+- Todos os pacotes do servidor levam `v: 1`.
+
+### 4.2 Tipos
+
+Direção: **C→S** (cliente para servidor), **S→C** (servidor para cliente).
+
+| Tipo | Direção | Campos (além de `v`, `type`, `id?`) | Semântica |
+|---|---|---|---|
+| `HELLO` | C→S | `client?`: string ≤ 64 (nome/versão do cliente, informativo) | Primeiro pacote obrigatório (§3). Repetido depois do WELCOME → `ERROR BAD_REQUEST`. |
+| `WELCOME` | S→C | `userId`: inteiro (usuário **da sessão**); `serverTime`: ISO 8601; `limits`: `{ maxPayloadBytes, maxBodyBytes }` | Resposta ao HELLO válido; a conexão passa a READY. |
+| `PING` | C→S | — | Teste de vida/latência no nível da aplicação. |
+| `PONG` | S→C | `ref?`: o `id` do PING | Resposta ao PING. |
+| `SUBSCRIBE` | C→S | `room`: inteiro 1…2147483647 | Pede para receber as mensagens da sala. Só para membros (§7). |
+| `SUBSCRIBED` | S→C | `room` | Inscrição aceita. |
+| `UNSUBSCRIBE` | C→S | `room` | Cancela a inscrição (idempotente). |
+| `UNSUBSCRIBED` | S→C | `room` | Inscrição cancelada, a pedido do cliente **ou pelo servidor** quando o usuário deixou de ser membro da sala (§7). |
+| `MSG_SEND` | C→S | `room`: inteiro; `cid`: `[A-Za-z0-9_-]{1,64}`; `body`: string, 1 a **8192 bytes UTF-8**, sem o caractere NUL | Envia uma mensagem. **Não tem campo `from`**. |
+| `MSG_ACK` | S→C | `cid`; `id`: inteiro (id da mensagem no banco); `ts`: ISO 8601 | A mensagem foi **gravada**. Correlação pelo `cid`. Reenvio do mesmo `cid` → o mesmo ACK. |
+| `MSG_DELIVER` | S→C | `room`; `id`; `from`: inteiro (usuário **da sessão** do remetente, preenchido pelo servidor); `ts`; `body` (como veio) | Mensagem nova na sala. Vai a toda conexão inscrita cujo usuário é membro, **inclusive as do próprio remetente** (o cliente deduplica pelo `id`). |
+| `ERROR` | S→C | `code` (§5.1); `message`: texto genérico; `ref?`: o `id` do pacote que causou o erro | Pacote recusado. Salvo os casos da §5.2, a conexão continua aberta. |
+
+Exemplo de troca:
+
+```json
+C→S {"v":1,"type":"MSG_SEND","id":"r9","room":7,"cid":"5f0c…","body":"oi"}
+S→C {"v":1,"type":"MSG_ACK","cid":"5f0c…","id":42,"ts":"2026-10-28T14:03:11.512Z"}
+S→C {"v":1,"type":"MSG_DELIVER","room":7,"id":42,"from":3,"ts":"2026-10-28T14:03:11.512Z","body":"oi"}
+```
+
+### 4.3 `body` opaco
+
+O servidor confere **só tipo e tamanho** do `body`: não apara espaços, não
+normaliza, não interpreta, **não registra em log** e não compara reenvios.
+Uma mensagem só de espaços é aceita como veio. O caractere NUL (`\u0000`) é
+recusado porque o Postgres não o aceita em `TEXT` (sem a regra, viraria
+erro interno). Na Etapa 4 o `body` será texto cifrado (ex.: base64) e nada
+neste protocolo muda.
+
+### 4.4 Idempotência (`cid`)
+
+O `cid` é gerado pelo cliente (o cliente de referência usa um UUID v4) e
+identifica **um envio**. Ele é guardado em `messages.cid`, com
+`UNIQUE (user_id, cid)`, e a gravação usa `ON CONFLICT DO NOTHING`.
+Portanto:
+
+- reenviar o mesmo `cid` na **mesma sala** (ex.: o ACK se perdeu) devolve o
+  **mesmo `MSG_ACK`** (mesmo `id` e `ts`), sem gravar nem entregar de novo,
+  mesmo que o `body` seja diferente (vale o primeiro; um reenvio cifrado
+  de novo na Etapa 4 teria outro texto cifrado);
+- reenvios simultâneos gravam uma única vez (o banco resolve a corrida);
+- o `cid` é **por remetente**: dois usuários podem usar o mesmo valor;
+- o mesmo `cid` em **outra sala** → `ERROR CID_REUSED`;
+- o reconhecimento de reenvio também exige ser membro: quem saiu da sala
+  recebe `NOT_MEMBER`, não o ACK antigo.
+
 ## 5. Erros e códigos de fechamento
 
+### 5.1 Códigos do pacote `ERROR`
+
+| `code` | `message` | Quando | A conexão… |
+|---|---|---|---|
+| `BAD_REQUEST` | Pacote inválido | JSON inválido, quadro binário, tipo desconhecido, campo fora do schema, `v` ≠ 1 depois do handshake, HELLO repetido, HELLO v=1 malformado | segue aberta; o **3º** pacote inválido fecha com 1008; no handshake, fecha na hora |
+| `HELLO_REQUIRED` | Envie HELLO antes de qualquer outro pacote | qualquer pacote (ou lixo) antes do HELLO | fecha com 1008 |
+| `UNSUPPORTED_VERSION` | Versão de protocolo não suportada (servidor: 1) | HELLO com `v` ≠ 1 | fecha com 4426 |
+| `RATE_LIMITED` | Pacotes demais; aguarde | quadro acima do ritmo (§6). Enviado **só na 1ª violação** de cada sequência, para não amplificar a inundação | segue aberta; na 20ª violação seguida fecha com 4429 |
+| `NOT_MEMBER` | Sem acesso a esta sala | SUBSCRIBE ou MSG_SEND para sala da qual o usuário não é membro **ou que não existe** (mesma resposta) | segue aberta |
+| `CID_REUSED` | cid já usado em outra sala | MSG_SEND com `cid` que o usuário já usou em outra sala | segue aberta |
+| `INTERNAL` | Erro interno | falha inesperada ao tratar o pacote (ex.: banco fora). O log registra só o tipo do pacote e a mensagem do erro | segue aberta |
+
+As mensagens são fixas e genéricas: nunca ecoam a entrada nem detalham
+qual regra falhou.
+
+### 5.2 Códigos de fechamento
+
+Faixa 1000–1015 da RFC 6455 (§7.4.1); 4000–4999 reservada a aplicações. Os
+códigos 44xx imitam o status HTTP equivalente para facilitar a leitura.
+
+| Código | Nome (`CLOSE` em `protocol.js`) | Motivo |
+|---|---|---|
+| **1000** | (normal) | fechamento pedido pelo cliente |
+| **1008** | `POLICY_VIOLATION` | pacote antes do HELLO, HELLO malformado ou 3º pacote inválido |
+| **1009** | `MESSAGE_TOO_BIG` | quadro acima de `maxPayload` (16 KB); gerado pela própria `ws` antes de acumular o quadro |
+| **4401** | `SESSION_ENDED` | logout do usuário (todas as conexões dele), sessão expirada ou apagada do store (validação periódica) |
+| **4408** | `HELLO_TIMEOUT` | HELLO não chegou em 5 s |
+| **4426** | `UNSUPPORTED_VERSION` | versão do HELLO não suportada |
+| **4429** | `RATE_LIMITED` | 20 violações seguidas do rate limit; inicia a quarentena de 60 s |
+| (1006 no cliente) | `terminate()` | conexão morta (sem pong) ou cliente lento (buffer de saída > 1 MB): o TCP é derrubado sem handshake de fechamento, porque um close não chegaria |
+
+O cliente **NÃO DEVERIA** reconectar automaticamente após 4401 (precisa de
+novo login), 4426 (precisa de atualização) nem 4429 (quarentena). Após 1006
+ou 4408, **PODE** reconectar com espera crescente.
+
 ## 6. Limites
+
+Valores padrão em `DEFAULT_LIMITS` (`backend/realtime/protocol.js`).
+Todos, exceto o tamanho do body, podem ser trocados por instância
+(`attachRealtime(server, { ...limites })`), o que os testes usam para
+encurtar prazos.
+
+| Limite | Padrão | Efeito ao exceder |
+|---|---|---|
+| Conexões por usuário (`maxConnectionsPerUser`) | **5** | upgrade recusado com 429 |
+| Conexões no total (`maxConnections`) | **1000** | upgrade recusado com 503 |
+| Prazo do HELLO (`helloTimeoutMs`) | **5 s** | close 4408 |
+| Tamanho do quadro (`maxPayloadBytes`) | **16 KB** (16384 bytes) | close 1009 |
+| Tamanho do body (`MAX_BODY_BYTES`, fixo) | **8192 bytes UTF-8** | `ERROR BAD_REQUEST`. Igual ao `CHECK (octet_length(message) BETWEEN 1 AND 8192)` da coluna `messages.message`; não é configurável porque o banco é compartilhado |
+| Pacotes inválidos (`maxInvalidPackets`) | **3** por conexão | o 3º fecha com 1008 |
+| Rate limit: rajada (`rateBurst`) | **20** quadros | — |
+| Rate limit: ritmo (`rateRefillPerSec`) | **10** quadros/s | quadro descartado + `ERROR RATE_LIMITED` (1ª vez) |
+| Rate limit: tolerância (`maxRateViolations`) | **20** violações seguidas | close 4429 |
+| Quarentena após 4429 (`rateLimitCooldownMs`) | **60 s** | upgrade do mesmo usuário recusado com 429 |
+| Heartbeat (`heartbeatIntervalMs`) | **30 s** | sem pong até o ciclo seguinte → `terminate()`; sessão inválida → close 4401 |
+| Buffer de saída (`maxBufferedBytes`) | **1 MB** | `terminate()` antes do próximo envio |
+| Histórico HTTP (`GET /messages/:id?limit`) | padrão **50**, máximo **100** | `400` |
+
+**Rate limit (token bucket).** Cada conexão tem um balde de 20 fichas,
+reposto a 10 fichas/s. **Todo quadro** custa uma ficha: inválidos,
+`PING`, e também os quadros antes do HELLO. Sem ficha, o quadro é
+descartado **sem ser lido** (nem JSON, nem banco). Quando o balde volta a
+ficar cheio (o cliente se acalmou), a sequência de violações zera. Com no
+máximo 5 conexões, o teto sustentado por usuário é 5 × 10 = 50 quadros/s.
+
+**Quadro × body.** Um body de 8192 bytes cabe com folga em 16 KB
+**se** o JSON não precisar de muitos escapes. Caracteres de controle viram
+`\u00XX` (6 bytes cada), então um body cheio deles pode estourar o quadro
+(close 1009) mesmo dentro do limite do body. Na prática, texto comum e o
+base64 da Etapa 4 não têm esse problema.
 
 ## 7. Regras de autorização
 
