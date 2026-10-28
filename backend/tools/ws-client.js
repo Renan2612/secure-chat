@@ -1,24 +1,36 @@
 #!/usr/bin/env node
-// Cliente de referência do protocolo de tempo real (docs/03-protocolo.md).
-// Faz login por HTTP(S), abre o WebSocket com o cookie da sessão,
-// HELLO → WELCOME, SUBSCRIBE na sala e então: cada linha digitada vira um
-// MSG_SEND; cada MSG_DELIVER recebido é impresso. Fim da entrada (Ctrl+D)
-// encerra a conexão e faz logout.
+// Cliente de referência do protocolo de tempo real (docs/03-protocolo.md),
+// com criptografia ponta a ponta (docs/05-e2ee.md). Faz login por HTTP(S),
+// abre o keystore cifrado, abre o WebSocket com o cookie da sessão, HELLO →
+// WELCOME, registra as chaves públicas, SUBSCRIBE na sala, obtém a chave da
+// sala e então: cada linha digitada é CIFRADA e vira um MSG_SEND; cada
+// MSG_DELIVER é decifrado, verificado e impresso como [verificado] ou
+// [não verificado]. Fim da entrada (Ctrl+D) encerra a conexão e faz logout.
 //
 // Uso (a partir de backend/), pela origem única do proxy (Etapa 4a):
-//   CHAT_PASSWORD=... node tools/ws-client.js --server https://localhost/api \
-//     --ca ../certs/caddy-local-root.crt --origin https://localhost \
-//     --email alice@example.com --room 1
+//   CHAT_PASSWORD=... CHAT_KEY_PASSPHRASE=... node tools/ws-client.js \
+//     --server https://localhost/api --ca ../certs/caddy-local-root.crt \
+//     --origin https://localhost --email alice@example.com --create-room "Sala"
+//   (o outro lado: --room <id> --join <convite>; depois, só --room <id>)
 // Opções: --server (base da API; padrão http://localhost:8000), --ws (URL do
 // WebSocket; padrão: /ws na mesma origem do --server, ws:// ou wss://),
 // --origin, --ca (certificado de uma CA extra em que confiar, além das do
-// sistema; NODE_EXTRA_CA_CERTS também vale), --ack-timeout-ms (padrão 10000).
+// sistema; NODE_EXTRA_CA_CERTS também vale), --ack-timeout-ms (padrão 10000),
+// --room <id>, --create-room <nome>, --join <convite> (com --room),
+// --keystore <arquivo> (padrão ~/.config/secure-chat/<email>.json; nunca
+// dentro de um repositório git), --reset-keys (substitui as chaves públicas
+// no servidor pelas deste keystore).
+// Comandos (linhas que começam com /): /members, /safety <id>, /trust <id>,
+// /keys. O /trust só confirma a chave cujo número de segurança o /safety
+// mostrou.
 //
 // A verificação do certificado NUNCA é desligada (não existe --insecure), e
 // com --server https:// o WebSocket só pode ser wss:// (o cookie de sessão
 // não sai em claro).
-// Sem CHAT_PASSWORD, a senha é pedida no terminal (sem eco). Ela nunca é
-// aceita como argumento: argumentos ficam visíveis no `ps` e no histórico.
+// Sem CHAT_PASSWORD, a senha é pedida no terminal (sem eco); idem a senha de
+// cifragem do keystore (CHAT_KEY_PASSPHRASE), que precisa ser DIFERENTE da de
+// login (esta vai ao servidor; aquela nunca sai da máquina). Nenhuma das duas
+// é aceita como argumento: argumentos ficam visíveis no `ps` e no histórico.
 // Envio sem MSG_ACK em --ack-timeout-ms é avisado como não confirmado.
 const crypto = require("crypto");
 const fs = require("fs");
@@ -27,6 +39,9 @@ const https = require("https");
 const readline = require("readline");
 const tls = require("tls");
 const WebSocket = require("ws");
+const e2ee = require("../../shared/e2ee");
+const { defaultKeystorePath } = require("../../shared/e2ee/node");
+const { E2eeSession } = require("./e2ee-session");
 
 const PROTOCOL_VERSION = 1;
 // Erros de certificado comuns quando a CA local não está configurada.
@@ -43,7 +58,8 @@ const describeError = (err) => {
     : base;
 };
 const LOOPBACK = /^(localhost|127(\.\d{1,3}){3}|\[::1\])$/;
-const OPTIONS = ["server", "ws", "origin", "email", "room", "ca", "ack-timeout-ms"];
+const OPTIONS = ["server", "ws", "origin", "email", "room", "ca", "ack-timeout-ms", "keystore", "create-room", "join"];
+const FLAGS = ["reset-keys"];
 
 const fail = (message) => {
   process.stderr.write(`erro: ${message}\n`);
@@ -84,16 +100,30 @@ const parseArgs = (argv) => {
     origin: process.env.CLIENT_URL || "http://localhost:3000",
     "ack-timeout-ms": "10000",
   };
-  for (let i = 0; i < argv.length; i += 2) {
+  for (let i = 0; i < argv.length; i += 1) {
     const name = argv[i]?.replace(/^--/, "");
+    if (FLAGS.includes(name)) {
+      args[name] = true;
+      continue;
+    }
     if (!OPTIONS.includes(name) || argv[i + 1] === undefined) {
       fail(`argumento inválido: ${argv[i]}`);
     }
     args[name] = argv[i + 1];
+    i += 1;
   }
-  if (!args.email || !args.room) fail("informe --email e --room");
-  args.room = Number(args.room);
-  if (!Number.isInteger(args.room) || args.room <= 0) fail("--room deve ser um inteiro positivo");
+  if (!args.email || (!args.room && !args["create-room"])) fail("informe --email e --room (ou --create-room)");
+  if (args.room && args["create-room"]) fail("use --room ou --create-room, não os dois");
+  if (args.join && !args.room) fail("--join exige --room");
+  if (args.room) {
+    args.room = Number(args.room);
+    if (!Number.isInteger(args.room) || args.room <= 0) fail("--room deve ser um inteiro positivo");
+  }
+  try {
+    args.keystore = args.keystore ?? defaultKeystorePath(args.email);
+  } catch (err) {
+    fail(err.message);
+  }
   args.ackTimeoutMs = Number(args["ack-timeout-ms"]);
   if (!(args.ackTimeoutMs > 0)) fail("--ack-timeout-ms deve ser positivo");
 
@@ -126,11 +156,11 @@ const parseArgs = (argv) => {
   return args;
 };
 
-// Lê a senha no terminal sem mostrar o que é digitado.
-const askPassword = () =>
+// Lê uma senha no terminal sem mostrar o que é digitado.
+const askHidden = (label, envName) =>
   new Promise((resolve) => {
-    if (!process.stdin.isTTY) fail("defina CHAT_PASSWORD (sem terminal para perguntar a senha)");
-    process.stdout.write("senha: ");
+    if (!process.stdin.isTTY) fail(`defina ${envName} (sem terminal para perguntar a ${label})`);
+    process.stdout.write(`${label}: `);
     const { stdin } = process;
     stdin.setRawMode(true);
     stdin.resume();
@@ -215,11 +245,30 @@ const logout = async ({ server, origin, tlsCa }, cookie) => {
 
 const print = (line) => process.stdout.write(`${line}\n`);
 
+// Requisição JSON autenticada para a sessão E2EE (chaves, salas).
+const apiFor = ({ server, origin, tlsCa }, cookie) => async (method, path, body) => {
+  const res = await request(`${server}${path}`, {
+    method: method.toUpperCase(),
+    headers: { Cookie: cookie, Origin: origin, ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+    ca: tlsCa,
+  });
+  let parsed = null;
+  try {
+    parsed = res.body ? JSON.parse(res.body) : null;
+  } catch {
+    parsed = null;
+  }
+  return { status: res.status, body: parsed };
+};
+
 const main = async () => {
   // Se alguma promessa ficar pendente e o processo acabar sozinho, sai com 1.
   process.exitCode = 1;
   const args = parseArgs(process.argv.slice(2));
-  const password = process.env.CHAT_PASSWORD || (await askPassword());
+  const password = process.env.CHAT_PASSWORD || (await askHidden("senha", "CHAT_PASSWORD"));
+  const passphrase = process.env.CHAT_KEY_PASSPHRASE || (await askHidden("senha de cifragem do keystore", "CHAT_KEY_PASSPHRASE"));
+  if (passphrase === password) fail("a senha de cifragem do keystore deve ser diferente da senha de login");
   const { cookie, body } = await login(args, password);
   let user;
   try {
@@ -230,6 +279,21 @@ const main = async () => {
   }
   print(`logado como ${user.name} (usuário ${user.id})`);
 
+  const session = new E2eeSession({
+    api: apiFor(args, cookie),
+    me: user,
+    email: args.email,
+    keystorePath: args.keystore,
+    passphrase,
+    print,
+  });
+  try {
+    await session.open();
+  } catch (err) {
+    await logout(args, cookie);
+    fail(err.code === "BAD_PASSPHRASE" ? "senha de cifragem errada (ou keystore adulterado); o keystore NÃO foi alterado" : err.message);
+  }
+
   const ws = new WebSocket(args.ws, {
     headers: { Cookie: cookie },
     origin: args.origin,
@@ -238,6 +302,10 @@ const main = async () => {
   const send = (packet) => ws.send(JSON.stringify({ v: PROTOCOL_VERSION, ...packet }));
   const pending = new Map(); // cid → timer, para envios ainda sem MSG_ACK
   let inputEnded = false;
+  let room = args.room;
+  // Linhas digitadas e eventos tratados EM ORDEM (cifrar é assíncrono).
+  let queue = Promise.resolve();
+  let queued = 0;
 
   let exitCode = 0;
   let finishing = false;
@@ -257,32 +325,146 @@ const main = async () => {
     pending.delete(cid);
   };
   const maybeFinish = () => {
-    if (inputEnded && pending.size === 0) ws.close(1000);
+    if (inputEnded && pending.size === 0 && queued === 0) ws.close(1000);
+  };
+  const enqueue = (task) => {
+    queued += 1;
+    queue = queue
+      .then(task)
+      .catch((err) => {
+        print(`! erro: ${describeError(err)}`);
+        exitCode = 1;
+      })
+      .finally(() => {
+        queued -= 1;
+        maybeFinish();
+      });
+  };
+
+  const sendText = async (line) => {
+    if (!session.hasCurrentKey(room)) {
+      print("! sem a chave da sala: mensagem NÃO enviada (aguardando um membro entregá-la)");
+      exitCode = 1;
+      return;
+    }
+    if (new TextEncoder().encode(line).length > e2ee.MAX_TEXT_BYTES) {
+      print(`! mensagem longa demais (máximo ${e2ee.MAX_TEXT_BYTES} bytes): NÃO enviada`);
+      exitCode = 1;
+      return;
+    }
+    const cid = crypto.randomUUID();
+    const body = await session.encrypt(room, cid, line);
+    // Sem ACK no prazo (ex.: descartada pelo rate limit, que não responde
+    // a cada quadro), a linha é dada como não enviada.
+    pending.set(
+      cid,
+      setTimeout(() => {
+        print(`! sem confirmação: "${line.slice(0, 40)}" (cid ${cid}); reenvie se quiser`);
+        exitCode = 1;
+        settle(cid);
+        maybeFinish();
+      }, args.ackTimeoutMs)
+    );
+    // id = cid: um ERROR sobre este envio volta com ref = cid.
+    send({ type: "MSG_SEND", id: cid, room, cid, body });
+  };
+
+  const command = async (line) => {
+    const [name, arg] = line.trim().split(/\s+/);
+    const userId = Number(arg);
+    switch (name) {
+      case "/keys":
+        return print(`suas chaves: fingerprint ${await e2ee.fingerprint(session.pub)}; key_epoch ${session.keyEpoch}; keystore ${args.keystore}`);
+      case "/members": {
+        const res = await session.api("get", `/roomUsers/${room}`);
+        if (res.status !== 200) return print(`! não foi possível listar os membros (${res.status})`);
+        print(`membros da sala ${room}:`);
+        for (const member of res.body) {
+          if (member.id === user.id) {
+            print(`  ${member.id} ${member.name} ${(await e2ee.fingerprint(session.pub)).slice(0, 16)} [você]`);
+            continue;
+          }
+          const status = await session.observe(member.id);
+          const fp = session.trust.peers[member.id]?.fingerprint ?? "sem chave pública";
+          print(`  ${member.id} ${member.name} ${status === null ? fp : fp.slice(0, 16)} [${session.trustLabel(member.id)}]`);
+        }
+        return undefined;
+      }
+      case "/safety": {
+        if (!Number.isInteger(userId) || userId <= 0) return print("uso: /safety <userId>");
+        const { number, changed } = await session.safety(userId);
+        return print(
+          `número de segurança com usuário ${userId}${changed ? " (CHAVE ALTERADA)" : ""}:\n  ${number}\n` +
+            `confira com a outra pessoa por um canal seguro (pessoalmente, ligação); se for igual: /trust ${userId}`
+        );
+      }
+      case "/trust": {
+        if (!Number.isInteger(userId) || userId <= 0) return print("uso: /trust <userId>");
+        try {
+          await session.confirm(userId);
+        } catch (err) {
+          return print(`! ${err.message}`);
+        }
+        print(`usuário ${userId} marcado como verificado`);
+        return session.distribute(room); // pode ter ficado sem chave por causa da mudança
+      }
+      default:
+        return print("comandos: /members, /safety <userId>, /trust <userId>, /keys");
+    }
   };
 
   const startInput = () => {
     const rl = readline.createInterface({ input: process.stdin });
     rl.on("line", (line) => {
       if (!line) return;
-      const cid = crypto.randomUUID();
-      // Sem ACK no prazo (ex.: descartada pelo rate limit, que não responde
-      // a cada quadro), a linha é dada como não enviada.
-      pending.set(
-        cid,
-        setTimeout(() => {
-          print(`! sem confirmação: "${line.slice(0, 40)}" (cid ${cid}); reenvie se quiser`);
-          exitCode = 1;
-          settle(cid);
-          maybeFinish();
-        }, args.ackTimeoutMs)
-      );
-      // id = cid: um ERROR sobre este envio volta com ref = cid.
-      send({ type: "MSG_SEND", id: cid, room: args.room, cid, body: line });
+      enqueue(() => (line.startsWith("/") ? command(line) : sendText(line)));
     });
     rl.on("close", () => {
       inputEnded = true;
       maybeFinish();
     });
+  };
+
+  // Depois do WELCOME: chaves no diretório, criar ou entrar na sala, e só
+  // então SUBSCRIBE.
+  const setup = async () => {
+    await session.registerKeys({ reset: args["reset-keys"] });
+    if (args["create-room"]) {
+      const created = await session.createRoom(args["create-room"]);
+      room = created.id;
+      print(`sala criada: id ${created.id}; convite: ${created.key} (repasse o id e o convite por fora do sistema)`);
+    } else if (args.join) {
+      const joined = await session.api("post", "/joinRooms", { idRoom: room, key: args.join });
+      if (joined.status !== 200) throw new Error(`não foi possível entrar na sala (${joined.status})`);
+      print(`entrou na sala ${room}`);
+    }
+    send({ type: "SUBSCRIBE", id: "subscribe", room });
+  };
+
+  const announceKey = async () => {
+    if (await session.ensureRoomKey(room)) {
+      print(`chave da sala ${room} disponível (v${session.currentVersion.get(room)})`);
+      await session.distribute(room);
+    } else {
+      print(`sem a chave da sala ${room}: aguardando um membro entregá-la`);
+    }
+  };
+
+  const showDelivery = async (packet) => {
+    const result = await session.accept(packet);
+    const who = `sala ${packet.room} · usuário ${packet.from}`;
+    switch (result.status) {
+      case "ok":
+        return print(`[${packet.ts}] ${who} [${result.verified ? "verificado" : "não verificado"}]: ${result.text}`);
+      case "duplicate":
+        return undefined; // reentrega: já foi mostrada
+      case "untrusted":
+        return print(`! ${who}: mensagem recusada (${result.trust === "changed" ? "CHAVE ALTERADA" : "remetente sem chave conhecida"}); confira /safety ${packet.from} e /trust ${packet.from}`);
+      case "missing_key":
+        return print(`! ${who}: mensagem com a chave v${result.kv}, que este cliente não tem`);
+      default:
+        return print(`! ${who}: mensagem inválida descartada (${result.reason ?? "não confere"})`);
+    }
   };
 
   ws.on("unexpected-response", (req, res) => abort(`upgrade recusado (${res.statusCode})`));
@@ -311,16 +493,26 @@ const main = async () => {
     switch (packet.type) {
       case "WELCOME":
         print(`protocolo v${packet.v}; limites: ${JSON.stringify(packet.limits)}`);
-        return send({ type: "SUBSCRIBE", id: "subscribe", room: args.room });
+        return setup().catch((err) => {
+          print(`! ${err.message}`);
+          exitCode = 1;
+          ws.close(1000);
+        });
       case "SUBSCRIBED":
-        print(`inscrito na sala ${packet.room}. Digite mensagens (Ctrl+D para sair).`);
+        print(`inscrito na sala ${packet.room}. Digite mensagens (Ctrl+D para sair; /members, /safety, /trust, /keys).`);
+        enqueue(announceKey);
         return startInput();
+      case "ROOM_EVENT":
+        if (packet.room !== room) return undefined;
+        if (packet.kind === "KEY_PENDING") return enqueue(() => session.distribute(room));
+        if (packet.kind === "KEY_READY") return enqueue(announceKey);
+        return undefined;
       case "MSG_ACK":
         settle(packet.cid);
         print(`✓ enviada (id ${packet.id})`);
         return maybeFinish();
       case "MSG_DELIVER":
-        return print(`[${packet.ts}] sala ${packet.room} · usuário ${packet.from}: ${packet.body}`);
+        return enqueue(() => showDelivery(packet));
       case "ERROR":
         print(`! ${packet.code}: ${packet.message}`);
         if (packet.ref === "subscribe") {

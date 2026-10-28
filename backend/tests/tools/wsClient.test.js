@@ -5,6 +5,8 @@ const { spawn } = require("child_process");
 const { pool, resetDb, createRoomInDb, PASSWORD } = require("../helpers");
 const { startServer, loginUser, connect, nextPacket, send, ORIGIN } = require("../ws/helpers");
 
+const { clientSetup } = require("./clientEnv");
+
 const CLIENT = path.join(__dirname, "..", "..", "tools", "ws-client.js");
 
 let srv;
@@ -28,10 +30,14 @@ afterAll(() => pool.end());
 
 const run = (email, password, extraArgs = []) => {
   const httpUrl = srv.wsUrl.replace(/^ws/, "http").replace(/\/ws$/, "");
+  const setup = clientSetup();
+  // --create-room nos extraArgs substitui o --room (o cliente cria a sala e
+  // a chave dela, e assim pode cifrar).
+  const target = extraArgs.includes("--create-room") ? [] : ["--room", String(room)];
   child = spawn(
     process.execPath,
-    [CLIENT, "--server", httpUrl, "--email", email, "--room", String(room), "--origin", ORIGIN, ...extraArgs],
-    { env: { ...process.env, CHAT_PASSWORD: password }, stdio: ["pipe", "pipe", "pipe"] }
+    [CLIENT, "--server", httpUrl, "--email", email, ...target, "--origin", ORIGIN, ...setup.args, ...extraArgs],
+    { env: { ...process.env, CHAT_PASSWORD: password, ...setup.env }, stdio: ["pipe", "pipe", "pipe"] }
   );
   const out = { stdout: "", stderr: "" };
   child.stdout.on("data", (d) => {
@@ -52,19 +58,19 @@ const waitUntil = async (check, label, timeoutMs = 5000) => {
   }
 };
 
-// TRANSIÇÃO (Etapa 4b, item 5): o servidor só aceita envelope E2EE e este
-// cliente ainda manda texto puro — a linha digitada é recusada, nada é
-// gravado nem entregue. O item 6 (ws-client cifrado) reescreve este teste.
-test("texto puro digitado é recusado pelo servidor (E2EE_REQUIRED): nada gravado nem entregue", async () => {
+// Etapa 4b: sem a chave da sala, o cliente NÃO envia nada (falha fechada
+// também no cliente). O fluxo cifrado completo está em wsClientE2ee.test.js.
+test("sala sem chave publicada: a linha digitada não é enviada (nada gravado nem entregue)", async () => {
   const out = run(alice.email, PASSWORD);
   await waitUntil(() => /inscrito na sala/.test(out.stdout), "inscrição");
+  await waitUntil(() => /sem a chave da sala/.test(out.stdout), "aviso de sala sem chave");
 
   const bobConn = await connect(srv, bob.cookie);
   send(bobConn.ws, { type: "SUBSCRIBE", room });
   await nextPacket(bobConn.inbox, "SUBSCRIBED");
 
   child.stdin.write("olá do cliente de referência\n");
-  await waitUntil(() => /E2EE_REQUIRED/.test(out.stdout), "recusa do texto puro");
+  await waitUntil(() => /mensagem NÃO enviada/.test(out.stdout), "recusa local");
   expect((await pool.query("SELECT 1 FROM messages")).rowCount).toBe(0);
   expect(bobConn.inbox.packets.filter((p) => p.type === "MSG_DELIVER")).toEqual([]);
 
@@ -103,11 +109,13 @@ test("sala da qual não é membro: mostra NOT_MEMBER e sai com código 1", async
   expect(out.stdout).toMatch(/NOT_MEMBER/);
 });
 
-test("mensagem recusada (ERROR) não deixa o cliente pendurado no fim da entrada", async () => {
-  const out = run(alice.email, PASSWORD);
-  await waitUntil(() => /inscrito na sala/.test(out.stdout), "inscrição");
-  child.stdin.write(`${"é".repeat(5000)}\n`); // 10000 bytes > limite do body
-  await waitUntil(() => /BAD_REQUEST/.test(out.stdout), "erro");
+test("mensagem recusada pelo servidor (ERROR) não deixa o cliente pendurado no fim da entrada", async () => {
+  const out = run(alice.email, PASSWORD, ["--create-room", "Sala"]);
+  await waitUntil(() => /chave da sala \d+ disponível/.test(out.stdout), "chave da sala");
+  // A versão da chave muda por fora: o envio (kv 1) é recusado pelo servidor.
+  await pool.query("UPDATE rooms SET key_version = 2");
+  child.stdin.write("vai ser recusada\n");
+  await waitUntil(() => /KEY_VERSION_MISMATCH/.test(out.stdout), "erro");
   child.stdin.end();
   expect(await out.exited).toBe(1); // houve envio recusado
 });
@@ -132,8 +140,8 @@ test("logout que falha no fim é avisado (a sessão pode continuar válida)", as
 });
 
 test("linhas descartadas pelo rate limit não penduram o cliente: avisa as não confirmadas e sai", async () => {
-  const out = run(alice.email, PASSWORD, ["--ack-timeout-ms", "800"]);
-  await waitUntil(() => /inscrito na sala/.test(out.stdout), "inscrição");
+  const out = run(alice.email, PASSWORD, ["--ack-timeout-ms", "800", "--create-room", "Sala"]);
+  await waitUntil(() => /chave da sala \d+ disponível/.test(out.stdout), "chave da sala");
   // 25 linhas: 18 cabem no balde (HELLO e SUBSCRIBE gastaram 2), 7 são
   // descartadas sem resposta individual; abaixo de 20 violações, não há 4429.
   child.stdin.write(Array.from({ length: 25 }, (_, i) => `linha ${i}`).join("\n") + "\n");
@@ -146,8 +154,8 @@ test("linhas descartadas pelo rate limit não penduram o cliente: avisa as não 
 }, 10000);
 
 test("se o servidor fecha a conexão (ex.: 4429) com envios pendentes, eles são listados como não confirmados", async () => {
-  const out = run(alice.email, PASSWORD);
-  await waitUntil(() => /inscrito na sala/.test(out.stdout), "inscrição");
+  const out = run(alice.email, PASSWORD, ["--create-room", "Sala"]);
+  await waitUntil(() => /chave da sala \d+ disponível/.test(out.stdout), "chave da sala");
   child.stdin.write(Array.from({ length: 40 }, (_, i) => `linha ${i}`).join("\n") + "\n");
   expect(await out.exited).toBe(1);
   expect(out.stdout).toMatch(/conexão encerrada \(4429/);
@@ -170,8 +178,8 @@ test("pacote do servidor que não é objeto JSON não derruba o cliente", async 
   await new Promise((r) => fake.listen(0, "127.0.0.1", r));
   child = spawn(
     process.execPath,
-    [CLIENT, "--server", `http://127.0.0.1:${fake.address().port}`, "--email", "a@b.c", "--room", "1"],
-    { env: { ...process.env, CHAT_PASSWORD: "x" }, stdio: ["pipe", "pipe", "pipe"] }
+    [CLIENT, "--server", `http://127.0.0.1:${fake.address().port}`, "--email", "a@b.c", "--room", "1", ...clientSetup().args],
+    { env: { ...process.env, CHAT_PASSWORD: "x", ...clientSetup().env }, stdio: ["pipe", "pipe", "pipe"] }
   );
   let stderr = "";
   let stdout = "";

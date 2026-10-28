@@ -5,6 +5,8 @@ const http = require("http");
 const path = require("path");
 const { spawn } = require("child_process");
 
+const { clientSetup } = require("./clientEnv");
+
 const CLIENT = path.join(__dirname, "..", "..", "tools", "ws-client.js");
 
 let servers = [];
@@ -22,8 +24,9 @@ const fake = async (handler) => {
 
 const run = (args, env = {}) =>
   new Promise((resolve) => {
-    const child = spawn(process.execPath, [CLIENT, "--email", "a@b.c", "--room", "1", ...args], {
-      env: { ...process.env, CHAT_PASSWORD: "senha", ...env },
+    const setup = clientSetup();
+    const child = spawn(process.execPath, [CLIENT, "--email", "a@b.c", "--room", "1", ...setup.args, ...args], {
+      env: { ...process.env, CHAT_PASSWORD: "senha", ...setup.env, ...env },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";

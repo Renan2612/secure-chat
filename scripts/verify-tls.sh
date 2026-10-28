@@ -44,21 +44,30 @@ fi
 TMP="$(mktemp -d)"
 EMAIL="verify-tls-$(date +%s)-$RANDOM@example.invalid"
 PASSWORD="$(openssl rand -hex 16)"
+# Senha de cifragem do keystore do ws-client (Etapa 4b): outra, aleatória, só
+# em variável; o keystore fica em $TMP e some na limpeza.
+KEY_PASSPHRASE="$(openssl rand -hex 16)"
 JAR="$TMP/cookies"
 
 psql_dev() { "${COMPOSE[@]}" exec -T db psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -qAt "$@"; }
 
 cleanup() {
   trap - EXIT INT TERM HUP
-  # Remove tudo o que o script criou: mensagens, vínculos, sala, sessões e o usuário.
+  # Remove tudo o que o script criou: mensagens, wraps e versões da chave da
+  # sala, vínculos, salas, sessões, chaves públicas e o usuário.
   if ! psql_dev -v email="$EMAIL" >/dev/null 2>"$TMP/cleanup.err" <<'SQL'
 WITH u AS (SELECT id FROM users WHERE email = :'email'),
-     r AS (SELECT room FROM rooms_users WHERE user_id IN (SELECT id FROM u)),
+     r AS (SELECT id AS room FROM rooms WHERE created_by IN (SELECT id FROM u)
+           UNION SELECT room FROM rooms_users WHERE user_id IN (SELECT id FROM u)),
+     w AS (DELETE FROM room_key_wraps WHERE room IN (SELECT room FROM r)
+           OR recipient_id IN (SELECT id FROM u) OR sender_id IN (SELECT id FROM u)),
      m AS (DELETE FROM messages WHERE user_id IN (SELECT id FROM u) OR room IN (SELECT room FROM r)),
      ru AS (DELETE FROM rooms_users WHERE room IN (SELECT room FROM r) OR user_id IN (SELECT id FROM u)),
-     s AS (DELETE FROM user_sessions WHERE (sess->>'userId')::int IN (SELECT id FROM u))
+     s AS (DELETE FROM user_sessions WHERE (sess->>'userId')::int IN (SELECT id FROM u)),
+     k AS (DELETE FROM user_keys WHERE user_id IN (SELECT id FROM u))
 SELECT 1;
-DELETE FROM rooms WHERE id NOT IN (SELECT room FROM rooms_users) AND name = 'verify-tls';
+DELETE FROM room_key_versions WHERE room IN (SELECT id FROM rooms WHERE created_by IN (SELECT id FROM users WHERE email = :'email'));
+DELETE FROM rooms WHERE created_by IN (SELECT id FROM users WHERE email = :'email');
 DELETE FROM users WHERE email = :'email';
 SQL
   then
@@ -140,14 +149,15 @@ c=$(upgrade "$BASE/ws" "https://site-malicioso.example");  check "wss:// com Ori
 c=$(upgrade "$BASE/ws" "$BASE");                           check "wss:// com a Origin certa aceita o upgrade (HTTP $c; controle positivo, esperado 101)" test "$c" = "101"
 c=$(upgrade "$BASE/api/ws" "$BASE");                       check "/api/ws não é um segundo caminho para o WebSocket (HTTP $c; esperado 404)" test "$c" = "404"
 
-ROOM_ID="$(curl -s --cacert "$CA" -b "$JAR" -H 'Content-Type: application/json' -d '{"name":"verify-tls"}' "$BASE/api/createRoom" \
-  | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{console.log(JSON.parse(d).id??"")}catch{console.log("")}})')"
-check "sala temporária criada" test -n "$ROOM_ID"
-CHAT_PASSWORD="$PASSWORD" timeout 20 node backend/tools/ws-client.js --server "$BASE/api" --ca "$CA" --origin "$BASE" \
-  --email "$EMAIL" --room "${ROOM_ID:-0}" <<<"mensagem da verificação TLS" >"$TMP/client.out" 2>&1
+# O ws-client (Etapa 4b) cria a sala temporária com a chave v1 e envia a
+# mensagem CIFRADA por wss://.
+CHAT_PASSWORD="$PASSWORD" CHAT_KEY_PASSPHRASE="$KEY_PASSPHRASE" timeout 30 node backend/tools/ws-client.js \
+  --server "$BASE/api" --ca "$CA" --origin "$BASE" --email "$EMAIL" --keystore "$TMP/keystore.json" \
+  --create-room "verify-tls" <<<"mensagem da verificação TLS" >"$TMP/client.out" 2>&1
 client_status=$?
+check "sala temporária criada pelo ws-client (com a chave da sala)" grep -q 'sala criada: id' "$TMP/client.out"
 client_ok() { [ "$client_status" = 0 ] && grep -q 'enviada' "$TMP/client.out"; }
-check "ws-client por wss:// com a CA: login, inscrição e envio confirmado (saída $client_status)" client_ok
+check "ws-client por wss:// com a CA: login, inscrição e envio cifrado confirmado (saída $client_status)" client_ok
 [ "$client_status" = 0 ] || sed 's/^/         | /' "$TMP/client.out"
 
 section "Versões e suítes TLS (openssl s_client)"

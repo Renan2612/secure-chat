@@ -15,6 +15,8 @@ const { execFileSync, spawn } = require("child_process");
 const { pool, resetDb, createRoomInDb, PASSWORD } = require("../helpers");
 const { startServer, loginUser, ORIGIN } = require("../ws/helpers");
 
+const { clientSetup } = require("./clientEnv");
+
 const CLIENT = path.join(__dirname, "..", "..", "tools", "ws-client.js");
 
 let dir;
@@ -75,8 +77,10 @@ afterEach(async () => {
 });
 
 const run = (args, env = {}) => {
-  const child = spawn(process.execPath, [CLIENT, "--email", alice.email, "--room", String(room), "--origin", ORIGIN, ...args], {
-    env: { ...process.env, NODE_EXTRA_CA_CERTS: "", CHAT_PASSWORD: PASSWORD, ...env },
+  const setup = clientSetup();
+  const target = args.includes("--create-room") ? [] : ["--room", String(room)];
+  const child = spawn(process.execPath, [CLIENT, "--email", alice.email, ...target, "--origin", ORIGIN, ...setup.args, ...args], {
+    env: { ...process.env, NODE_EXTRA_CA_CERTS: "", CHAT_PASSWORD: PASSWORD, ...setup.env, ...env },
     stdio: ["pipe", "pipe", "pipe"],
   });
   const out = { child, stdout: "", stderr: "" };
@@ -100,30 +104,32 @@ const waitUntil = async (check, label, timeoutMs = 5000) => {
 
 const sessions = async () => (await pool.query("SELECT COUNT(*)::int AS n FROM user_sessions")).rows[0].n;
 
-// TRANSIÇÃO (Etapa 4b, item 5): o servidor só aceita envelope E2EE e este
-// cliente ainda manda texto puro — o envio é recusado e nada é gravado. O
-// item 6 (ws-client cifrado) volta a exigir o envio confirmado.
+// O cliente cria a sala (e a chave dela), cifra e envia por wss://; o banco
+// só guarda o envelope, nunca o texto.
 const sendOneMessage = async (out) => {
-  await waitUntil(() => /inscrito na sala/.test(out.stdout), "inscrição");
+  await waitUntil(() => /chave da sala \d+ disponível/.test(out.stdout), "chave da sala");
   out.child.stdin.write("por wss\n");
-  await waitUntil(() => /E2EE_REQUIRED/.test(out.stdout), "recusa do texto puro");
+  await waitUntil(() => /enviada/.test(out.stdout), "confirmação");
   out.child.stdin.end();
-  expect(await out.exited).toBe(1);
-  expect((await pool.query("SELECT message FROM messages")).rows).toEqual([]);
+  expect(await out.exited).toBe(0);
+  const { rows } = await pool.query("SELECT message FROM messages");
+  expect(rows).toHaveLength(1);
+  expect(rows[0].message).not.toContain("por wss");
+  expect(() => require("../../../shared/e2ee").parseEnvelope(rows[0].message)).not.toThrow();
 };
 
-test("https + wss com --ca: login e inscrição funcionam (envio em texto puro recusado até o item 6)", async () => {
-  const out = run(["--server", httpsUrl, "--ca", path.join(dir, "ca.crt")]);
+test("https + wss com --ca: login, inscrição e envio cifrado funcionam", async () => {
+  const out = run(["--server", httpsUrl, "--ca", path.join(dir, "ca.crt"), "--create-room", "Sala"]);
   await sendOneMessage(out);
 });
 
 test("https + wss com NODE_EXTRA_CA_CERTS: também funciona", async () => {
-  const out = run(["--server", httpsUrl], { NODE_EXTRA_CA_CERTS: path.join(dir, "ca.crt") });
+  const out = run(["--server", httpsUrl, "--create-room", "Sala"], { NODE_EXTRA_CA_CERTS: path.join(dir, "ca.crt") });
   await sendOneMessage(out);
 });
 
 test("--ws explícito com wss:// é aceito", async () => {
-  const out = run(["--server", httpsUrl, "--ws", `${httpsUrl.replace("https", "wss")}/ws`, "--ca", path.join(dir, "ca.crt")]);
+  const out = run(["--server", httpsUrl, "--ws", `${httpsUrl.replace("https", "wss")}/ws`, "--ca", path.join(dir, "ca.crt"), "--create-room", "Sala"]);
   await sendOneMessage(out);
 });
 
