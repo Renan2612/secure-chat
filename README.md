@@ -14,7 +14,8 @@ saneado de [asafebxd/MessageWebApp](https://github.com/asafebxd/MessageWebApp)
 - [x] **Etapa 2** — Autenticação e autorização ([`docs/02-autenticacao-autorizacao.md`](docs/02-autenticacao-autorizacao.md))
 - [x] **Etapa 3** — Camada de comunicação: protocolo próprio sobre WebSocket ([`docs/03-protocolo.md`](docs/03-protocolo.md))
 - [x] **Etapa 4a** — TLS, proxy reverso (Caddy) e origem única ([`docs/04-tls-e-proxy.md`](docs/04-tls-e-proxy.md))
-- [ ] Etapa 4b — Criptografia ponta a ponta (E2EE)
+- [x] **Etapa 4b-1** — Criptografia ponta a ponta, núcleo ([`docs/05-e2ee.md`](docs/05-e2ee.md))
+- [ ] Etapa 4b-2 — E2EE: composição da sala (sair, remover, trocar a chave) e frontend
 - [ ] Etapa 5 — Privacidade adicional
 - [ ] Etapa 6 — Infraestrutura e validação
 - [ ] Etapa 7 — Entrega
@@ -37,13 +38,15 @@ secure-chat/
 │   ├── 01-baseline-seguranca.md      # Etapa 1 — registro antes/depois
 │   ├── 02-autenticacao-autorizacao.md # Etapa 2
 │   ├── 03-protocolo.md           # Etapa 3 — especificação do protocolo
-│   └── 04-tls-e-proxy.md         # Etapa 4a — TLS, proxy e origem única
+│   ├── 04-tls-e-proxy.md         # Etapa 4a — TLS, proxy e origem única
+│   └── 05-e2ee.md                # Etapa 4b-1 — criptografia ponta a ponta
 ├── proxy/
 │   ├── Caddyfile                 # proxy reverso + política TLS
 │   └── site/index.html           # página estática provisória (/)
 ├── scripts/
 │   ├── export-ca.sh              # exporta a raiz da CA local do Caddy
-│   └── verify-tls.sh             # provas da Etapa 4a contra a stack no ar
+│   ├── verify-tls.sh             # provas da Etapa 4a contra a stack no ar
+│   └── verify-e2ee.sh            # provas da Etapa 4b-1 (E2EE) contra a stack no ar
 ├── backend/
 │   ├── server.js                  # ponto de entrada (sobe o createServer)
 │   ├── createServer.js            # HTTP (Express) + tempo real (/ws), mesma sessão
@@ -154,6 +157,7 @@ conforme o modelo de ameaças e o roteiro de etapas da disciplina.
 
 - [Modelo de ameaças](docs/00-modelo-ameacas.md)
 - [Linha de base de segurança (antes/depois)](docs/01-baseline-seguranca.md)
+- [Criptografia ponta a ponta (Etapa 4b-1)](docs/05-e2ee.md) — o schema mudou: recrie o banco (`docker compose --env-file backend/.env down -v`, ou reaplique a migração com backup, §6)
 - [Autenticação e autorização (Etapa 2)](docs/02-autenticacao-autorizacao.md)
 - [Protocolo de tempo real (Etapa 3)](docs/03-protocolo.md)
 - [TLS, proxy reverso e origem única (Etapa 4a)](docs/04-tls-e-proxy.md)
