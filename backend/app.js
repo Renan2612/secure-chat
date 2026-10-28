@@ -35,6 +35,19 @@ const healthCheck = async (req, res) => {
   }
 };
 
+// Número de proxies reversos na frente do app (Caddy = 1). Só um inteiro
+// >= 1: "true" faria o Express confiar em QUALQUER X-Forwarded-For (o
+// cliente escolheria o próprio IP no rate limit), e listas/nomes ("loopback")
+// mudam o modelo de confiança em silêncio. Valor inválido → não sobe.
+const trustProxyHops = () => {
+  const raw = process.env.TRUST_PROXY;
+  if (raw === undefined || raw === "") return null;
+  if (!/^[1-9][0-9]*$/.test(raw)) {
+    throw new Error("TRUST_PROXY deve ser um inteiro >= 1 (número de proxies reversos na frente do backend)");
+  }
+  return Number(raw);
+};
+
 // onSessionEnd(userId): chamado quando uma sessão termina por logout, para o
 // canal em tempo real derrubar as conexões abertas daquele usuário.
 const createApp = ({
@@ -50,13 +63,15 @@ const createApp = ({
   // emitido, e o rate limit veria o IP do proxy em vez do IP do cliente.
   // TRUST_PROXY = número de proxies na frente do app (ex.: 1). Não habilitar
   // sem proxy: o cliente poderia forjar X-Forwarded-For.
-  if (process.env.TRUST_PROXY) {
-    const hops = Number(process.env.TRUST_PROXY);
-    app.set("trust proxy", Number.isInteger(hops) ? hops : process.env.TRUST_PROXY);
-  }
+  const hops = trustProxyHops();
+  if (hops !== null) app.set("trust proxy", hops);
 
   // --- Segurança de cabeçalhos HTTP ---
-  app.use(helmet());
+  // HSTS fica com o proxy TLS (Caddy), que vê a conexão HTTPS e cobre todas
+  // as respostas da origem; emitir aqui também duplicaria o cabeçalho.
+  // Os demais (nosniff, CSP, Referrer-Policy...) das respostas da API vêm
+  // daqui (docs/04-tls-e-proxy.md).
+  app.use(helmet({ strictTransportSecurity: false }));
 
   // --- CORS restrito à origem do frontend ---
   app.use(
