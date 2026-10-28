@@ -9,3 +9,5 @@
 node_modules
 npm-debug.log*
 tests
+# Cliente de referência (roda na máquina do usuário, não no servidor).
+tools
