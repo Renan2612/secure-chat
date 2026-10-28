@@ -309,6 +309,43 @@ base64 da Etapa 4 não têm esse problema.
 
 ## 7. Regras de autorização
 
+A fonte de verdade é o banco (`rooms_users` e `user_sessions`), **nunca** o
+que o cliente envia nem estado antigo guardado na conexão.
+
+1. **Identidade = sessão.** O `userId` de uma conexão vem da sessão lida no
+   upgrade (`realtime/index.js`) e fica fixo em `conn.userId`. Nenhum
+   pacote do cliente carrega identidade: o schema de `MSG_SEND` não tem
+   `from`, e campos extras são descartados pelo zod.
+2. **Remetente pelo servidor.** O `MSG_DELIVER.from` e o
+   `messages.user_id` gravado são sempre `conn.userId`
+   (`handlers.js`, `MSG_SEND`).
+3. **Inscrição só para membro.** `SUBSCRIBE` consulta
+   `rooms_users (room, user_id)`. Sala inexistente e sala alheia recebem o
+   **mesmo** `NOT_MEMBER`, para não revelar quais IDs de sala existem.
+4. **Nova checagem a cada envio.** `MSG_SEND` grava com
+   `INSERT … SELECT … WHERE EXISTS (membro)`: checar e gravar são **uma
+   só consulta**, sem janela entre elas. Estar inscrito **não** basta, e
+   não é exigido: quem foi removido da sala depois do `SUBSCRIBE` recebe
+   `NOT_MEMBER`.
+5. **Entrega só a inscritos que ainda são membros.** `MSG_DELIVER` vai
+   apenas às conexões do mapa em memória `sala → conexões` daquela sala.
+   **Não existe broadcast global.** Antes de entregar, o servidor relê os
+   membros da sala: inscrição de quem saiu é desfeita (`UNSUBSCRIBED`) e
+   essa conexão não recebe a mensagem.
+6. **Logout fecha o canal.** `POST /logout` destrói a sessão e chama
+   `onSessionEnd(userId)` (`routes/login.js`), ligado por
+   `createServer.js` a `realtime.closeUser`, que fecha com **4401 todas as
+   conexões do usuário**, inclusive de outras sessões e as que ainda não
+   mandaram HELLO. Um upgrade que estava lendo a sessão durante o logout é
+   recusado (contador de revogações, `registry.revokedSince`).
+7. **Sessão revalidada periodicamente.** A cada heartbeat (30 s), a sessão
+   de cada conexão é relida do store: expirada, apagada do banco (ex.:
+   pelo admin ou por logout em outra instância) ou de outro usuário →
+   close 4401. Se o store falhar, as conexões são mantidas e o erro é
+   registrado (o banco fora já impede gravar e autorizar).
+8. **Depois do close, nada é processado.** Quadros que cheguem enquanto o
+   fechamento não termina são descartados (`connection.js`, `onFrame`).
+
 ## 8. Modelo de ameaças do protocolo
 
 ## 9. Limitações conhecidas
