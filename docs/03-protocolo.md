@@ -376,6 +376,54 @@ Ameaças **não** cobertas nesta etapa estão na §9.
 
 ## 9. Limitações conhecidas
 
+1. **Sem TLS nem E2EE (Etapa 4).** Hoje o tráfego é `ws://` e `http://`:
+   na rede passam em claro a senha do login, o cookie `sid` (que permite
+   sequestrar a sessão), todos os pacotes e o `body` (ver §11). O banco
+   guarda o `body` em claro, então o admin lê tudo. A Etapa 4 troca para
+   `wss://` e cifra o `body` no cliente, sem mudar o protocolo.
+2. **Metadados visíveis ao servidor**, mesmo depois da E2EE: quem está
+   conectado, em que salas se inscreve, quem envia para qual sala, quando,
+   com que frequência e o tamanho de cada `body`. O `cid` gravado em
+   `messages` é mais um metadado. É uma limitação de qualquer arquitetura
+   cliente-servidor ([`00-modelo-ameacas.md`](00-modelo-ameacas.md) §4);
+   minimizar retenção e logs é a Etapa 5.
+3. **Body sem integridade fim a fim.** O servidor (ou o admin) pode alterar,
+   reordenar, descartar ou reinjetar mensagens (o `from` é definido por ele).
+   A autenticidade do conteúdo entre usuários depende da E2EE autenticada
+   da Etapa 4.
+4. **Estado em memória, instância única.** Inscrições (`sala → conexões`),
+   contagem de conexões, baldes do rate limit, quarentenas e o contador de
+   revogações vivem no processo (`realtime/registry.js`). Com mais de uma
+   instância, uma mensagem gravada numa instância não chega aos inscritos
+   da outra, o limite de 5 conexões vale por instância, e o logout só fecha
+   na hora as conexões da instância que o recebeu (as demais, no próximo
+   heartbeat, em até 30 s). Escalar exige um barramento compartilhado (ex.:
+   `LISTEN/NOTIFY` do Postgres ou Redis). Reiniciar o servidor derruba
+   todas as conexões, e os clientes precisam se inscrever de novo.
+5. **Sem entrega offline nem retomada.** Quem está desconectado não recebe
+   nada pelo socket. Ao reconectar, o cliente busca o histórico em
+   `GET /messages/:id` (as mais recentes, paginando para trás com
+   `before`). Não há "desde o id N" nem confirmação de leitura pelo
+   protocolo.
+6. **Expiração da sessão detectada em até 30 s.** Sessão apagada ou
+   expirada fora do logout só fecha o socket no próximo heartbeat. Se o
+   store estiver fora do ar, as conexões são mantidas (escolha por
+   disponibilidade; o banco fora já impede gravar e autorizar).
+7. **Saída da sala percebida na próxima mensagem.** Quem é removido de uma
+   sala continua no mapa de inscrições até a próxima entrega naquela sala,
+   quando é desinscrito (`UNSUBSCRIBED`) **sem** receber a mensagem. Não
+   há rota de remoção de membros ainda (os testes apagam direto no banco).
+8. **Logout fecha todas as conexões do usuário**, inclusive de outros
+   dispositivos com sessões ainda válidas (como pede a especificação).
+   Esses clientes podem reconectar com o próprio cookie.
+9. **Rate limit por conexão.** Com 5 conexões, um usuário sustenta até
+   50 quadros/s. Um usuário em quarentena só bloqueia a si mesmo.
+10. **Uma única origem** (`CLIENT_URL`). Clientes fora do navegador (como
+    o `ws-client.js`) declaram o `Origin` que quiserem. A checagem protege o
+    navegador da vítima, não autentica o programa cliente.
+11. **Escape JSON × tamanho do quadro**: um body cheio de caracteres de
+    controle pode estourar 16 KB mesmo abaixo de 8192 bytes (§6).
+
 ## 10. Mudanças de contrato para o frontend
 
 ## 11. Captura no Wireshark
