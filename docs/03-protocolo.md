@@ -230,9 +230,11 @@ Portanto:
   de novo na Etapa 4 teria outro texto cifrado);
 - reenvios simultâneos gravam uma única vez (o banco resolve a corrida);
 - o `cid` é **por remetente**: dois usuários podem usar o mesmo valor;
-- o mesmo `cid` em **outra sala** → `ERROR CID_REUSED`;
-- o reconhecimento de reenvio também exige ser membro: quem saiu da sala
-  recebe `NOT_MEMBER`, não o ACK antigo.
+- **autorização primeiro**: se nada foi gravado, o servidor verifica a
+  pertinência à sala **pedida**. Quem não é membro recebe `NOT_MEMBER`,
+  haja ou não `cid` repetido; inclusive quem saiu da sala e reenvia
+  (não recebe o ACK antigo);
+- sendo membro, o mesmo `cid` já usado em **outra sala** → `ERROR CID_REUSED`.
 
 ## 5. Erros e códigos de fechamento
 
@@ -246,7 +248,7 @@ Portanto:
 | `RATE_LIMITED` | Pacotes demais; aguarde | quadro acima do ritmo (§6). Enviado **só na 1ª violação** de cada sequência, para não amplificar a inundação | segue aberta; na 20ª violação seguida fecha com 4429 |
 | `NOT_MEMBER` | Sem acesso a esta sala | SUBSCRIBE ou MSG_SEND para sala da qual o usuário não é membro **ou que não existe** (mesma resposta) | segue aberta |
 | `CID_REUSED` | cid já usado em outra sala | MSG_SEND com `cid` que o usuário já usou em outra sala | segue aberta |
-| `INTERNAL` | Erro interno | falha inesperada ao tratar o pacote (ex.: banco fora). O log registra só o tipo do pacote e a mensagem do erro | segue aberta |
+| `INTERNAL` | Erro interno | falha inesperada ao tratar o pacote (ex.: banco fora). Num `MSG_SEND`, significa sempre **"não gravado"** (reenviar com o mesmo `cid` é seguro). Uma falha só na **entrega**, depois de gravar e mandar o `MSG_ACK`, não gera ERROR: vai ao log como "falha na entrega" e os inscritos recuperam a mensagem pelo histórico. O log registra o tipo do pacote, o código (SQLSTATE) e a mensagem do erro, nunca o pacote | segue aberta |
 
 As mensagens são fixas e genéricas: nunca ecoam a entrada nem detalham
 qual regra falhou.
@@ -405,23 +407,28 @@ Ameaças **não** cobertas nesta etapa estão na §9.
    `GET /messages/:id` (as mais recentes, paginando para trás com
    `before`). Não há "desde o id N" nem confirmação de leitura pelo
    protocolo.
-6. **Expiração da sessão detectada em até 30 s.** Sessão apagada ou
+6. **Envios em andamento no fechamento.** Um `MSG_SEND` que já estava
+   gravando quando o logout (ou um 4429) fechou a conexão é gravado e
+   entregue aos inscritos, porque foi enviado enquanto a sessão valia. O
+   remetente, porém, não recebe o `MSG_ACK` (a conexão já não está
+   aberta) e deve tratar o envio como não confirmado.
+7. **Expiração da sessão detectada em até 30 s.** Sessão apagada ou
    expirada fora do logout só fecha o socket no próximo heartbeat. Se o
    store estiver fora do ar, as conexões são mantidas (escolha por
    disponibilidade; o banco fora já impede gravar e autorizar).
-7. **Saída da sala percebida na próxima mensagem.** Quem é removido de uma
+8. **Saída da sala percebida na próxima mensagem.** Quem é removido de uma
    sala continua no mapa de inscrições até a próxima entrega naquela sala,
    quando é desinscrito (`UNSUBSCRIBED`) **sem** receber a mensagem. Não
    há rota de remoção de membros ainda (os testes apagam direto no banco).
-8. **Logout fecha todas as conexões do usuário**, inclusive de outros
+9. **Logout fecha todas as conexões do usuário**, inclusive de outros
    dispositivos com sessões ainda válidas (como pede a especificação).
    Esses clientes podem reconectar com o próprio cookie.
-9. **Rate limit por conexão.** Com 5 conexões, um usuário sustenta até
+10. **Rate limit por conexão.** Com 5 conexões, um usuário sustenta até
    50 quadros/s. Um usuário em quarentena só bloqueia a si mesmo.
-10. **Uma única origem** (`CLIENT_URL`). Clientes fora do navegador (como
+11. **Uma única origem** (`CLIENT_URL`). Clientes fora do navegador (como
     o `ws-client.js`) declaram o `Origin` que quiserem. A checagem protege o
     navegador da vítima, não autentica o programa cliente.
-11. **Escape JSON × tamanho do quadro**: um body cheio de caracteres de
+12. **Escape JSON × tamanho do quadro**: um body cheio de caracteres de
     controle pode estourar 16 KB mesmo abaixo de 8192 bytes (§6).
 
 ## 10. Mudanças de contrato para o frontend
@@ -541,32 +548,35 @@ servidor (item F).
 
 ```bash
 docker compose -f docker-compose.test.yml up -d --wait   # Postgres de teste (porta 5433)
-cd backend && npm test                                   # 23 suítes, 238 testes, ~20 s
+cd backend && npm test                                   # 24 suítes, 264 testes, ~25 s
 ```
 
 Os testes do protocolo sobem o servidor HTTP **de verdade** numa porta
 livre (`tests/ws/helpers.js`) e conversam com ele por WebSocket real. Os
 prazos (HELLO, heartbeat, quarentena) são encurtados por opção. Cada
 controle teve o teste escrito antes e visto falhando. Os que já passavam
-contra o código existente (registro de logs, CID_REUSED) foram validados
-por **mutação**: a quebra proposital do código os fez falhar.
+contra o código existente (registro de logs, CID_REUSED e as lacunas
+apontadas pela revisão: prazo do HELLO cancelado, upgrades simultâneos,
+`CLIENT_URL` ausente, SUBSCRIBE em conexão fechada, isolamento X/Y) foram
+validados por **mutação**: a quebra proposital do código os fez falhar.
 
 | Arquivo | Testes | O que prova |
 |---|---|---|
-| `tests/ws/upgrade.test.js` | 12 | upgrade sem cookie, com cookie forjado ou de sessão destruída → 401 sem abrir o socket; `Origin` alheio, ausente ou parecido → 403; outro caminho → 404; 5 por usuário → 429; total → 503 |
-| `tests/ws/hello.test.js` | 7 | WELCOME com o usuário da sessão; sem HELLO em 5 s → 4408; versão errada → 4426; pacote antes do HELLO → 1008; PING → PONG |
-| `tests/ws/subscribe.test.js` | 9 | SUBSCRIBE só para membro; sala inexistente = alheia; UNSUBSCRIBE; fechar remove as inscrições; sala inválida → BAD_REQUEST |
-| `tests/ws/msgSend.test.js` | 10 | `from` forjado ignorado (renasce de `messageSender.test.js`); entrega só a inscritos da sala (X não recebe Y); não membro e removido → NOT_MEMBER sem gravar; removido deixa de receber |
-| `tests/ws/idempotency.test.js` | 7 | mesmo `cid` não duplica (mesma conexão, outra conexão, simultâneo); `cid` por usuário; outra sala → CID_REUSED; reenvio de quem saiu → NOT_MEMBER |
-| `tests/ws/msgValidation.test.js` | 17 | body vazio, acima de 8192 bytes, não-string, ausente, com NUL; sala como texto com SQL injection; sala ausente; `cid` inválido → ERROR sem fechar e sem gravar; body com exatamente 8192 bytes (ASCII e multibyte) aceito (renascem de `validation.test.js`) |
+| `tests/ws/upgrade.test.js` | 17 | upgrade sem cookie, com cookie forjado, de sessão destruída ou expirada → 401 sem abrir o socket; `Origin` alheio, ausente, `null` ou parecido → 403, e `CLIENT_URL` ausente → 403 (falha fechada); outro caminho → 404; 5 por usuário → 429; total → 503; upgrades **simultâneos** não furam os limites |
+| `tests/ws/hello.test.js` | 13 | WELCOME com o usuário da sessão; HELLO aceito cancela o prazo; sem HELLO em 5 s → 4408; versão errada, `v` texto ou ausente → 4426; pacote, JSON inválido ou binário antes do HELLO → 1008; HELLO fora do schema → 1008; PING → PONG |
+| `tests/ws/subscribe.test.js` | 10 | SUBSCRIBE só para membro; sala inexistente = alheia; UNSUBSCRIBE; fechar remove as inscrições; conexão que fecha durante o SUBSCRIBE não fica inscrita; sala inválida → BAD_REQUEST |
+| `tests/ws/msgSend.test.js` | 11 | `from` forjado ignorado (renasce de `messageSender.test.js`); entrega só a inscritos da sala (X não recebe Y, nem quem é membro de Y mas só inscrito em X); não membro e removido → NOT_MEMBER sem gravar; removido deixa de receber (UNSUBSCRIBED) |
+| `tests/ws/idempotency.test.js` | 9 | mesmo `cid` não duplica (mesma conexão, outra conexão, simultâneo); `cid` por usuário; outra sala → CID_REUSED; NOT_MEMBER tem precedência sobre o `cid` |
+| `tests/ws/msgValidation.test.js` | 18 | body vazio, acima de 8192 bytes, não-string, ausente, com NUL; sala como texto com SQL injection, ausente ou acima do INTEGER; `cid` inválido → ERROR sem fechar e sem gravar; body com exatamente 8192 bytes (ASCII e multibyte) aceito (renascem de `validation.test.js`) |
 | `tests/ws/frames.test.js` | 9 | quadro > 16 KB → 1009 (também antes do HELLO); JSON inválido, binário e tipo desconhecido → ERROR; 3º inválido → 1008; NOT_MEMBER não conta |
 | `tests/ws/rateLimit.test.js` | 7 | token bucket: excesso → ERROR único; inundação → 4429; acalmar zera; quarentena de 60 s → 429 no upgrade |
-| `tests/ws/logout.test.js` | 6 | logout → 4401 em todas as conexões do usuário; outros não são afetados; quadros pós-close descartados; corrida upgrade × logout |
+| `tests/ws/logout.test.js` | 5 | logout → 4401 em todas as conexões do usuário; outros não são afetados; quadros pós-close descartados; corrida upgrade × logout → 401 |
 | `tests/ws/heartbeat.test.js` | 6 | ping de controle periódico; conexão morta encerrada; sessão apagada ou expirada → 4401 |
+| `tests/ws/errorPaths.test.js` | 6 | falha na entrega depois do ACK não vira ERROR; log com código; erro de protocolo da ws registrado sem conteúdo; falha depois do 101 derruba o socket sem HTTP no fluxo; store fora no heartbeat mantém as conexões; falha ao derrubar sockets não impede o 204 do logout |
 | `tests/ws/backpressure.test.js` | 3 | buffer de saída > limite → desconecta; no limite → entrega normal |
-| `tests/ws/logging.test.js` | 3 | nenhum log contém body ou cookie (fluxo normal, erros, erro interno, payload gigante, falha no upgrade) |
+| `tests/ws/logging.test.js` | 3 | nenhum log (console nem stdout/stderr) contém body ou cookie: fluxo normal, erros, erro interno, payload gigante, falha no upgrade |
 | `tests/messagesHistory.test.js` | 13 | `POST /messages` → 404; histórico paginado (`limit`, `before`, padrão 50, máximo 100, entradas inválidas → 400); coluna aceita até 8192 bytes e recusa acima |
-| `tests/tools/wsClient.test.js` | 6 | o cliente de referência (processo real) envia, recebe, faz logout ao sair e falha de forma limpa |
+| `tests/tools/wsClient.test.js` | 11 | o cliente de referência (processo real) envia, recebe, faz logout ao sair (também após upgrade recusado), avisa logout que falhou, não fica pendurado com envios descartados ou fechamento 4429, e resiste a pacote inválido do servidor |
 
 Testes anteriores ajustados por causa da remoção do `POST /messages`:
 `messageSender.test.js` (removido; renasce em `msgSend.test.js`), os casos
