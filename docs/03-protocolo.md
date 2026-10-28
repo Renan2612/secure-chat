@@ -538,3 +538,38 @@ servidor (item F).
 | Captura (arquivo `.pcapng`) | | |
 
 ## 12. Testes
+
+```bash
+docker compose -f docker-compose.test.yml up -d --wait   # Postgres de teste (porta 5433)
+cd backend && npm test                                   # 23 suítes, 238 testes, ~20 s
+```
+
+Os testes do protocolo sobem o servidor HTTP **de verdade** numa porta
+livre (`tests/ws/helpers.js`) e conversam com ele por WebSocket real. Os
+prazos (HELLO, heartbeat, quarentena) são encurtados por opção. Cada
+controle teve o teste escrito antes e visto falhando. Os que já passavam
+contra o código existente (registro de logs, CID_REUSED) foram validados
+por **mutação**: a quebra proposital do código os fez falhar.
+
+| Arquivo | Testes | O que prova |
+|---|---|---|
+| `tests/ws/upgrade.test.js` | 12 | upgrade sem cookie, com cookie forjado ou de sessão destruída → 401 sem abrir o socket; `Origin` alheio, ausente ou parecido → 403; outro caminho → 404; 5 por usuário → 429; total → 503 |
+| `tests/ws/hello.test.js` | 7 | WELCOME com o usuário da sessão; sem HELLO em 5 s → 4408; versão errada → 4426; pacote antes do HELLO → 1008; PING → PONG |
+| `tests/ws/subscribe.test.js` | 9 | SUBSCRIBE só para membro; sala inexistente = alheia; UNSUBSCRIBE; fechar remove as inscrições; sala inválida → BAD_REQUEST |
+| `tests/ws/msgSend.test.js` | 10 | `from` forjado ignorado (renasce de `messageSender.test.js`); entrega só a inscritos da sala (X não recebe Y); não membro e removido → NOT_MEMBER sem gravar; removido deixa de receber |
+| `tests/ws/idempotency.test.js` | 7 | mesmo `cid` não duplica (mesma conexão, outra conexão, simultâneo); `cid` por usuário; outra sala → CID_REUSED; reenvio de quem saiu → NOT_MEMBER |
+| `tests/ws/msgValidation.test.js` | 17 | body vazio, acima de 8192 bytes, não-string, ausente, com NUL; sala como texto com SQL injection; sala ausente; `cid` inválido → ERROR sem fechar e sem gravar; body com exatamente 8192 bytes (ASCII e multibyte) aceito (renascem de `validation.test.js`) |
+| `tests/ws/frames.test.js` | 9 | quadro > 16 KB → 1009 (também antes do HELLO); JSON inválido, binário e tipo desconhecido → ERROR; 3º inválido → 1008; NOT_MEMBER não conta |
+| `tests/ws/rateLimit.test.js` | 7 | token bucket: excesso → ERROR único; inundação → 4429; acalmar zera; quarentena de 60 s → 429 no upgrade |
+| `tests/ws/logout.test.js` | 6 | logout → 4401 em todas as conexões do usuário; outros não são afetados; quadros pós-close descartados; corrida upgrade × logout |
+| `tests/ws/heartbeat.test.js` | 6 | ping de controle periódico; conexão morta encerrada; sessão apagada ou expirada → 4401 |
+| `tests/ws/backpressure.test.js` | 3 | buffer de saída > limite → desconecta; no limite → entrega normal |
+| `tests/ws/logging.test.js` | 3 | nenhum log contém body ou cookie (fluxo normal, erros, erro interno, payload gigante, falha no upgrade) |
+| `tests/messagesHistory.test.js` | 13 | `POST /messages` → 404; histórico paginado (`limit`, `before`, padrão 50, máximo 100, entradas inválidas → 400); coluna aceita até 8192 bytes e recusa acima |
+| `tests/tools/wsClient.test.js` | 6 | o cliente de referência (processo real) envia, recebe, faz logout ao sair e falha de forma limpa |
+
+Testes anteriores ajustados por causa da remoção do `POST /messages`:
+`messageSender.test.js` (removido; renasce em `msgSend.test.js`), os casos
+de mensagem de `validation.test.js` (renascem em `msgValidation.test.js`),
+"não membro posta" de `requireRoomMember.test.js` (renasce em
+`msgSend.test.js`), e `hygiene.test.js` (grava a mensagem direto no banco).
