@@ -87,16 +87,31 @@ const attachRealtime = (server, { session, ...options } = {}) => {
         return rejectUpgrade(socket, 503, "Servidor sem vagas de conexão");
       }
       return wss.handleUpgrade(req, socket, head, (ws) => {
-        const conn = new Connection(ws, {
-          userId,
-          sid: req.sessionID,
-          limits,
-          handlers,
-          onRateLimited: () => registry.startCooldown(userId, limits.rateLimitCooldownMs),
-        });
-        registry.add(conn);
+        // O 101 já foi enviado: daqui em diante uma falha não pode virar
+        // resposta HTTP (cairia no meio do fluxo WebSocket). Derruba o socket.
+        let conn;
+        try {
+          conn = new Connection(ws, {
+            userId,
+            sid: req.sessionID,
+            limits,
+            handlers,
+            onRateLimited: () => registry.startCooldown(userId, limits.rateLimitCooldownMs),
+          });
+          registry.add(conn);
+        } catch (err) {
+          console.error(`[ws] falha ao registrar conexão: ${err.message}`);
+          if (conn) registry.remove(conn);
+          ws.terminate();
+          return;
+        }
         ws.on("close", () => registry.remove(conn));
-        ws.on("error", () => ws.terminate());
+        // Erros de protocolo (quadro grande demais, UTF-8 inválido, opcode
+        // desconhecido) são sinais de abuso: registra só o código, nunca o quadro.
+        ws.on("error", (err) => {
+          console.error(`[ws] erro de protocolo user=${userId} code=${err.code ?? "-"}`);
+          ws.terminate();
+        });
       });
     } catch (err) {
       console.error("[ws] falha no upgrade:", err.message);
@@ -133,6 +148,9 @@ const attachRealtime = (server, { session, ...options } = {}) => {
     }
   };
 
+  // Uma revalidação lenta (muitas sessões, banco devagar) não se sobrepõe à
+  // próxima, para não empilhar consultas no pool.
+  let revalidating = false;
   const heartbeat = setInterval(() => {
     for (const conn of registry.all) {
       if (!conn.alive) {
@@ -142,7 +160,13 @@ const attachRealtime = (server, { session, ...options } = {}) => {
       conn.alive = false;
       conn.socket.ping();
     }
-    revalidateSessions();
+    if (revalidating) return;
+    revalidating = true;
+    revalidateSessions()
+      .catch((err) => console.error("[ws] falha na revalidação de sessões:", err.message))
+      .finally(() => {
+        revalidating = false;
+      });
   }, limits.heartbeatIntervalMs);
   heartbeat.unref();
 

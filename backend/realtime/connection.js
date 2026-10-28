@@ -120,7 +120,7 @@ class Connection {
     try {
       await this.handlers[packet.type](this, packet);
     } catch (err) {
-      console.error(`[ws] erro ao tratar ${packet.type}: ${err.message}`);
+      console.error(`[ws] erro ao tratar ${packet.type}: code=${err.code ?? "-"} ${err.message}`);
       this.error("INTERNAL", packet.id);
     }
   }

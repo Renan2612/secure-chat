@@ -61,7 +61,14 @@ const logoutUser = (req, res, next) => {
   const { userId } = req.session;
   req.session.destroy((err) => {
     if (err) return next(err);
-    req.app.locals.onSessionEnd(userId);
+    // A sessão já foi destruída: uma falha ao derrubar os sockets não pode
+    // impedir a resposta (nem, por rodar fora da pilha do Express, derrubar o
+    // processo). Os sockets restantes caem na revalidação do heartbeat (4401).
+    try {
+      req.app.locals.onSessionEnd(userId);
+    } catch (endErr) {
+      console.error(`[logout] falha ao encerrar as conexões em tempo real: ${endErr.message}`);
+    }
     res.clearCookie(SESSION_COOKIE_NAME, cookieOptions());
     return res.status(204).send();
   });

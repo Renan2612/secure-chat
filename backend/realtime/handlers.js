@@ -81,7 +81,15 @@ const createHandlers = (registry) => {
       const ts = message.dt_message.toISOString();
       conn.send({ type: "MSG_ACK", cid, id: message.id, ts });
       if (!saved) return undefined;
-      return deliver(room, { type: "MSG_DELIVER", room, id: message.id, from: conn.userId, ts, body });
+      // A mensagem já está gravada e confirmada: uma falha na entrega não vira
+      // ERROR para o remetente (seria ACK + ERROR para o mesmo envio). Os
+      // inscritos a recuperam pelo histórico HTTP.
+      try {
+        return await deliver(room, { type: "MSG_DELIVER", room, id: message.id, from: conn.userId, ts, body });
+      } catch (err) {
+        console.error(`[ws] falha na entrega da mensagem ${message.id}: code=${err.code ?? "-"} ${err.message}`);
+        return undefined;
+      }
     },
   };
 };
