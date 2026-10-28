@@ -70,9 +70,14 @@ auditado; ao incorporá-lo, ele precisa seguir o contrato da
 ```bash
 cp backend/.env.example backend/.env
 # edite backend/.env com valores reais — em especial SESSION_SECRET
-# (mínimo 32 caracteres; o servidor não sobe com o placeholder)
-docker compose up --build
+# (mínimo 32 caracteres; o servidor não sobe com o placeholder) e DB_PASSWORD
+docker compose --env-file backend/.env up --build
 ```
+
+O `--env-file` faz o banco nascer com a mesma senha que o backend usa
+(sem ele, o compose recusa subir: `DB_PASSWORD` é obrigatório). Banco e
+backend ficam publicados só em `127.0.0.1`, e o backend roda na imagem como
+usuário sem privilégios (`node`).
 
 O backend sobe em `http://localhost:8000` (`GET /health` responde `{"status":"ok"}`);
 o canal em tempo real fica em `ws://localhost:8000/ws`.
@@ -87,12 +92,15 @@ CHAT_PASSWORD='sua-senha' node tools/ws-client.js --email voce@example.com --roo
 > Vindo de uma etapa anterior? O schema mudou (Etapa 2: tabela de sessões,
 > e-mail único; Etapa 3: `messages.message` em TEXT e coluna `cid`) e o
 > script de init só roda num volume vazio: recrie com
-> `docker compose down -v && docker compose up --build` (apaga os dados de
-> desenvolvimento).
+> `docker compose down -v && docker compose --env-file backend/.env up --build`
+> (apaga os dados de desenvolvimento). Se o volume foi criado sem o
+> `--env-file`, a senha do banco é a antiga padrão (`troque_esta_senha`) e o
+> `/health` responde 503: recrie o volume ou ajuste a senha com
+> `ALTER USER` no `psql` do container.
 
 ### Opção 2: manual
 
-Requer Node.js ≥ 18 e PostgreSQL rodando localmente.
+Requer Node.js ≥ 22 e PostgreSQL rodando localmente.
 
 ```bash
 cd backend

@@ -1,4 +1,7 @@
-version: "3.9"
+# Rode com: docker compose --env-file backend/.env up --build
+# O --env-file faz o compose ler DB_USER/DB_PASSWORD/DB_NAME do MESMO
+# arquivo que o backend usa (sem ele, o compose procuraria um .env na raiz
+# e o banco nasceria com uma senha diferente da do backend).
 
 services:
   db:
@@ -6,10 +9,13 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${DB_USER:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-troque_esta_senha}
+      # Sem valor padrão: faltando, o compose falha em vez de criar o banco
+      # com uma senha pública.
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?defina DB_PASSWORD (use --env-file backend/.env)}
       POSTGRES_DB: ${DB_NAME:-secure_chat}
+    # Só no loopback do host: o banco não fica exposto na rede local.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
       - ./backend/database/migrations.sql:/docker-entrypoint-initdb.d/01-migrations.sql:ro
@@ -26,8 +32,9 @@ services:
       - ./backend/.env
     environment:
       DB_HOST: db
+    # Só no loopback do host; acesso externo virá pelo proxy TLS (Etapa 4).
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       db:
         condition: service_healthy

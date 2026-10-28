@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "description": "Backend do chat seguro (projeto da disciplina de Redes) — fork saneado de asafebxd/MessageWebApp.",
   "main": "server.js",
