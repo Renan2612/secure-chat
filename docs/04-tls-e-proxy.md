@@ -240,6 +240,75 @@ O TLS protege o **trajeto** cliente ↔ proxy, e só ele:
 
 ## 10. Wireshark: antes e agora
 
+Passos (compare com [`03-protocolo.md`](03-protocolo.md) §11):
+
+1. Suba a stack e exporte a CA (§11). Abra o Wireshark na interface
+   **`lo`** (cliente → `127.0.0.1:443`, passando pelo `docker-proxy`), com
+   filtro de captura `tcp port 443 or tcp port 80`.
+2. Rode o cliente de referência e mande uma mensagem:
+   `CHAT_PASSWORD=… node backend/tools/ws-client.js --server https://localhost/api --ca certs/caddy-local-root.crt --origin https://localhost --email … --room …`
+3. Filtros de exibição: **`tls`** (registros TLS), `tls.handshake` (só o
+   handshake), `http` (só o 308 da porta 80).
+
+**O que se vê agora:**
+
+- **ClientHello** em claro: versões oferecidas, suítes, curvas
+  (inclusive `X25519MLKEM768`), ALPN (`h2`, `http/1.1`) e o **SNI
+  `localhost`** (nome do servidor; o ECH, que o esconderia, não está em uso).
+- **ServerHello**: versão e suíte escolhidas. No TLS 1.3, o certificado e o
+  restante do handshake já vão **cifrados**. No TLS 1.2, o certificado
+  aparece em claro.
+- Depois disso, só registros **`Application Data`** opacos: login, cookie,
+  upgrade do `/ws`, `HELLO`, `MSG_SEND`, `body`… **nada legível**.
+  *Follow → TLS Stream* não mostra o conteúdo.
+- Na porta 80, só o `308` para HTTPS, sem dados da aplicação (a não ser
+  que um cliente mande dados por HTTP antes de ser redirecionado; o HSTS
+  evita isso no navegador a partir da segunda visita).
+
+**O que continua visível (metadados de rede):** IPs e portas de origem e
+destino, o SNI, os **tamanhos** dos registros (dá para estimar o tamanho
+de cada mensagem) e os **horários** (quando alguém escreve, de quanto em
+quanto tempo, o ping de controle a cada 30 s). O TLS esconde o conteúdo,
+não o padrão do tráfego.
+
+**Ainda em claro, de propósito:** capturando na interface da **rede
+`interna`** do Docker (`br-…`), o trecho proxy → backend aparece em HTTP
+puro (§9). É uma boa demonstração de onde o TLS termina.
+
+**Para a apresentação (opcional):** o Node grava as chaves de sessão TLS
+com `node --tls-keylog=chaves.log backend/tools/ws-client.js …`. Configurado
+em *Preferences → Protocols → TLS → (Pre)-Master-Secret log filename*, o
+Wireshark decifra a **própria** captura e mostra que o conteúdo está lá.
+Esse arquivo é tão sensível quanto o tráfego: não commitar e apagar depois.
+
+| Momento | Etapa 3 (`ws://`) | Etapa 4a (`wss://`) |
+|---|---|---|
+| `POST /login` | senha em claro | cifrado (Application Data) |
+| Cookie `sid` | em claro | cifrado; `Secure` impede envio por HTTP |
+| Upgrade `/ws` | cabeçalhos em claro | cifrado |
+| `MSG_SEND.body` / `MSG_DELIVER.body` | texto em claro | cifrado **na rede**; em claro no proxy, no backend e no banco |
+| Nome do servidor | `Host` em claro | SNI em claro |
+| IPs, portas, tamanhos, horários | visíveis | visíveis |
+
 ## 11. Como subir, exportar a CA e verificar
+
+```bash
+cp backend/.env.example backend/.env       # e preencha SESSION_SECRET e DB_PASSWORD
+docker compose --env-file backend/.env up --build -d
+scripts/export-ca.sh                       # → certs/caddy-local-root.crt (fora do git)
+scripts/verify-tls.sh                      # 28 provas; sai com != 0 se alguma falhar
+curl --cacert certs/caddy-local-root.crt https://localhost/api/health
+docker compose --env-file backend/.env down   # sem -v: preserva o banco e a CA
+```
+
+- Sem `--env-file`, o compose se recusa a subir (`DB_PASSWORD` é
+  obrigatório).
+- `PUBLIC_HOST` (opcional, padrão `localhost`) define o nome do site no
+  Caddyfile e o `CLIENT_URL` do backend.
+- O `verify-tls.sh` cria e **apaga** um usuário e uma sala temporários e
+  gasta 5 tentativas do limite de `/register` e `/login` por IP (20 a cada
+  15 min).
+- Os testes automatizados (`cd backend && npm test`) continuam rodando
+  contra o Postgres de teste na porta 5433, sem a stack.
 
 ## 12. Decisões tomadas nesta etapa e pendências
