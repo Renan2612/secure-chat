@@ -38,6 +38,12 @@ class Connection {
 
   send(packet) {
     if (!this.isOpen()) return;
+    // Cliente lento: o close não chegaria (está atrás do buffer cheio), então
+    // a conexão é derrubada direto; o registro a remove no evento "close".
+    if (this.socket.bufferedAmount > this.limits.maxBufferedBytes) {
+      this.socket.terminate();
+      return;
+    }
     this.socket.send(JSON.stringify({ v: PROTOCOL_VERSION, ...packet }));
   }
 

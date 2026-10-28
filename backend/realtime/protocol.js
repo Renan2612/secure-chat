@@ -31,6 +31,9 @@ const DEFAULT_LIMITS = {
   // respondeu ao ping anterior é derrubado. A sessão de cada conexão também
   // é conferida no store (expirou ou foi apagada → close 4401).
   heartbeatIntervalMs: 30 * 1000,
+  // Backpressure: dados aguardando envio a um cliente que não lê. Acima
+  // disso, a conexão é encerrada (cliente lento não acumula memória aqui).
+  maxBufferedBytes: 1024 * 1024,
 };
 
 // Códigos de fechamento (RFC 6455 §7.4; 4000–4999 = uso privado da aplicação).
