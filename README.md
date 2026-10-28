@@ -13,18 +13,20 @@ saneado de [asafebxd/MessageWebApp](https://github.com/asafebxd/MessageWebApp)
 - [x] **Etapa 1** — Saneamento do projeto base ([`docs/01-baseline-seguranca.md`](docs/01-baseline-seguranca.md))
 - [x] **Etapa 2** — Autenticação e autorização ([`docs/02-autenticacao-autorizacao.md`](docs/02-autenticacao-autorizacao.md))
 - [x] **Etapa 3** — Camada de comunicação: protocolo próprio sobre WebSocket ([`docs/03-protocolo.md`](docs/03-protocolo.md))
-- [ ] Etapa 4 — Criptografia ponta a ponta (E2EE) + TLS
+- [x] **Etapa 4a** — TLS, proxy reverso (Caddy) e origem única ([`docs/04-tls-e-proxy.md`](docs/04-tls-e-proxy.md))
+- [ ] Etapa 4b — Criptografia ponta a ponta (E2EE)
 - [ ] Etapa 5 — Privacidade adicional
 - [ ] Etapa 6 — Infraestrutura e validação
 - [ ] Etapa 7 — Entrega
 
-> **Importante**: a Etapa 3 trocou o Socket.IO por um protocolo próprio
-> sobre WebSocket em `/ws`, autenticado pela mesma sessão da API e com
-> entrega só aos membros de cada sala. **Ainda não há TLS nem criptografia
-> ponta a ponta**: senha, cookie e mensagens trafegam e ficam no banco em
-> claro (Etapa 4). O `POST /messages` foi removido; o envio é só pelo
-> WebSocket (contrato para o frontend em
-> [`docs/03-protocolo.md`](docs/03-protocolo.md) §10).
+> **Importante**: desde a Etapa 4a, tudo passa por uma **origem única
+> `https://localhost`**, servida pelo Caddy, que termina o TLS: página em
+> `/`, API em `/api/*`, tempo real em `wss://localhost/ws`. Backend e banco
+> não publicam portas. **O TLS termina no proxy**: proxy, backend e banco
+> ainda veem senha e mensagens em claro, e as mensagens ficam em claro no
+> banco. Só a criptografia ponta a ponta (Etapa 4b) resolve isso. O
+> `POST /messages` foi removido na Etapa 3; o envio é só pelo WebSocket
+> ([`docs/03-protocolo.md`](docs/03-protocolo.md) §10).
 
 ## Estrutura
 
@@ -34,7 +36,14 @@ secure-chat/
 │   ├── 00-modelo-ameacas.md          # Etapa 0
 │   ├── 01-baseline-seguranca.md      # Etapa 1 — registro antes/depois
 │   ├── 02-autenticacao-autorizacao.md # Etapa 2
-│   └── 03-protocolo.md           # Etapa 3 — especificação do protocolo
+│   ├── 03-protocolo.md           # Etapa 3 — especificação do protocolo
+│   └── 04-tls-e-proxy.md         # Etapa 4a — TLS, proxy e origem única
+├── proxy/
+│   ├── Caddyfile                 # proxy reverso + política TLS
+│   └── site/index.html           # página estática provisória (/)
+├── scripts/
+│   ├── export-ca.sh              # exporta a raiz da CA local do Caddy
+│   └── verify-tls.sh             # provas da Etapa 4a contra a stack no ar
 ├── backend/
 │   ├── server.js                  # ponto de entrada (sobe o createServer)
 │   ├── createServer.js            # HTTP (Express) + tempo real (/ws), mesma sessão
@@ -54,7 +63,7 @@ secure-chat/
 │   ├── .env.example
 │   ├── Dockerfile
 │   └── package.json
-├── docker-compose.yml
+├── docker-compose.yml             # proxy (único publicado), backend e banco
 ├── docker-compose.test.yml        # Postgres descartável para os testes
 └── .gitignore
 ```
@@ -75,19 +84,29 @@ docker compose --env-file backend/.env up --build
 ```
 
 O `--env-file` faz o banco nascer com a mesma senha que o backend usa
-(sem ele, o compose recusa subir: `DB_PASSWORD` é obrigatório). Banco e
-backend ficam publicados só em `127.0.0.1`, e o backend roda na imagem como
-usuário sem privilégios (`node`).
+(sem ele, o compose recusa subir: `DB_PASSWORD` é obrigatório). O único
+serviço publicado é o **proxy**, em `127.0.0.1:80` (redireciona) e
+`127.0.0.1:443`. Backend e banco ficam só na rede interna do compose, e o
+backend roda como usuário sem privilégios (`node`).
 
-O backend sobe em `http://localhost:8000` (`GET /health` responde `{"status":"ok"}`);
-o canal em tempo real fica em `ws://localhost:8000/ws`.
-
-Para testar o chat pelo terminal (a partir de `backend/`, com usuário e
-sala já criados):
+O certificado de `https://localhost` vem da **CA local do Caddy**. Exporte a
+raiz e use-a nos clientes (a verificação nunca é desligada):
 
 ```bash
-CHAT_PASSWORD='sua-senha' node tools/ws-client.js --email voce@example.com --room 1
+scripts/export-ca.sh                                   # → certs/caddy-local-root.crt
+curl --cacert certs/caddy-local-root.crt https://localhost/api/health   # {"status":"ok"}
+scripts/verify-tls.sh                                  # provas de TLS e da origem única
 ```
+
+Para testar o chat pelo terminal (com usuário e sala já criados):
+
+```bash
+CHAT_PASSWORD='sua-senha' node backend/tools/ws-client.js --server https://localhost/api \
+  --ca certs/caddy-local-root.crt --origin https://localhost --email voce@example.com --room 1
+```
+
+Para derrubar: `docker compose --env-file backend/.env down` (sem `-v`,
+preserva o banco e a CA local).
 
 > Vindo de uma etapa anterior? O schema mudou (Etapa 2: tabela de sessões,
 > e-mail único; Etapa 3: `messages.message` em TEXT e coluna `cid`) e o
@@ -98,9 +117,11 @@ CHAT_PASSWORD='sua-senha' node tools/ws-client.js --email voce@example.com --roo
 > `/health` responde 503: recrie o volume ou ajuste a senha com
 > `ALTER USER` no `psql` do container.
 
-### Opção 2: manual
+### Opção 2: manual (desenvolvimento, sem TLS)
 
-Requer Node.js ≥ 22 e PostgreSQL rodando localmente.
+Requer Node.js ≥ 22 e PostgreSQL rodando localmente. Sobe o backend direto
+em `http://localhost:8000`, sem proxy nem TLS: serve só para desenvolvimento
+local.
 
 ```bash
 cd backend
@@ -135,3 +156,4 @@ conforme o modelo de ameaças e o roteiro de etapas da disciplina.
 - [Linha de base de segurança (antes/depois)](docs/01-baseline-seguranca.md)
 - [Autenticação e autorização (Etapa 2)](docs/02-autenticacao-autorizacao.md)
 - [Protocolo de tempo real (Etapa 3)](docs/03-protocolo.md)
+- [TLS, proxy reverso e origem única (Etapa 4a)](docs/04-tls-e-proxy.md)
