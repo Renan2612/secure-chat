@@ -48,6 +48,8 @@ const clientPacket = z.discriminatedUnion("type", [
   z.object({ ...base, type: z.literal("PING") }),
   z.object({ ...base, type: z.literal("SUBSCRIBE"), room }),
   z.object({ ...base, type: z.literal("UNSUBSCRIBE"), room }),
+  // Sem "from": o remetente é sempre o usuário da sessão (item C).
+  z.object({ ...base, type: z.literal("MSG_SEND"), room, cid: z.string(), body: z.string() }),
 ]);
 
 module.exports = {
