@@ -8,7 +8,8 @@
 // Uso (a partir de backend/):
 //   CHAT_PASSWORD=... node tools/ws-client.js --email alice@example.com --room 1 \
 //     [--server http://localhost:8000] [--origin http://localhost:3000]
-// Sem CHAT_PASSWORD, a senha é pedida no terminal (sem eco). Ela nunca é
+// Sem CHAT_PASSWORD, a senha é pedida no terminal (sem eco). Envio sem
+// MSG_ACK em --ack-timeout-ms (padrão 10000) é avisado como não confirmado. Ela nunca é
 // aceita como argumento: argumentos ficam visíveis no `ps` e no histórico.
 //
 // Útil para a demonstração e para as capturas no Wireshark (hoje sem TLS:
@@ -25,10 +26,14 @@ const fail = (message) => {
 };
 
 const parseArgs = (argv) => {
-  const args = { server: "http://localhost:8000", origin: process.env.CLIENT_URL || "http://localhost:3000" };
+  const args = {
+    server: "http://localhost:8000",
+    origin: process.env.CLIENT_URL || "http://localhost:3000",
+    "ack-timeout-ms": "10000",
+  };
   for (let i = 0; i < argv.length; i += 2) {
     const name = argv[i]?.replace(/^--/, "");
-    if (!["server", "origin", "email", "room"].includes(name) || argv[i + 1] === undefined) {
+    if (!["server", "origin", "email", "room", "ack-timeout-ms"].includes(name) || argv[i + 1] === undefined) {
       fail(`argumento inválido: ${argv[i]}`);
     }
     args[name] = argv[i + 1];
@@ -36,6 +41,8 @@ const parseArgs = (argv) => {
   if (!args.email || !args.room) fail("informe --email e --room");
   args.room = Number(args.room);
   if (!Number.isInteger(args.room) || args.room <= 0) fail("--room deve ser um inteiro positivo");
+  args.ackTimeoutMs = Number(args["ack-timeout-ms"]);
+  if (!(args.ackTimeoutMs > 0)) fail("--ack-timeout-ms deve ser positivo");
   return args;
 };
 
@@ -79,8 +86,22 @@ const login = async ({ server, origin, email }, password) => {
   return { cookie: sid, user };
 };
 
-const logout = ({ server, origin }, cookie) =>
-  fetch(`${server}/logout`, { method: "POST", headers: { Cookie: cookie, Origin: origin } }).catch(() => {});
+// Avisa se o logout falhar: sem ele, o cookie (que, sem TLS, passou em claro
+// pela rede) continua valendo até a sessão expirar.
+const logout = async ({ server, origin }, cookie) => {
+  const warn = (why) =>
+    process.stderr.write(`aviso: logout falhou (${why}); a sessão pode continuar válida até expirar\n`);
+  try {
+    const res = await fetch(`${server}/logout`, {
+      method: "POST",
+      headers: { Cookie: cookie, Origin: origin },
+      signal: AbortSignal.timeout(3000),
+    });
+    if (res.status !== 204) warn(res.status);
+  } catch (err) {
+    warn(err.cause?.code ?? err.message);
+  }
+};
 
 const print = (line) => process.stdout.write(`${line}\n`);
 
@@ -93,13 +114,25 @@ const main = async () => {
   const wsUrl = `${args.server.replace(/^http/, "ws")}/ws`;
   const ws = new WebSocket(wsUrl, { headers: { Cookie: cookie }, origin: args.origin });
   const send = (packet) => ws.send(JSON.stringify({ v: PROTOCOL_VERSION, ...packet }));
-  const pending = new Set(); // cids enviados ainda sem MSG_ACK
+  const pending = new Map(); // cid → timer, para envios ainda sem MSG_ACK
   let inputEnded = false;
 
   let exitCode = 0;
+  let finishing = false;
   const finish = async (code) => {
+    if (finishing) return;
+    finishing = true;
     await logout(args, cookie);
     process.exit(code);
+  };
+  // Erros depois do login também fazem logout antes de sair.
+  const abort = (message) => {
+    process.stderr.write(`erro: ${message}\n`);
+    finish(1);
+  };
+  const settle = (cid) => {
+    clearTimeout(pending.get(cid));
+    pending.delete(cid);
   };
   const maybeFinish = () => {
     if (inputEnded && pending.size === 0) ws.close(1000);
@@ -110,7 +143,17 @@ const main = async () => {
     rl.on("line", (line) => {
       if (!line) return;
       const cid = crypto.randomUUID();
-      pending.add(cid);
+      // Sem ACK no prazo (ex.: descartada pelo rate limit, que não responde
+      // a cada quadro), a linha é dada como não enviada.
+      pending.set(
+        cid,
+        setTimeout(() => {
+          print(`! sem confirmação: "${line.slice(0, 40)}" (cid ${cid}); reenvie se quiser`);
+          exitCode = 1;
+          settle(cid);
+          maybeFinish();
+        }, args.ackTimeoutMs)
+      );
       // id = cid: um ERROR sobre este envio volta com ref = cid.
       send({ type: "MSG_SEND", id: cid, room: args.room, cid, body: line });
     });
@@ -120,11 +163,18 @@ const main = async () => {
     });
   };
 
-  ws.on("unexpected-response", (req, res) => fail(`upgrade recusado (${res.statusCode})`));
-  ws.on("error", (err) => fail(`conexão: ${err.message}`));
+  ws.on("unexpected-response", (req, res) => abort(`upgrade recusado (${res.statusCode})`));
+  ws.on("error", (err) => abort(`conexão: ${err.message}`));
   ws.on("open", () => send({ type: "HELLO", client: "ws-client.js" }));
   ws.on("close", (code, reason) => {
     print(`conexão encerrada (${code}${reason.length ? ` ${reason}` : ""})`);
+    // Pendentes podem ter sido gravados ou não: reenviar com o mesmo cid
+    // seria seguro (idempotente), mas este cliente não guarda os cids.
+    if (pending.size > 0) {
+      print(`! sem confirmação: ${pending.size} mensagem(ns) enviada(s) sem MSG_ACK`);
+      for (const cid of [...pending.keys()]) settle(cid);
+      exitCode = 1;
+    }
     finish(code === 1000 ? exitCode : 1);
   });
 
@@ -133,8 +183,9 @@ const main = async () => {
     try {
       packet = JSON.parse(data.toString("utf8"));
     } catch {
-      return print("! quadro inválido recebido do servidor");
+      packet = null;
     }
+    if (!packet || typeof packet !== "object") return print("! quadro inválido recebido do servidor");
     switch (packet.type) {
       case "WELCOME":
         print(`protocolo v${packet.v}; limites: ${JSON.stringify(packet.limits)}`);
@@ -143,7 +194,7 @@ const main = async () => {
         print(`inscrito na sala ${packet.room}. Digite mensagens (Ctrl+D para sair).`);
         return startInput();
       case "MSG_ACK":
-        pending.delete(packet.cid);
+        settle(packet.cid);
         print(`✓ enviada (id ${packet.id})`);
         return maybeFinish();
       case "MSG_DELIVER":
@@ -154,7 +205,10 @@ const main = async () => {
           exitCode = 1; // sem a inscrição não há o que fazer
           return ws.close(1000);
         }
-        pending.delete(packet.ref);
+        if (pending.has(packet.ref)) {
+          settle(packet.ref);
+          exitCode = 1;
+        }
         return maybeFinish();
       default:
         return undefined;
@@ -162,4 +216,4 @@ const main = async () => {
   });
 };
 
-main().catch((err) => fail(err.message));
+main().catch((err) => fail(err.cause?.code ? `${err.message} (${err.cause.code})` : err.message));
