@@ -37,7 +37,9 @@ leitura do histórico (`GET /messages/:id`).
 
 - **Transporte:** WebSocket (RFC 6455) sobre o **mesmo servidor HTTP** da
   API (porta 8000), no caminho **`/ws`**. Biblioteca `ws` (8.x) no servidor.
-  Hoje, em `ws://` (sem TLS; ver §9 e §11). Na Etapa 4, `wss://`.
+  **Desde a Etapa 4a**, o acesso público é só por **`wss://localhost/ws`**:
+  o Caddy termina o TLS e encaminha `/ws` ao backend, que não publica
+  porta no host. `ws://` recebe 308 ([`04-tls-e-proxy.md`](04-tls-e-proxy.md)).
 - **Compressão:** `permessage-deflate` **desligado**. Comprimir dados com
   segredos junto de dados controlados pelo atacante abre ataques do tipo
   CRIME/BREACH, e o ganho num chat de texto curto é pequeno.
@@ -378,7 +380,10 @@ Ameaças **não** cobertas nesta etapa estão na §9.
 
 ## 9. Limitações conhecidas
 
-1. **Sem TLS nem E2EE (Etapa 4).** Hoje o tráfego é `ws://` e `http://`:
+1. **Sem E2EE (Etapa 4b); TLS resolvido na Etapa 4a.** O texto abaixo
+   descreve a Etapa 3. Desde a 4a, a rede vê só TLS, mas o proxy, o backend e
+   o banco continuam vendo tudo em claro ([`04-tls-e-proxy.md`](04-tls-e-proxy.md) §9).
+   Na Etapa 3, o tráfego era `ws://` e `http://`:
    na rede passam em claro a senha do login, o cookie `sid` (que permite
    sequestrar a sessão), todos os pacotes e o `body` (ver §11). O banco
    guarda o `body` em claro, então o admin lê tudo. A Etapa 4 troca para
@@ -437,7 +442,7 @@ Complementa a §5 de [`02-autenticacao-autorizacao.md`](02-autenticacao-autoriza
 
 | Antes (Etapa 2) | Agora (Etapa 3) |
 |---|---|
-| Socket.IO (`socket.io-client`), sem autenticação, evento global | **WebSocket nativo** do navegador em `ws://<backend>/ws` (Etapa 4: `wss://`). Remover a dependência `socket.io-client`. |
+| Socket.IO (`socket.io-client`), sem autenticação, evento global | **WebSocket nativo** do navegador em `wss://localhost/ws` desde a Etapa 4a (na Etapa 3, `ws://<backend>/ws`). Remover a dependência `socket.io-client`. |
 | `POST /messages { room, message }` → `201` | **Removido**: com sessão responde `404`, sem sessão `401`. Enviar com `MSG_SEND` pelo socket e tratar o `MSG_ACK`. |
 | Mensagem nova chegava por `broadcast` de todas as salas | Chega como `MSG_DELIVER` **só** das salas em que o cliente fez `SUBSCRIBE`. |
 | Remetente informado pelo cliente | Ignorado. Use `MSG_DELIVER.from` (definido pelo servidor). |
@@ -476,10 +481,20 @@ Observações para o frontend:
   ou subdomínios do mesmo domínio); senão o navegador não envia o cookie
   no upgrade e a resposta é `401`.
 - O `Origin` da página precisa ser exatamente o `CLIENT_URL` do backend.
+- **Desde a Etapa 4a (origem única):** a página é servida em
+  `https://localhost/`, a API em `https://localhost/api/*` (o proxy tira o
+  prefixo; as rotas acima não mudam) e o socket em `wss://localhost/ws`.
+  `CLIENT_URL` = `https://localhost`. Sendo tudo *same-origin*, o cookie
+  `sid` (agora `Secure`) vai sozinho e não há problema de `SameSite`.
 
 ## 11. Captura no Wireshark
 
-Base de comparação para a Etapa 4: o que um atacante na rede vê **hoje**.
+Base de comparação para a Etapa 4: o que um atacante na rede via **na Etapa
+3**. Desde a Etapa 4a, a stack do compose só publica o proxy TLS (o backend
+não tem mais a porta 8000 no host). Para repetir esta captura em claro,
+rode o backend fora do Docker (`cd backend && npm run dev`, porta 8000) com
+o Postgres de teste ou um local. A captura com TLS está em
+[`04-tls-e-proxy.md`](04-tls-e-proxy.md) §10.
 
 ### 11.1 Passos
 
@@ -532,6 +547,10 @@ enviar, mas **não** esconde nada de quem escuta a rede (item G) nem do
 servidor (item F).
 
 ### 11.3 Comparação com a Etapa 4 (preencher)
+
+A coluna de rede da Etapa 4a (só TLS) está em
+[`04-tls-e-proxy.md`](04-tls-e-proxy.md) §10. Esta tabela será completada
+com a E2EE (4b), que muda o que o **servidor** vê.
 
 | Momento | Etapa 3 (hoje) | Etapa 4 (`wss://` + E2EE) |
 |---|---|---|

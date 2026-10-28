@@ -38,7 +38,9 @@ própria `database/migrations.sql` no início da suíte (`tests/globalSetup.js`)
 Cookie: nome genérico `sid`, `httpOnly`, `sameSite: "lax"`, `secure` quando
 `NODE_ENV=production`, `maxAge` de **8 horas** (uma jornada de uso; antes
 eram 24 h). `saveUninitialized: false`: visitante anônimo não ganha sessão
-nem cookie.
+nem cookie. **Desde a Etapa 4a**, o compose roda o backend com
+`NODE_ENV=production` atrás do Caddy, então o cookie sai sempre com
+`Secure`, e só por HTTPS ([`04-tls-e-proxy.md`](04-tls-e-proxy.md) §7).
 
 Segredo: `SESSION_SECRET` é **obrigatório** e precisa de ao menos 32
 caracteres; o servidor se recusa a subir sem ele (o placeholder do
@@ -50,6 +52,8 @@ Proxy reverso: `TRUST_PROXY` (opcional, número de proxies na frente do app).
 Sem ele, atrás de um proxy HTTPS o Express acharia que a conexão é HTTP e
 não emitiria o cookie `Secure`, e o rate limit veria o IP do proxy. Não deve
 ser definido sem proxy, porque permitiria ao cliente forjar `X-Forwarded-For`.
+**Desde a Etapa 4a:** só aceita inteiro ≥ 1 (`true`, `loopback`, listas etc.
+impedem o servidor de subir), e o compose usa `TRUST_PROXY=1` (o Caddy).
 
 ### 2.2 Autenticação: `requireAuth` global
 
