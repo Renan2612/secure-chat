@@ -49,6 +49,10 @@ CREATE TABLE IF NOT EXISTS messages(
    -- BYTES igual ao maxBodyBytes do protocolo (realtime/protocol.js).
    message TEXT NOT NULL CHECK (octet_length(message) BETWEEN 1 AND 8192),
    dt_message TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+   -- ID gerado pelo cliente para idempotência (MSG_SEND): reenviar com o
+   -- mesmo cid não duplica. Único por remetente; NULL fora do protocolo.
+   cid VARCHAR(64) NULL,
+   UNIQUE (user_id, cid),
    FOREIGN KEY (user_id)
       REFERENCES users (id),
    FOREIGN KEY (room)

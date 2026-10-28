@@ -32,6 +32,7 @@ const ERRORS = {
   HELLO_REQUIRED: "Envie HELLO antes de qualquer outro pacote",
   UNSUPPORTED_VERSION: `Versão de protocolo não suportada (servidor: ${PROTOCOL_VERSION})`,
   NOT_MEMBER: "Sem acesso a esta sala",
+  CID_REUSED: "cid já usado em outra sala",
   INTERNAL: "Erro interno",
 };
 

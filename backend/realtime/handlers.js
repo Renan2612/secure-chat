@@ -8,18 +8,32 @@ const isMember = async (userId, room) =>
     .rowCount > 0;
 
 // Grava só se o remetente for membro, na MESMA consulta: não há janela entre
-// checar a pertinência e gravar. Nenhuma linha → não é membro (ou a sala não
-// existe). O remetente vem da sessão (conn.userId), nunca do pacote.
-const insertIfMember = async (userId, room, body) =>
-  (
-    await pool.query(
-      `INSERT INTO messages (room, user_id, message)
-       SELECT $1, $2, $3
-       WHERE EXISTS (SELECT 1 FROM rooms_users WHERE room = $1 AND user_id = $2)
-       RETURNING id, dt_message`,
-      [room, userId, body]
-    )
-  ).rows[0];
+// checar a pertinência e gravar. O remetente vem da sessão (conn.userId),
+// nunca do pacote. Devolve { saved } (nova), { duplicate } (o cid já foi
+// gravado nesta sala: reenvio) ou {} (não é membro, ou cid de outra sala).
+const insertIfMember = async (userId, room, cid, body) => {
+  const inserted = await pool.query(
+    `INSERT INTO messages (room, user_id, message, cid)
+     SELECT $1, $2, $3, $4
+     WHERE EXISTS (SELECT 1 FROM rooms_users WHERE room = $1 AND user_id = $2)
+     ON CONFLICT (user_id, cid) DO NOTHING
+     RETURNING id, dt_message`,
+    [room, userId, body, cid]
+  );
+  if (inserted.rowCount > 0) return { saved: inserted.rows[0] };
+  // Reenvio: só é reconhecido para quem continua membro da sala. O body do
+  // reenvio não é comparado (é opaco; na Etapa 4 um reenvio cifrado de novo
+  // terá outro texto cifrado): vale o primeiro.
+  const existing = await pool.query(
+    `SELECT m.id, m.dt_message, m.room FROM messages m
+     JOIN rooms_users ru ON ru.room = m.room AND ru.user_id = m.user_id
+     WHERE m.user_id = $1 AND m.cid = $2`,
+    [userId, cid]
+  );
+  const original = existing.rows[0];
+  if (!original) return {};
+  return original.room === room ? { duplicate: original } : { reused: true };
+};
 
 const createHandlers = (registry) => {
   // Entrega só às conexões inscritas na sala cujo usuário AINDA é membro;
@@ -57,12 +71,17 @@ const createHandlers = (registry) => {
 
     // Grava no Postgres e só então confirma (MSG_ACK) e entrega (MSG_DELIVER).
     // O body é opaco: repassado como veio, nunca interpretado nem logado.
+    // Reenvio do mesmo cid: devolve o MSG_ACK original, sem gravar nem
+    // entregar de novo.
     async MSG_SEND(conn, { room, cid, body, id }) {
-      const saved = await insertIfMember(conn.userId, room, body);
-      if (!saved) return conn.error("NOT_MEMBER", id);
-      const ts = saved.dt_message.toISOString();
-      conn.send({ type: "MSG_ACK", cid, id: saved.id, ts });
-      return deliver(room, { type: "MSG_DELIVER", room, id: saved.id, from: conn.userId, ts, body });
+      const { saved, duplicate, reused } = await insertIfMember(conn.userId, room, cid, body);
+      if (reused) return conn.error("CID_REUSED", id);
+      const message = saved ?? duplicate;
+      if (!message) return conn.error("NOT_MEMBER", id);
+      const ts = message.dt_message.toISOString();
+      conn.send({ type: "MSG_ACK", cid, id: message.id, ts });
+      if (!saved) return undefined;
+      return deliver(room, { type: "MSG_DELIVER", room, id: message.id, from: conn.userId, ts, body });
     },
   };
 };
