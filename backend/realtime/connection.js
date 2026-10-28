@@ -9,12 +9,13 @@ const WebSocket = require("ws");
 const { PROTOCOL_VERSION, CLOSE, ERRORS, clientPacket } = require("./protocol");
 
 class Connection {
-  constructor(socket, { userId, sid, limits, handlers }) {
+  constructor(socket, { userId, sid, limits, handlers, onRateLimited = () => {} }) {
     this.socket = socket;
     this.userId = userId;
     this.sid = sid;
     this.limits = limits;
     this.handlers = handlers; // { TIPO: async (conn, packet) => void }
+    this.onRateLimited = onRateLimited; // chamado no close 4429
     this.ready = false;
     this.rooms = new Set(); // salas em que esta conexão está inscrita
     this.invalidPackets = 0;
@@ -63,7 +64,8 @@ class Connection {
   rejectRateLimited() {
     this.rateViolations += 1;
     if (this.rateViolations === 1) this.error("RATE_LIMITED");
-    if (this.rateViolations >= this.limits.maxRateViolations) {
+    if (this.rateViolations >= this.limits.maxRateViolations && this.isOpen()) {
+      this.onRateLimited();
       this.close(CLOSE.RATE_LIMITED, "pacotes demais");
     }
   }

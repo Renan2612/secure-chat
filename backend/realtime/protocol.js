@@ -24,6 +24,9 @@ const DEFAULT_LIMITS = {
   rateBurst: 20, // capacidade do balde (rajada máxima)
   rateRefillPerSec: 10, // fichas repostas por segundo (ritmo sustentado)
   maxRateViolations: 20, // quadros descartados seguidos até o close 4429
+  // Após um 4429, o usuário não reabre conexão por este tempo (senão
+  // reconectar daria um balde novo e cheio).
+  rateLimitCooldownMs: 60 * 1000,
 };
 
 // Códigos de fechamento (RFC 6455 §7.4; 4000–4999 = uso privado da aplicação).

@@ -68,3 +68,29 @@ test("quem se acalma (balde cheio de novo) zera as violações", async () => {
   expect(inbox.closed).toBeNull();
   ws.close();
 });
+
+describe("quarentena após 4429 (reconectar não zera o balde)", () => {
+  test("padrão: 60 s", () => {
+    expect(DEFAULT_LIMITS.rateLimitCooldownMs).toBe(60000);
+  });
+
+  test("o usuário derrubado por inundação não reabre conexão durante a quarentena (429)", async () => {
+    await start({ rateBurst: 5, rateRefillPerSec: 1, maxRateViolations: 5, rateLimitCooldownMs: 400 });
+    const bob = await loginUser(srv, "bob");
+    const { ws, inbox } = await connect(srv, alice.cookie);
+    for (let i = 0; i < 30; i += 1) send(ws, { type: "PING" });
+    expect((await closed(inbox)).code).toBe(4429);
+
+    const { openSocket } = require("./helpers");
+    expect((await openSocket(srv, { cookie: alice.cookie })).status).toBe(429);
+    // Outros usuários não são afetados.
+    const other = await openSocket(srv, { cookie: bob.cookie });
+    expect(other.ws).toBeDefined();
+    other.ws.close();
+    // Passada a quarentena, volta a conectar.
+    await sleep(500);
+    const again = await openSocket(srv, { cookie: alice.cookie });
+    expect(again.ws).toBeDefined();
+    again.ws.close();
+  });
+});

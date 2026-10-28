@@ -6,6 +6,19 @@ class ConnectionRegistry {
     this.byUser = new Map(); // userId → Set<conexão>
     this.byRoom = new Map(); // sala → Set<conexão inscrita>
     this.all = new Set();
+    this.cooldownUntil = new Map(); // userId → instante (ms) do fim da quarentena
+  }
+
+  startCooldown(userId, ms) {
+    this.cooldownUntil.set(userId, Date.now() + ms);
+  }
+
+  inCooldown(userId) {
+    const until = this.cooldownUntil.get(userId);
+    if (until === undefined) return false;
+    if (Date.now() < until) return true;
+    this.cooldownUntil.delete(userId);
+    return false;
   }
 
   get size() {

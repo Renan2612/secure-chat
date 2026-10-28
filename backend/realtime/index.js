@@ -6,7 +6,8 @@
 //   1. caminho == /ws                          (senão 404)
 //   2. Origin == CLIENT_URL                    (senão 403 — Cross-Site WebSocket Hijacking)
 //   3. cookie "sid" com sessão válida no store (senão 401 — mesma sessão da API)
-//   4. limites de conexões (por usuário: 429; total: 503)
+//   4. quarentena após close 4429 (429) e limites de conexões (por usuário:
+//      429; total: 503)
 // Recusas respondem HTTP com corpo JSON genérico e fecham o TCP: o socket
 // WebSocket nunca chega a abrir.
 const { WebSocketServer } = require("ws");
@@ -72,6 +73,9 @@ const attachRealtime = (server, { session, ...options } = {}) => {
 
       // Checagem e registro sem await no meio: handleUpgrade chama o callback
       // de forma síncrona, então dois upgrades não furam o limite juntos.
+      if (registry.inCooldown(userId)) {
+        return rejectUpgrade(socket, 429, "Pacotes demais; tente novamente mais tarde");
+      }
       if (registry.countForUser(userId) >= limits.maxConnectionsPerUser) {
         return rejectUpgrade(socket, 429, "Conexões demais para este usuário");
       }
@@ -79,7 +83,13 @@ const attachRealtime = (server, { session, ...options } = {}) => {
         return rejectUpgrade(socket, 503, "Servidor sem vagas de conexão");
       }
       return wss.handleUpgrade(req, socket, head, (ws) => {
-        const conn = new Connection(ws, { userId, sid: req.sessionID, limits, handlers });
+        const conn = new Connection(ws, {
+          userId,
+          sid: req.sessionID,
+          limits,
+          handlers,
+          onRateLimited: () => registry.startCooldown(userId, limits.rateLimitCooldownMs),
+        });
         registry.add(conn);
         ws.on("close", () => registry.remove(conn));
         ws.on("error", () => ws.terminate());
