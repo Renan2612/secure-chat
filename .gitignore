@@ -7,3 +7,12 @@ dist/
 build/
 *.pcapng
 *.jar
+# Etapa 4a: material do Caddy nunca vai para o git. A CA local, os
+# certificados e as CHAVES PRIVADAS ficam no volume caddy_data; o
+# certificado raiz exportado (scripts/export-ca.sh) vai para certs/.
+certs/
+caddy_data/
+caddy_config/
+*.key
+*.pem
+*.crt

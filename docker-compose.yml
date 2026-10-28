@@ -2,6 +2,11 @@
 # O --env-file faz o compose ler DB_USER/DB_PASSWORD/DB_NAME do MESMO
 # arquivo que o backend usa (sem ele, o compose procuraria um .env na raiz
 # e o banco nasceria com uma senha diferente da do backend).
+#
+# Topologia (Etapa 4a, docs/04-tls-e-proxy.md): o ÚNICO serviço publicado
+# no host é o proxy (Caddy, 80 e 443 em 127.0.0.1), que termina o TLS.
+# Backend e banco ficam só na rede "interna" (sem portas no host e sem
+# saída para a internet); o proxy é o único caminho até o backend.
 
 services:
   db:
@@ -13,12 +18,11 @@ services:
       # com uma senha pública.
       POSTGRES_PASSWORD: ${DB_PASSWORD:?defina DB_PASSWORD (use --env-file backend/.env)}
       POSTGRES_DB: ${DB_NAME:-secure_chat}
-    # Só no loopback do host: o banco não fica exposto na rede local.
-    ports:
-      - "127.0.0.1:5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
       - ./backend/database/migrations.sql:/docker-entrypoint-initdb.d/01-migrations.sql:ro
+    networks:
+      - interna
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
       interval: 5s
@@ -30,14 +34,57 @@ services:
     restart: unless-stopped
     env_file:
       - ./backend/.env
+    # Sobrescrevem o backend/.env (que serve também para rodar fora do Docker).
     environment:
       DB_HOST: db
-    # Só no loopback do host; acesso externo virá pelo proxy TLS (Etapa 4).
-    ports:
-      - "127.0.0.1:8000:8000"
+      SERVER_PORT: "8000" # o Caddyfile encaminha para backend:8000
+      NODE_ENV: production # cookie de sessão com Secure
+      TRUST_PROXY: "1" # exatamente um proxy (o Caddy) na frente
+      # A origem pública única: CORS e checagem de Origin do upgrade do /ws.
+      CLIENT_URL: https://${PUBLIC_HOST:-localhost}
+    networks:
+      - interna
     depends_on:
       db:
         condition: service_healthy
 
+  proxy:
+    # Versão fixada por tag E digest (a tag sozinha pode ser republicada).
+    image: caddy:2.11.7-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
+    restart: unless-stopped
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:-localhost}
+    ports:
+      - "127.0.0.1:80:80"
+      - "127.0.0.1:443:443"
+    volumes:
+      - ./proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./proxy/site:/srv:ro
+      # CA local, certificados e chaves privadas do Caddy: em volume, nunca
+      # no repositório (scripts/export-ca.sh exporta só o certificado raiz).
+      - caddy_data:/data
+      - caddy_config:/config
+    # Só o necessário para escutar em 80/443 dentro do container.
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - borda
+      - interna
+    depends_on:
+      backend:
+        condition: service_healthy
+
+networks:
+  # internal: true → sem rota para fora; nada nesta rede é publicável no host.
+  interna:
+    internal: true
+  borda: {}
+
 volumes:
   db_data:
+  caddy_data:
+  caddy_config:
