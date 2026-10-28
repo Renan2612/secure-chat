@@ -74,7 +74,71 @@ para `/ws`.
 
 ## 4. Modelo de confiança dos certificados
 
+**Desenvolvimento: `tls internal` (CA local do Caddy).** No primeiro uso, o
+Caddy cria a própria autoridade certificadora no volume `caddy_data`:
+
+| Peça | Validade | Onde fica |
+|---|---|---|
+| raiz "Caddy Local Authority - 2026 ECC Root" | 10 anos | `root.crt` (público) + **`root.key` (privada)** |
+| intermediária | 7 dias, renovada sozinha | `intermediate.crt` + `intermediate.key` |
+| certificado de `localhost` | horas, renovado sozinho | no armazenamento do Caddy |
+
+Nenhum cliente confia nessa CA por padrão, e é isso que se quer: quem
+quiser falar com `https://localhost` precisa confiar **explicitamente** na
+raiz. `scripts/export-ca.sh` exporta só o `root.crt` para `certs/` (fora do
+git) e mostra o fingerprint SHA-256. A raiz é diferente em cada máquina
+(cada volume gera a sua). O cliente então usa:
+
+- `curl --cacert certs/caddy-local-root.crt …`
+- `node backend/tools/ws-client.js --ca certs/caddy-local-root.crt …`, ou
+  `NODE_EXTRA_CA_CERTS=certs/caddy-local-root.crt`
+- navegador: importar a raiz **num perfil de testes** (ver o risco abaixo).
+
+A verificação do certificado **nunca é desligada**: não há `--insecure` no
+ws-client, e o `verify-tls.sh` prova que, sem a CA, o `curl` recusa.
+
+**Risco da CA local.** Quem tiver o `root.key` emite certificados aceitos
+por **qualquer** cliente que confie nessa raiz, para qualquer domínio, não
+só `localhost`. Por isso:
+
+- a chave nunca sai do volume: `export-ca.sh` recusa exportar arquivo com
+  `PRIVATE KEY`, e o `.gitignore` cobre `certs/`, `caddy_data/`, `*.key`,
+  `*.pem` e `*.crt` (conferido com `git ls-files` antes de cada commit);
+- não instale a raiz no repositório de confiança **do sistema**; prefira
+  `--cacert` por ferramenta ou um perfil de navegador só para o projeto;
+- `docker compose down -v` apaga o volume e, com ele, a CA. Uma CA nova
+  exige exportar de novo.
+
+**Produção: Let's Encrypt (ACME).** Com um domínio real em `PUBLIC_HOST`, o
+Caddy obtém e renova sozinho um certificado de uma CA pública, na qual os
+navegadores já confiam. A troca é tirar `internal` da diretiva (mantendo
+`protocols`, `ciphers` e `curves`) e informar um e-mail de contato. O
+desafio ACME (HTTP-01 na porta 80 ou TLS-ALPN-01 na 443) exige essas portas
+**acessíveis pela internet**, e hoje elas só escutam em 127.0.0.1. Fica
+para a implantação (Etapa 6).
+
 ## 5. Política TLS
+
+Explícita no `proxy/Caddyfile`, para não depender dos padrões do Caddy ou
+do Go, que mudam entre versões:
+
+| Item | Configuração | Por quê |
+|---|---|---|
+| Versões | `protocols tls1.2 tls1.3` | TLS 1.0/1.1 estão obsoletos (RFC 8996: SHA-1 no handshake, sem AEAD). O 1.2 fica para clientes antigos; o **1.3 é negociado sempre que o cliente suporta** (versão mais alta comum), com handshake mais curto e tudo cifrado após o ServerHello. |
+| Suítes do TLS 1.2 | só `ECDHE-{ECDSA,RSA}-{AES-256-GCM, CHACHA20-POLY1305, AES-128-GCM}` | **ECDHE**: sigilo futuro (forward secrecy; vazar a chave do certificado depois não decifra capturas antigas). **AEAD** (GCM/ChaCha20): sem CBC (Lucky13/POODLE), sem RSA estático, 3DES ou RC4. As suítes RSA ficam para o caso de certificado RSA em produção. |
+| Suítes do TLS 1.3 | as do protocolo (AES-GCM, ChaCha20) | Todas são AEAD com sigilo futuro; o Go não permite configurá-las. |
+| Curvas (troca de chaves) | `x25519mlkem768 x25519 secp256r1 secp384r1` | X25519MLKEM768 é a **híbrida pós-quântica** (protege contra "capturar agora, decifrar depois"); o Go a usa por padrão, e listá-la evita perdê-la ao restringir as curvas. X25519 e P-256/P-384 cobrem os demais clientes. |
+| HTTP/3 | desligado (`protocols h1 h2` no servidor) | Só 443/TCP é publicado; com HTTP/3, o `Alt-Svc` anunciaria um 443/UDP inexistente. |
+| HTTP → HTTPS | `redir … 308` | Permanente e preserva o método (um POST não vira GET). |
+
+Prova (`verify-tls.sh`, com `openssl s_client`):
+
+- TLS 1.1 → o **servidor** responde com o alerta *protocol version*. O
+  cliente oferece 1.1 com `SECLEVEL=0`, para a recusa não ser do próprio
+  OpenSSL.
+- TLS 1.2 → `ECDHE-ECDSA-AES128-GCM-SHA256`.
+- TLS 1.3 → `TLS_AES_128_GCM_SHA256`.
+- TLS 1.2 oferecendo só CBC ou RSA estático → recusado.
 
 ## 6. Cabeçalhos de segurança: quem emite cada um
 
