@@ -147,19 +147,36 @@ describe("trust store (TOFU)", () => {
     expect(e2ee.trustState(trust, 11, k1)).toBe("changed");
     // Observar de novo não "aceita" a mudança sozinho.
     expect((await e2ee.observeKeys(trust, 11, k2)).status).toBe("CHANGED");
-    trust = e2ee.confirmTrust(trust, 11);
+    trust = e2ee.confirmTrust(trust, 11, await e2ee.fingerprint(k2));
     expect(e2ee.trustState(trust, 11, k2)).toBe("verified");
     expect(e2ee.trustState(trust, 11, k1)).toBe("changed");
   });
 
   test("confirmar sem mudança pendente marca como verificado", async () => {
-    const trust = e2ee.confirmTrust((await e2ee.observeKeys(e2ee.emptyTrustStore(), 11, k1)).store, 11);
+    const trust = e2ee.confirmTrust((await e2ee.observeKeys(e2ee.emptyTrustStore(), 11, k1)).store, 11, await e2ee.fingerprint(k1));
     expect(e2ee.trustState(trust, 11, k1)).toBe("verified");
+  });
+
+  test("ataque: a chave muda DE NOVO entre o usuário comparar e confirmar — a confirmação é recusada", async () => {
+    const k3 = await e2ee.exportPublicKeys(await e2ee.generateIdentity());
+    let trust = (await e2ee.observeKeys(e2ee.emptyTrustStore(), 11, k1)).store;
+    trust = (await e2ee.observeKeys(trust, 11, k2)).store;
+    const compared = await e2ee.fingerprint(k2); // o usuário conferiu o número de segurança com k2
+    trust = (await e2ee.observeKeys(trust, 11, k3)).store; // o servidor troca para k3 nesse meio-tempo
+    expect(() => e2ee.confirmTrust(trust, 11, compared)).toThrow(/fingerprint/i);
+    expect(e2ee.trustState(trust, 11, k3)).toBe("changed");
+  });
+
+  test("confirmar exige a fingerprint conferida (sem ela, ou errada, recusa)", async () => {
+    const trust = (await e2ee.observeKeys(e2ee.emptyTrustStore(), 11, k1)).store;
+    expect(() => e2ee.confirmTrust(trust, 11)).toThrow(/fingerprint/i);
+    const wrongFp = await e2ee.fingerprint(k2);
+    expect(() => e2ee.confirmTrust(trust, 11, wrongFp)).toThrow(/fingerprint/i);
   });
 
   test("usuário desconhecido: unknown; confirmar quem nunca foi visto falha", () => {
     expect(e2ee.trustState(e2ee.emptyTrustStore(), 99, k1)).toBe("unknown");
-    expect(() => e2ee.confirmTrust(e2ee.emptyTrustStore(), 99)).toThrow();
+    expect(() => e2ee.confirmTrust(e2ee.emptyTrustStore(), 99, "0".repeat(64))).toThrow();
   });
 
   test("trust store vai para o disco cifrado; adulterado não abre", async () => {

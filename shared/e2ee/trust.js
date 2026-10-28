@@ -33,12 +33,21 @@ const trustState = (store, userId, keys) => {
 };
 
 // O usuário comparou o número de segurança: aceita a chave pendente (se
-// houver) e marca como verificada.
-const confirmTrust = (store, userId, now = new Date().toISOString()) => {
+// houver) e marca como verificada. `expectedFingerprint` é a fingerprint da
+// chave que FOI EXIBIDA ao usuário: se a chave pendente mudou entre a
+// exibição e a confirmação (o servidor trocou de novo), recusa — senão o
+// usuário confirmaria uma chave que não comparou.
+const confirmTrust = (store, userId, expectedFingerprint, now = new Date().toISOString()) => {
   const peer = store.peers[userId];
   if (!peer) throw new Error(`usuário ${userId} sem chave conhecida`);
   const { changed, ...rest } = peer;
-  const pinned = changed ? { ...rest, ecdhPub: changed.ecdhPub, ecdsaPub: changed.ecdsaPub, fingerprint: changed.fingerprint, pinnedAt: now } : rest;
+  const candidate = changed ?? rest;
+  if (typeof expectedFingerprint !== "string" || candidate.fingerprint !== expectedFingerprint) {
+    throw new Error(`a fingerprint conferida não é a da chave atual do usuário ${userId}; compare de novo (/safety)`);
+  }
+  const pinned = changed
+    ? { ...rest, ecdhPub: changed.ecdhPub, ecdsaPub: changed.ecdsaPub, fingerprint: changed.fingerprint, pinnedAt: now }
+    : rest;
   return { ...store, peers: { ...store.peers, [userId]: { ...pinned, verified: true, verifiedAt: now } } };
 };
 
