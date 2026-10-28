@@ -57,8 +57,8 @@ const createRooms = async (req, res, next) => {
     client.on("error", onConnectionError);
     await client.query("BEGIN");
     const { rows } = await client.query(
-      "INSERT INTO rooms (name, key) VALUES ($1, $2) RETURNING id, name",
-      [req.body.name, key]
+      "INSERT INTO rooms (name, key, created_by) VALUES ($1, $2, $3) RETURNING id, name",
+      [req.body.name, key, req.session.userId]
     );
     await client.query(
       "INSERT INTO rooms_users (room, user_id, last_msg_viewed) VALUES ($1, $2, 0)",
@@ -102,11 +102,13 @@ const joinRooms = async (req, res, next) => {
     if (rows.length === 0 || !sameKey(req.body.key, rows[0].key)) {
       return res.status(403).json({ message: "Convite inválido" });
     }
-    await pool.query(
+    const joined = await pool.query(
       `INSERT INTO rooms_users (room, user_id, last_msg_viewed) VALUES ($1, $2, 0)
        ON CONFLICT (room, user_id) DO NOTHING`,
       [roomId, req.session.userId]
     );
+    // Novo membro entra "sem chave": avisa quem pode lhe entregar um wrap.
+    if (joined.rowCount > 0) req.app.locals.notify.keyPending(roomId);
     return res.status(200).json({ id: rows[0].id, name: rows[0].name });
   } catch (err) {
     return next(err);

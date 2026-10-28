@@ -9,7 +9,7 @@ const app = createApp({ authRateLimitMax: 10000, loginEmailRateLimitMax: 10000 }
 const PASSWORD = "senha-forte-de-teste";
 
 const resetDb = () =>
-  pool.query("TRUNCATE user_sessions, user_keys, messages, rooms_users, rooms, users RESTART IDENTITY CASCADE");
+  pool.query("TRUNCATE user_sessions, room_key_wraps, room_key_versions, user_keys, messages, rooms_users, rooms, users RESTART IDENTITY CASCADE");
 
 let counter = 0;
 
@@ -33,11 +33,13 @@ const addMember = (roomId, userId) =>
     userId,
   ]);
 
-// Cria uma sala direto no banco (sem passar pela API) e inscreve os membros.
-const createRoomInDb = async (name, memberIds = []) => {
+// Cria uma sala direto no banco (sem passar pela API) e inscreve os membros;
+// o primeiro membro é o criador (rooms.created_by).
+const createRoomInDb = async (name, memberIds) => {
+  if (!memberIds?.length) throw new Error("createRoomInDb: informe ao menos o criador");
   const { rows } = await pool.query(
-    "INSERT INTO rooms (name, key) VALUES ($1, $2) RETURNING id",
-    [name, "chave-da-sala-de-teste"]
+    "INSERT INTO rooms (name, key, created_by) VALUES ($1, $2, $3) RETURNING id",
+    [name, "chave-da-sala-de-teste", memberIds[0]]
   );
   for (const userId of memberIds) {
     await addMember(rows[0].id, userId);

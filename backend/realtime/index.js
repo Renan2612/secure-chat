@@ -54,7 +54,7 @@ const loadSession = (sessionMiddleware, req) =>
 const attachRealtime = (server, { session, trustProxy = proxyaddr.compile([]), ...options } = {}) => {
   const limits = { ...DEFAULT_LIMITS, ...options };
   const registry = new ConnectionRegistry();
-  const handlers = createHandlers(registry);
+  const { handlers, notifyKeyPending, notifyKeyReady } = createHandlers(registry);
   // perMessageDeflate desligado: compressão de dados com segredos abre
   // ataques do tipo CRIME/BREACH, e o ganho aqui seria pequeno.
   // maxPayload: quadro maior é recusado pela própria ws com close 1009,
@@ -180,8 +180,17 @@ const attachRealtime = (server, { session, trustProxy = proxyaddr.compile([]), .
   }, limits.heartbeatIntervalMs);
   heartbeat.unref();
 
+  // Chamados pelas rotas HTTP sem esperar: uma falha aqui só perde o aviso
+  // (o cliente também descobre pendências ao se inscrever).
+  const fireAndLog = (what, promise) =>
+    Promise.resolve(promise).catch((err) => console.error(`[ws] falha ao avisar ${what}: ${err.message}`));
+
   return {
     registry,
+    notify: {
+      keyPending: (room) => fireAndLog("KEY_PENDING", notifyKeyPending(room)),
+      keyReady: (userId, room) => fireAndLog("KEY_READY", notifyKeyReady(userId, room)),
+    },
     // Fim da sessão (logout): fecha todas as conexões do usuário.
     closeUser: (userId) => {
       registry.revoke(userId);

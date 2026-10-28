@@ -36,6 +36,28 @@ const insertIfMember = async (userId, room, cid, body) => {
   return original.room === room ? { duplicate: original } : { reused: true };
 };
 
+// Usuários com o wrap da versão ATUAL da chave da sala (podem distribuí-la).
+const keyHolders = async (room) => {
+  const { rows } = await pool.query(
+    `SELECT w.recipient_id FROM room_key_wraps w JOIN rooms r ON r.id = w.room AND w.version = r.key_version
+     WHERE w.room = $1`,
+    [room]
+  );
+  return new Set(rows.map((row) => row.recipient_id));
+};
+
+// Há membro sem o wrap da versão atual?
+const hasPendingMembers = async (room) =>
+  (
+    await pool.query(
+      `SELECT 1 FROM rooms_users m JOIN rooms r ON r.id = m.room
+       WHERE m.room = $1 AND NOT EXISTS (
+         SELECT 1 FROM room_key_wraps w WHERE w.room = r.id AND w.version = r.key_version AND w.recipient_id = m.user_id)
+       LIMIT 1`,
+      [room]
+    )
+  ).rowCount > 0;
+
 const createHandlers = (registry) => {
   // Entrega só às conexões inscritas na sala cujo usuário AINDA é membro;
   // inscrições de quem saiu da sala são desfeitas aqui (UNSUBSCRIBED).
@@ -54,7 +76,25 @@ const createHandlers = (registry) => {
     }
   };
 
-  return {
+  // ROOM_EVENT (extensão do v1): só o aviso, sem dado de chave; o cliente
+  // busca pela API HTTP (que confere a autorização de novo).
+  // KEY_PENDING → inscritos na sala que têm a chave atual (os únicos que
+  // podem entregar wraps). KEY_READY → todas as conexões do destinatário,
+  // inscritas ou não (quem está sem chave pode nem ter feito SUBSCRIBE).
+  const notifyKeyPending = async (room) => {
+    const subscribers = registry.subscribers(room);
+    if (subscribers.length === 0) return;
+    const holders = await keyHolders(room);
+    for (const conn of subscribers) {
+      if (holders.has(conn.userId)) conn.send({ type: "ROOM_EVENT", room, kind: "KEY_PENDING" });
+    }
+  };
+
+  const notifyKeyReady = (userId, room) => {
+    for (const conn of registry.forUser(userId)) conn.send({ type: "ROOM_EVENT", room, kind: "KEY_READY" });
+  };
+
+  const handlers = {
     // Sala inexistente e sala alheia recebem o mesmo NOT_MEMBER.
     async SUBSCRIBE(conn, { room, id }) {
       if (!(await isMember(conn.userId, room))) return conn.error("NOT_MEMBER", id);
@@ -62,7 +102,12 @@ const createHandlers = (registry) => {
       // de conexão morta (o registry.remove do fechamento já rodou).
       if (!conn.isOpen()) return undefined;
       registry.subscribe(conn, room);
-      return conn.send({ type: "SUBSCRIBED", room });
+      conn.send({ type: "SUBSCRIBED", room });
+      // Quem tem a chave e chega com membros pendentes já é avisado.
+      if ((await keyHolders(room)).has(conn.userId) && (await hasPendingMembers(room))) {
+        conn.send({ type: "ROOM_EVENT", room, kind: "KEY_PENDING" });
+      }
+      return undefined;
     },
 
     async UNSUBSCRIBE(conn, { room }) {
@@ -93,6 +138,8 @@ const createHandlers = (registry) => {
       }
     },
   };
+
+  return { handlers, notifyKeyPending, notifyKeyReady };
 };
 
 module.exports = { createHandlers };

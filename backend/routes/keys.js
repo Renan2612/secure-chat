@@ -3,6 +3,19 @@
 // recebe chave privada (o schema só tem ecdhPub/ecdsaPub e descarta o resto).
 const pool = require("../db");
 const { fingerprint } = require("../helpers/publicKeys");
+const { withTransaction } = require("../helpers/transaction");
+
+// Salas em que o usuário é membro mas não tem o wrap da versão atual: quem
+// tem a chave nelas é avisado (ROOM_EVENT KEY_PENDING).
+const notifyPendingRooms = async (req, userId) => {
+  const { rows } = await pool.query(
+    `SELECT m.room FROM rooms_users m JOIN rooms r ON r.id = m.room
+     WHERE m.user_id = $1 AND NOT EXISTS (
+       SELECT 1 FROM room_key_wraps w WHERE w.room = r.id AND w.version = r.key_version AND w.recipient_id = $1)`,
+    [userId]
+  );
+  for (const { room } of rows) req.app.locals.notify.keyPending(room);
+};
 
 const toJson = (row, { withCreatedAt = true } = {}) => ({
   userId: row.user_id,
@@ -26,7 +39,11 @@ const putKeys = async (req, res, next) => {
        ON CONFLICT (user_id) DO NOTHING RETURNING ${COLUMNS}`,
       [req.session.userId, ecdhPub, ecdsaPub, fingerprint({ ecdhPub, ecdsaPub })]
     );
-    if (inserted.rowCount > 0) return res.status(201).json(toJson(inserted.rows[0]));
+    if (inserted.rowCount > 0) {
+      // Com chave registrada, já dá para receber wraps nas salas em que entrou.
+      await notifyPendingRooms(req, req.session.userId);
+      return res.status(201).json(toJson(inserted.rows[0]));
+    }
     const { rows } = await pool.query(`SELECT ${COLUMNS} FROM user_keys WHERE user_id = $1`, [req.session.userId]);
     const current = rows[0];
     if (current && current.ecdh_pub === ecdhPub && current.ecdsa_pub === ecdsaPub) {
@@ -38,17 +55,26 @@ const putKeys = async (req, res, next) => {
   }
 };
 
-// Substitui as chaves do PRÓPRIO usuário e incrementa key_epoch.
+// Substitui as chaves do PRÓPRIO usuário, incrementa key_epoch e apaga os
+// wraps de que ele é DESTINATÁRIO (cifrados para a chave antiga, não servem
+// mais): ele perde acesso às salas até alguém lhe entregar wraps novos. Os
+// wraps que ele enviou a outros continuam valendo.
 const resetKeys = async (req, res, next) => {
   const { ecdhPub, ecdsaPub } = req.body;
+  const me = req.session.userId;
   try {
-    const { rows } = await pool.query(
-      `UPDATE user_keys SET ecdh_pub = $2, ecdsa_pub = $3, fingerprint = $4, key_epoch = key_epoch + 1, created_at = NOW()
-       WHERE user_id = $1 RETURNING ${COLUMNS}`,
-      [req.session.userId, ecdhPub, ecdsaPub, fingerprint({ ecdhPub, ecdsaPub })]
-    );
-    if (rows.length === 0) return res.status(404).json({ message: "Sem chave registrada; use PUT /keys" });
-    return res.status(200).json(toJson(rows[0]));
+    const row = await withTransaction(async (client) => {
+      const { rows } = await client.query(
+        `UPDATE user_keys SET ecdh_pub = $2, ecdsa_pub = $3, fingerprint = $4, key_epoch = key_epoch + 1, created_at = NOW()
+         WHERE user_id = $1 RETURNING ${COLUMNS}`,
+        [me, ecdhPub, ecdsaPub, fingerprint({ ecdhPub, ecdsaPub })]
+      );
+      if (rows.length > 0) await client.query("DELETE FROM room_key_wraps WHERE recipient_id = $1", [me]);
+      return rows[0];
+    });
+    if (!row) return res.status(404).json({ message: "Sem chave registrada; use PUT /keys" });
+    await notifyPendingRooms(req, me);
+    return res.status(200).json(toJson(row));
   } catch (err) {
     return next(err);
   }

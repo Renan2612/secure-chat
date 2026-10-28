@@ -1,7 +1,7 @@
 // Formatos aceitos por cada rota. Campos não listados são descartados pelo
 // zod (ex.: um "user" forjado no corpo de POST /messages nem chega à rota).
 const { z } = require("zod");
-const { isP256Spki } = require("../helpers/publicKeys");
+const { isP256Spki, isB64urlBytes } = require("../helpers/publicKeys");
 
 const INT_MAX = 2147483647; // limite do tipo INTEGER do Postgres
 
@@ -33,6 +33,13 @@ const publicKeys = z
   .object({ ecdhPub: publicKey, ecdsaPub: publicKey })
   .refine((keys) => keys.ecdhPub !== keys.ecdsaPub);
 
+// Wrap da chave da sala (D4): só a ESTRUTURA é conferida (o servidor não
+// tem como verificar a assinatura sem confiar na chave do remetente, e nunca
+// abre o wrap). Tamanhos fixos: iv 12 B, wrapped 32 B + tag 16 B, sig 64 B.
+const b64urlBytes = (bytes) => z.string().refine((v) => isB64urlBytes(v, bytes));
+const wrap = z.object({ ephPub: publicKey, iv: b64urlBytes(12), wrapped: b64urlBytes(48), sig: b64urlBytes(64) });
+const keyVersion = id;
+
 const displayName = z.string().trim().min(1).max(100);
 const roomName = z.string().trim().min(1).max(100);
 
@@ -56,6 +63,12 @@ const schemas = {
   },
   roomUsers: { params: z.object({ room: idParam }) },
   putKeys: { body: publicKeys },
+  publishRoomKey: { params: z.object({ id: idParam }), body: z.object({ version: keyVersion, wrap }) },
+  roomKeys: { params: z.object({ id: idParam }) },
+  postWrap: {
+    params: z.object({ id: idParam }),
+    body: z.object({ version: keyVersion, recipientId: id, recipientKeyEpoch: id, wrap }),
+  },
   getKeys: { params: z.object({ userId: idParam }) },
 };
 
