@@ -472,4 +472,69 @@ Observações para o frontend:
 
 ## 11. Captura no Wireshark
 
+Base de comparação para a Etapa 4: o que um atacante na rede vê **hoje**.
+
+### 11.1 Passos
+
+1. Suba o backend: `docker compose up --build` (porta 8000 publicada).
+   Crie dois usuários e uma sala, por exemplo com `curl` ou pelo frontend,
+   e anote o ID da sala.
+2. Abra o Wireshark e escolha a interface:
+   - **`lo` (loopback)**: cliente e `docker compose` na mesma máquina. O
+     tráfego cliente → `localhost:8000` passa pelo `docker-proxy` no
+     loopback;
+   - **`docker0` / `br-…`** (bridge do Compose): o trecho proxy → container;
+   - **`any`**: as duas de uma vez (os pacotes aparecem duplicados).
+3. Comece a captura, de preferência só da porta do app: filtro de captura
+   `tcp port 8000`.
+4. Em dois terminais (a partir de `backend/`), rode o cliente de referência:
+
+   ```bash
+   CHAT_PASSWORD='senha-da-alice' node tools/ws-client.js --email alice@example.com --room 1
+   CHAT_PASSWORD='senha-do-bob'   node tools/ws-client.js --email bob@example.com   --room 1
+   ```
+
+   Digite uma mensagem num deles e encerre com Ctrl+D.
+5. Filtro de exibição: **`websocket`** (só quadros WebSocket) ou
+   `http || websocket` (login, upgrade e quadros). Se o Wireshark não
+   reconhecer o HTTP na porta 8000: botão direito → *Decode As…* → TCP port
+   8000 → HTTP. A partir do `101 Switching Protocols`, ele passa a decodificar
+   os quadros como WebSocket.
+6. Em um quadro, veja *Line-based text data* / *JavaScript Object
+   Notation*. Os quadros do cliente são **mascarados** (RFC 6455 §5.3), mas
+   a máscara viaja junto e não é sigilo: o Wireshark mostra o conteúdo
+   desmascarado (*Unmasked data*). *Follow → TCP Stream* mostra a conversa
+   inteira.
+
+### 11.2 O que se vê hoje (sem TLS, sem E2EE)
+
+Tudo em claro:
+
+| Momento | Visível na captura |
+|---|---|
+| `POST /login` | e-mail e **senha** no corpo JSON |
+| Resposta do login | `Set-Cookie: sid=s%3A…` (**o cookie basta para sequestrar a sessão** até o logout ou 8 h) |
+| `GET /ws` (upgrade) | `Cookie: sid=…`, `Origin`, `Sec-WebSocket-Key` |
+| `WELCOME` | `userId` do usuário |
+| `SUBSCRIBE` / `SUBSCRIBED` | ID da sala |
+| `MSG_SEND` / `MSG_DELIVER` | **o texto da mensagem (`body`)**, `room`, `from`, `ts`, `cid` |
+| a cada 30 s | quadros de controle *Ping* / *Pong* |
+
+Ou seja, o protocolo da Etapa 3 resolve **quem pode** conectar, ler e
+enviar, mas **não** esconde nada de quem escuta a rede (item G) nem do
+servidor (item F).
+
+### 11.3 Comparação com a Etapa 4 (preencher)
+
+| Momento | Etapa 3 (hoje) | Etapa 4 (`wss://` + E2EE) |
+|---|---|---|
+| `POST /login` | senha em claro | |
+| Cookie `sid` | em claro | |
+| Upgrade `/ws` | cabeçalhos em claro | |
+| `MSG_SEND.body` | texto em claro | |
+| `MSG_DELIVER.body` | texto em claro | |
+| Metadados (sala, remetente, horário, tamanho) | em claro na rede | |
+| Coluna `messages.message` no banco | texto em claro | |
+| Captura (arquivo `.pcapng`) | | |
+
 ## 12. Testes
