@@ -348,6 +348,32 @@ que o cliente envia nem estado antigo guardado na conexão.
 
 ## 8. Modelo de ameaças do protocolo
 
+Atores de [`00-modelo-ameacas.md`](00-modelo-ameacas.md): **atacante
+externo** (sem conta), **usuário autenticado malicioso** e **site
+malicioso** aberto no navegador da vítima. Arquivos de teste em
+`backend/tests/ws/` (exceto quando indicado); entre aspas, o nome do teste.
+
+| # | Ameaça | Controle | Teste que prova |
+|---|---|---|---|
+| T1 | **Cross-Site WebSocket Hijacking**: página de outro site abre `/ws` no navegador da vítima, que manda o cookie sozinho | `Origin` comparado exatamente com `CLIENT_URL`; ausente/parecido → 403 | `upgrade.test.js`: "Origin de outro site → 403, mesmo com cookie válido", "sem Origin → 403", "Origin parecido (sufixo/porta diferente) → 403" |
+| T2 | **Conexão sem sessão válida** (item A): sem cookie, cookie forjado, sessão destruída | sessão lida do store no upgrade; falha → 401 e o socket nem abre | `upgrade.test.js`: "sem cookie", "com cookie forjado", "com cookie de sessão destruída (após logout)" |
+| T3 | **Ler sala alheia** (item B): inscrever-se ou receber o fluxo de sala da qual não é membro | `SUBSCRIBE` só para membro; entrega só a inscritos que ainda são membros; sem broadcast | `subscribe.test.js`: "B não consegue SUBSCRIBE em sala da qual não é membro"; `msgSend.test.js`: "B inscrito na sala X NÃO recebe mensagens da sala Y", "quem foi removido da sala deixa de receber, mesmo ainda inscrito" |
+| T4 | **Forjar o remetente** (item C) | schema sem `from`; remetente = `conn.userId` | `msgSend.test.js`: "campo from forjado é ignorado: a mensagem sai com o usuário da sessão" |
+| T5 | **Postar em sala alheia / depois de ser removido** | pertinência checada na mesma consulta que grava, a cada `MSG_SEND` | `msgSend.test.js`: "não membro: ERROR NOT_MEMBER e nada é gravado", "MSG_SEND de quem foi removido da sala (já inscrito) é rejeitado" |
+| T6 | **Enumerar salas** pelo tipo de erro | sala inexistente e alheia → mesmo `NOT_MEMBER` | `subscribe.test.js`: "sala inexistente recebe o mesmo erro (não revela quais IDs existem)"; `msgSend.test.js`: "sala inexistente recebe o mesmo NOT_MEMBER" |
+| T7 | **Payload gigante** (memória) | `maxPayload` 16 KB → 1009 antes de acumular; body ≤ 8192 bytes | `frames.test.js`: "quadro acima do limite → close 1009", "…antes do HELLO também → close 1009"; `msgValidation.test.js` |
+| T8 | **Lixo / fuzzing** e injeção pelos campos | zod em todo pacote; 3º inválido → 1008; consultas parametrizadas | `frames.test.js`: "reincidência: no 3º pacote inválido → ERROR e close 1008"; `msgValidation.test.js`: "a tabela messages continua intacta após a tentativa de injeção" |
+| T9 | **Inundação** (cada pacote custa banco) | token bucket por conexão → `RATE_LIMITED`/4429; quarentena de 60 s contra reconexão; ≤ 5 conexões por usuário | `rateLimit.test.js`: "inundação persistente → close 4429", "o usuário derrubado por inundação não reabre conexão durante a quarentena (429)"; `upgrade.test.js`: "por usuário: …recusada com 429" |
+| T10 | **Segurar recursos**: conectar e não falar; sumir sem fechar o TCP | prazo do HELLO (4408); heartbeat de 30 s com `terminate()` | `hello.test.js`: "sem HELLO dentro do prazo → close 4408"; `heartbeat.test.js`: "cliente que não responde ao ping (conexão morta) é encerrado e sai do registro" |
+| T11 | **Cliente lento** de propósito (buffer de saída cresce no servidor) | `bufferedAmount` > 1 MB → `terminate()` | `backpressure.test.js`: "cliente com buffer de saída acima do limite é desconectado na próxima entrega" |
+| T12 | **Reenvio duplicado** (ou replay do mesmo pacote pelo próprio usuário) | `UNIQUE (user_id, cid)` + `ON CONFLICT DO NOTHING` | `idempotency.test.js`: "reenvio do mesmo cid não duplica…", "reenvios simultâneos do mesmo cid gravam uma única vez" |
+| T13 | **Socket sobrevive ao logout** (computador compartilhado) ou à expiração da sessão | logout → 4401 em todas as conexões; nova checagem da sessão no heartbeat; quadros após o close descartados | `logout.test.js`: "após logout, a conexão aberta é fechada com 4401", "quadro que chegue depois do close (cliente que ignora o fechamento) não é processado"; `heartbeat.test.js`: "sessão apagada do store fora do logout → close 4401…", "sessão expirada → close 4401" |
+| T14 | **Corrida upgrade × logout (TOCTOU)**: o upgrade lê a sessão válida, o logout acontece, o upgrade completa depois do `closeUser` | contador de revogações por usuário, conferido depois de ler a sessão e antes de `handleUpgrade` (sem `await` entre os dois) → 401 | `logout.test.js`: "upgrade em andamento durante o logout não sobrevive a ele (corrida TOCTOU)" (reproduzido antes da correção) |
+| T15 | **Vazamento do body / cookie em logs** (admin lendo logs) | nenhum caminho registra pacote, body ou cabeçalhos; erros registram só o tipo do pacote | `logging.test.js` (3 testes, validados por mutação) |
+| T16 | **CRIME/BREACH** via compressão | `permessage-deflate` desligado | — (configuração em `realtime/index.js`) |
+
+Ameaças **não** cobertas nesta etapa estão na §9.
+
 ## 9. Limitações conhecidas
 
 ## 10. Mudanças de contrato para o frontend
