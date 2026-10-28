@@ -113,11 +113,13 @@ const parseArgs = (argv) => {
     }
     // Explicitar `ca` substitui as CAs padrão do Node: soma às do sistema
     // (e à do NODE_EXTRA_CA_CERTS, se houver) em vez de trocá-las.
-    let extra = [];
-    try {
-      extra = process.env.NODE_EXTRA_CA_CERTS ? [fs.readFileSync(process.env.NODE_EXTRA_CA_CERTS, "utf8")] : [];
-    } catch (err) {
-      return fail(`não foi possível ler NODE_EXTRA_CA_CERTS (${err.code ?? err.message})`);
+    const extra = [];
+    if (process.env.NODE_EXTRA_CA_CERTS) {
+      try {
+        extra.push(fs.readFileSync(process.env.NODE_EXTRA_CA_CERTS, "utf8"));
+      } catch (err) {
+        return fail(`não foi possível ler NODE_EXTRA_CA_CERTS (${err.code ?? err.message})`);
+      }
     }
     args.tlsCa = [...tls.rootCertificates, ...extra, pem];
   }

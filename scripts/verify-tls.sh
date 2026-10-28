@@ -96,7 +96,8 @@ check "$BASE/api/health responde 200 (prefixo /api removido pelo proxy)" test "$
 HSTS='^strict-transport-security: *max-age=(3[1-9][0-9]{6}|[4-9][0-9]{7}|[0-9]{9,}).*includesubdomains'
 hsts_once() { [ "$(grep -ci '^strict-transport-security:' "$1")" = "1" ]; }
 check "HSTS (max-age ≥ 1 ano, includeSubDomains) na página" header_has "$HSTS" "$TMP/h_root"
-check "HSTS na API, exatamente um cabeçalho (sem duplicar com o backend)" bash -c "$(declare -f header_has hsts_once); header_has '$HSTS' '$TMP/h_api' && hsts_once '$TMP/h_api'"
+api_hsts() { header_has "$HSTS" "$TMP/h_api" && hsts_once "$TMP/h_api"; }
+check "HSTS na API, exatamente um cabeçalho (sem duplicar com o backend)" api_hsts
 no_server() { [ -s "$TMP/h_root" ] && [ -s "$TMP/h_api" ] && ! grep -qi '^server:' "$TMP/h_root" "$TMP/h_api"; }
 check "sem cabeçalho Server" no_server
 static_headers() { header_has "^content-security-policy: default-src 'none'" "$1" && header_has '^x-content-type-options: nosniff' "$1" && header_has '^referrer-policy:' "$1"; }

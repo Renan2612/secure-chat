@@ -4,10 +4,11 @@
 //
 // O upgrade HTTP → WebSocket só é aceito depois de, nesta ordem:
 //   1. caminho == /ws                          (senão 404)
-//   1b. ritmo de tentativas do IP real         (senão 429, sem tocar no banco)
-//   2. Origin == CLIENT_URL                    (senão 403 — Cross-Site WebSocket Hijacking)
-//   3. cookie "sid" com sessão válida no store (senão 401 — mesma sessão da API)
-//   4. quarentena após close 4429 (429) e limites de conexões (por usuário:
+//   2. ritmo de tentativas do IP real          (senão 429, sem tocar no banco)
+//   3. Origin == CLIENT_URL                    (senão 403 — Cross-Site WebSocket Hijacking)
+//   4. cookie "sid" com sessão válida no store e não revogada durante a
+//      leitura                                 (senão 401 — mesma sessão da API)
+//   5. quarentena após close 4429 (429) e limites de conexões (por usuário:
 //      429; total: 503)
 // Recusas respondem HTTP com corpo JSON genérico e fecham o TCP: o socket
 // WebSocket nunca chega a abrir.
