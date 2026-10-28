@@ -73,12 +73,27 @@ envelope e do body opaco (`tests/ws/msgValidation.test.js`,
 (`tests/ws/logging.test.js`) e o cliente de referência
 `backend/tools/ws-client.js` (`tests/tools/wsClient.test.js`).
 
+## Resolvido na Etapa 4a — TLS, proxy reverso e origem única
+
+Detalhes em [`04-tls-e-proxy.md`](04-tls-e-proxy.md). Os controles de rede
+são provados por `scripts/verify-tls.sh` contra a stack no ar (28 provas;
+sai com código != 0 se alguma falhar); os do backend, por testes
+automatizados.
+
+| # | Problema | Correção | Evidência |
+|---|---|---|---|
+| G | Sem TLS: tráfego HTTP/WS em texto claro | Caddy como proxy reverso e terminador de TLS (TLS 1.2/1.3, só ECDHE + AEAD, HSTS de 1 ano); HTTP → 308 para HTTPS; origem única `https://localhost` (`/api/*`, `/ws`); backend e banco sem portas no host; cookie `sid` com `Secure`; `trust proxy` = 1 salto exato; ws-client só por `wss://` com verificação de certificado | `scripts/verify-tls.sh`; `backend/tests/proxy.test.js`, `backend/tests/ws/upgradeIp.test.js`, `backend/tests/tools/wsClientTls.test.js`; captura no Wireshark ([`04-tls-e-proxy.md`](04-tls-e-proxy.md) §10) |
+
+**Atenção:** o TLS termina no proxy. Proxy, backend e banco continuam vendo
+o conteúdo em claro (item F, Etapa 4b).
+
 ## Pendente — propositalmente NÃO corrigido ainda
 
 Estes problemas são o núcleo das próximas etapas e foram deixados como estão
 para servir de comparação "antes/depois" no relatório final. Os itens
 marcados ✅ foram resolvidos nas Etapas 2 e 3 (ver seções anteriores); as
-linhas foram mantidas para preservar o registro.
+linhas foram mantidas para preservar o registro. Os itens das Etapas 2, 3
+e 4a estão nas seções anteriores.
 
 | # | Problema | Onde | Etapa que resolve |
 |---|---|---|---|
@@ -87,10 +102,10 @@ linhas foram mantidas para preservar o registro.
 | C | Servidor não define o remetente da mensagem — vem do corpo enviado pelo cliente (`message.user.id`), permitindo forjar identidade | ~~`routes/messages.js`~~, ~~socket~~ | ✅ HTTP: Etapa 2 · ✅ socket: Etapa 3 |
 | D | Nenhuma rota verifica se o usuário autenticado é membro da sala antes de ler/escrever (IDOR) | `routes/messages.js`, `routes/rooms.js` | ✅ **Resolvido na Etapa 2** |
 | E | `joinRooms` não valida a chave de convite da sala — qualquer usuário autenticado entra em qualquer sala só sabendo o `idRoom` | `routes/rooms.js` | ✅ **Resolvido na Etapa 2** |
-| F | Mensagens armazenadas em texto claro no Postgres — o admin do banco lê tudo | `database/migrations.sql` | Etapa 4 (E2EE) |
-| G | Sem TLS — tráfego HTTP/WS em texto claro | infraestrutura | Etapa 4 |
+| F | Mensagens armazenadas em texto claro no Postgres — o admin do banco lê tudo | `database/migrations.sql` | Etapa 4b (E2EE) |
+| G | Sem TLS — tráfego HTTP/WS em texto claro | infraestrutura | ✅ **Resolvido na Etapa 4a** |
 | H | Sessão assinada no cliente (cookie-session) sem possibilidade de revogação centralizada | `server.js` | ✅ **Resolvido na Etapa 2** |
-| I | Frontend React ainda não auditado | `frontend/` | Próxima tarefa, antes da Etapa 3 |
+| I | Frontend React ainda não auditado | `frontend/` | Ainda pendente (fora do escopo das Etapas 3 e 4a) |
 
 ## Vulnerabilidades de dependências (`npm audit`)
 
@@ -98,11 +113,24 @@ Ao rodar `npm install`, o `bcrypt` original (5.1.x) trazia uma cadeia de
 build nativo (`node-pre-gyp` → `tar`) com vulnerabilidade **crítica**
 (path traversal). Corrigido atualizando para `bcrypt@^6`.
 
-Resta 1 vulnerabilidade **alta**, em `braces` (via `chokidar` → `nodemon`).
-É uma dependência **somente de desenvolvimento** (hot-reload local), não vai
-para produção, e não há correção upstream disponível sem downgrade do
-`nodemon` para uma versão muito mais antiga (pior troca). Risco aceito e
-documentado — reavaliar quando o nodemon publicar correção.
+Na Etapa 1 restava 1 vulnerabilidade **alta**, em `braces` (via `chokidar`
+→ `nodemon`), dependência só de desenvolvimento. Ela **não aparece mais**
+na auditoria de 28/10/2026 (as dependências foram atualizadas desde então).
+
+**Risco aceito (28/10/2026): 5 vulnerabilidades baixas em `deepmerge`**
+(GHSA-gcqx-w48m-w2h4, poluição de protótipo em `mergeObject()`), todas pela
+cadeia do **jest** (`jest` → `@jest/core`/`jest-cli` → `jest-config` →
+`deepmerge`). Motivos para aceitar:
+
+- é dependência **só de desenvolvimento/teste**: `npm audit --omit=dev`
+  responde **0 vulnerabilidades**, e a imagem Docker instala com
+  `npm ci --omit=dev`;
+- o `deepmerge` só mescla a configuração do próprio jest, sem entrada de
+  usuário;
+- a única "correção" oferecida (`npm audit fix --force`) **rebaixa o jest
+  para a versão 25**, uma quebra maior e uma troca pior.
+
+Reavaliar quando o jest publicar versão com o `deepmerge` corrigido.
 
 ## Como verificar
 
@@ -117,5 +145,6 @@ Ou com Docker:
 
 ```bash
 cp backend/.env.example backend/.env
-docker compose up --build
+docker compose --env-file backend/.env up --build
+scripts/verify-tls.sh   # Etapa 4a: provas de TLS e da origem única
 ```
