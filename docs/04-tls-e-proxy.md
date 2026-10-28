@@ -312,3 +312,33 @@ docker compose --env-file backend/.env down   # sem -v: preserva o banco e a CA
   contra o Postgres de teste na porta 5433, sem a stack.
 
 ## 12. Decisões tomadas nesta etapa e pendências
+
+Decisões que a especificação deixava em aberto (escolhida a opção mais
+segura):
+
+| Decisão | Escolha | Alternativa descartada |
+|---|---|---|
+| HSTS | só no proxy; helmet com HSTS desligado | emitir nos dois (cabeçalho duplicado) |
+| `/api/ws` | 404 no proxy | aceitar dois caminhos para o mesmo canal |
+| HTTP/3 | desligado | anunciar 443/UDP não publicado |
+| Curvas | incluir a híbrida pós-quântica X25519MLKEM768 | só X25519/P-256 (perderia a proteção PQ do padrão do Go) |
+| `TRUST_PROXY` inválido | servidor não sobe | ignorar ou aceitar nomes/listas |
+| Limite por IP no `/ws` | **tentativas** de upgrade por IP real, antes do banco | limite de conexões **simultâneas** por IP (puniria usuários atrás do mesmo NAT, como a rede do campus) |
+| Rede do backend/banco | `internal: true` (sem saída) | rede comum (backend com acesso à internet sem necessidade) |
+| Imagem do Caddy | tag **e** digest | só a tag (pode ser republicada) |
+| ws-client com `--ca` | CA **somada** às do sistema | substituir as do sistema (quebraria Let's Encrypt) |
+| ws-client e redirecionamento | não segue 308 (erro) | seguir e reenviar a senha sozinho |
+| ws-client `https` + `ws://` | recusado antes do login | permitir (cookie em claro) |
+
+**Pendências**
+
+1. **Produção:** domínio real, `PUBLIC_HOST` e Let's Encrypt (§4); abrir
+   80/443 para a internet e firewall (Etapa 6).
+2. **Frontend:** servido pelo proxy na mesma origem; rever a CSP (§6).
+3. **Proxy ↔ backend sem TLS** na rede interna: aceitável numa máquina só,
+   não em implantação distribuída (§9).
+4. **Logs de acesso do Caddy** estão desligados (padrão do Caddyfile sem
+   `log`). Ligar exigiria cuidado com IPs e caminhos (metadados, Etapa 5).
+5. **HSTS preload** e **ECH** (esconder o SNI) dependem de domínio público
+   e ficam para depois.
+6. Limites do rate limit continuam **em memória** (uma instância).
