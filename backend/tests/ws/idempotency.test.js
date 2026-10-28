@@ -101,3 +101,24 @@ test("reenvio de quem saiu da sala é rejeitado (NOT_MEMBER), não reconhecido",
   expect(await nextPacket(inbox, "ERROR")).toMatchObject({ code: "NOT_MEMBER" });
   ws.close();
 });
+
+test("cid de uma sala que o usuário deixou, reusado em sala onde é membro → CID_REUSED (não NOT_MEMBER)", async () => {
+  const other = await createRoomInDb("Outra", [alice.id]);
+  const { ws, inbox } = await connect(srv, alice.cookie);
+  send(ws, { type: "MSG_SEND", room, cid: "k", body: "x" });
+  await nextPacket(inbox, "MSG_ACK");
+  await pool.query("DELETE FROM rooms_users WHERE room = $1 AND user_id = $2", [room, alice.id]);
+  send(ws, { type: "MSG_SEND", room: other, cid: "k", body: "y" });
+  expect(await nextPacket(inbox, "ERROR")).toMatchObject({ code: "CID_REUSED" });
+  ws.close();
+});
+
+test("não membro de uma sala recebe NOT_MEMBER mesmo reusando um cid seu de outra sala", async () => {
+  const foreign = await createRoomInDb("Alheia", [bob.id]);
+  const { ws, inbox } = await connect(srv, alice.cookie);
+  send(ws, { type: "MSG_SEND", room, cid: "k", body: "x" });
+  await nextPacket(inbox, "MSG_ACK");
+  send(ws, { type: "MSG_SEND", room: foreign, cid: "k", body: "y" });
+  expect(await nextPacket(inbox, "ERROR")).toMatchObject({ code: "NOT_MEMBER" });
+  ws.close();
+});

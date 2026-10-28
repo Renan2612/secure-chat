@@ -10,7 +10,8 @@ const isMember = async (userId, room) =>
 // Grava só se o remetente for membro, na MESMA consulta: não há janela entre
 // checar a pertinência e gravar. O remetente vem da sessão (conn.userId),
 // nunca do pacote. Devolve { saved } (nova), { duplicate } (o cid já foi
-// gravado nesta sala: reenvio) ou {} (não é membro, ou cid de outra sala).
+// gravado nesta sala: reenvio), { reused } (cid já usado em outra sala) ou
+// {} (não é membro da sala pedida).
 const insertIfMember = async (userId, room, cid, body) => {
   const inserted = await pool.query(
     `INSERT INTO messages (room, user_id, message, cid)
@@ -21,16 +22,16 @@ const insertIfMember = async (userId, room, cid, body) => {
     [room, userId, body, cid]
   );
   if (inserted.rowCount > 0) return { saved: inserted.rows[0] };
-  // Reenvio: só é reconhecido para quem continua membro da sala. O body do
-  // reenvio não é comparado (é opaco; na Etapa 4 um reenvio cifrado de novo
-  // terá outro texto cifrado): vale o primeiro.
-  const existing = await pool.query(
-    `SELECT m.id, m.dt_message, m.room FROM messages m
-     JOIN rooms_users ru ON ru.room = m.room AND ru.user_id = m.user_id
-     WHERE m.user_id = $1 AND m.cid = $2`,
+  // Nada gravado: ou não é membro, ou o cid já existe. Autorização primeiro:
+  // quem não é membro da sala pedida recebe NOT_MEMBER, haja ou não cid.
+  if (!(await isMember(userId, room))) return {};
+  // Reenvio: o body não é comparado (é opaco; na Etapa 4 um reenvio cifrado
+  // de novo terá outro texto cifrado): vale o primeiro.
+  const { rows } = await pool.query(
+    "SELECT id, dt_message, room FROM messages WHERE user_id = $1 AND cid = $2",
     [userId, cid]
   );
-  const original = existing.rows[0];
+  const original = rows[0];
   if (!original) return {};
   return original.room === room ? { duplicate: original } : { reused: true };
 };
