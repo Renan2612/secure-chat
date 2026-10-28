@@ -263,9 +263,16 @@ Passos (compare com [`03-protocolo.md`](03-protocolo.md) §11):
 
 **O que se vê agora:**
 
-- **ClientHello** em claro: versões oferecidas, suítes, curvas
-  (inclusive `X25519MLKEM768`), ALPN (`h2`, `http/1.1`) e o **SNI
-  `localhost`** (nome do servidor; o ECH, que o esconderia, não está em uso).
+- **ClientHello** em claro: versões oferecidas, suítes, curvas, ALPN
+  (`h2`, `http/1.1`) e o **SNI `localhost`** (nome do servidor; o ECH, que
+  o esconderia, não está em uso).
+- **Curva negociada depende do cliente.** Na captura de 28/10/2026, só os
+  clientes **Node** (o `ws-client`) ofereceram o grupo híbrido
+  `X25519MLKEM768`, e o Caddy o escolheu. O **curl do Debian 12** (OpenSSL
+  3.0) não o oferece e negociou `x25519`. O **tshark 4.0** do Debian 12
+  ainda não conhece esse grupo: ele aparece como `Unknown (4588)`, isto é,
+  **`0x11EC`** (`Key Share Entry: Group: Unknown (4588)`); o key share tem
+  1120 bytes, contra 32 do X25519.
 - **ServerHello**: versão e suíte escolhidas. No TLS 1.3, o certificado e o
   restante do handshake já vão **cifrados**. No TLS 1.2, o certificado
   aparece em claro.
