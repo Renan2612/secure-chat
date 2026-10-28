@@ -17,6 +17,7 @@ class Connection {
     this.handlers = handlers; // { TIPO: async (conn, packet) => void }
     this.ready = false;
     this.rooms = new Set(); // salas em que esta conexão está inscrita
+    this.invalidPackets = 0;
 
     this.helloTimer = setTimeout(() => this.close(CLOSE.HELLO_TIMEOUT, "HELLO não recebido"), limits.helloTimeoutMs);
     socket.on("message", (data, isBinary) => this.onFrame(data, isBinary));
@@ -52,11 +53,20 @@ class Connection {
 
     const parsed = clientPacket.safeParse(raw);
     const ref = typeof raw?.id === "string" ? raw.id.slice(0, 64) : undefined;
-    if (!parsed.success || parsed.data.type === "HELLO") return this.error("BAD_REQUEST", ref);
+    if (!parsed.success || parsed.data.type === "HELLO") return this.rejectInvalid(ref);
 
     const packet = parsed.data;
     if (packet.type === "PING") return this.send({ type: "PONG", ...(packet.id ? { ref: packet.id } : {}) });
     return this.dispatch(packet);
+  }
+
+  // Pacote malformado ou fora do schema: ERROR; o reincidente é desconectado.
+  rejectInvalid(ref) {
+    this.error("BAD_REQUEST", ref);
+    this.invalidPackets += 1;
+    if (this.invalidPackets >= this.limits.maxInvalidPackets) {
+      this.close(CLOSE.POLICY_VIOLATION, "pacotes inválidos demais");
+    }
   }
 
   // Erros inesperados nos handlers viram ERROR INTERNAL para o cliente; no

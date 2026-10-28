@@ -19,6 +19,7 @@ const DEFAULT_LIMITS = {
   helloTimeoutMs: 5000,
   maxPayloadBytes: 16 * 1024,
   maxBodyBytes: MAX_BODY_BYTES,
+  maxInvalidPackets: 3, // no 3º pacote malformado/fora do schema: close 1008
 };
 
 // Códigos de fechamento (RFC 6455 §7.4; 4000–4999 = uso privado da aplicação).

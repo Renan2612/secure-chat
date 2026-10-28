@@ -50,7 +50,13 @@ const attachRealtime = (server, { session, ...options } = {}) => {
   const handlers = createHandlers(registry);
   // perMessageDeflate desligado: compressão de dados com segredos abre
   // ataques do tipo CRIME/BREACH, e o ganho aqui seria pequeno.
-  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+  // maxPayload: quadro maior é recusado pela própria ws com close 1009,
+  // antes de ser acumulado em memória.
+  const wss = new WebSocketServer({
+    noServer: true,
+    perMessageDeflate: false,
+    maxPayload: limits.maxPayloadBytes,
+  });
 
   const onUpgrade = async (req, socket, head) => {
     // Erros de rede durante o handshake (cliente desistiu) não derrubam o processo.
