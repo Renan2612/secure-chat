@@ -46,6 +46,24 @@ conteúdo das conversas, e a rede não deve expor nada em trânsito.
 | **Metadados (quem fala com quem, quando)** | Parcialmente — ver limitação abaixo | Minimizar logs, reduzir o que fica em claro nas tabelas. |
 | **Pertencimento às salas** | Outro usuário malicioso | Toda rota de leitura/escrita verifica se o usuário é membro da sala (Etapa 2). |
 
+### Situação na Etapa 4b-1 (E2EE, núcleo)
+
+Com a [Etapa 4b-1](05-e2ee.md), estes ativos passam a estar protegidos
+também contra o **administrador do servidor** e contra quem tem **acesso ao
+banco**, e não só contra a rede:
+
+| Ativo | Agora protegido por | Prova |
+|---|---|---|
+| **Conteúdo das mensagens** | AES-256-GCM no cliente com a chave da sala; o servidor guarda só o envelope `{v,kv,iv,ct,sig}` | `scripts/verify-e2ee.sh` (banco e rede interna proxy → backend), `tests/ws/e2eeMessages.test.js` |
+| **Chave da sala** (ativo novo) | gerada no cliente; só existe embrulhada (ECDH + HKDF + AES-GCM) para a chave pública de cada membro | `tests/roomKeys.test.js` |
+| **Chaves privadas dos usuários** (ativo novo) | nunca saem do cliente; keystore cifrado (PBKDF2 600 000 + AES-GCM), 0600, fora de repositórios | `tests/e2ee/keystore.test.js` |
+| **Identidade do remetente** | além do `from` definido pela sessão, assinatura ECDSA verificada com a chave **fixada** do remetente: nem o servidor consegue forjar autoria | `tests/ws/e2eeMessages.test.js` ("servidor troca o `from`") |
+
+**Continua fora:** metadados, disponibilidade (o servidor pode omitir ou
+reordenar), a primeira troca de chaves sem conferir o número de segurança,
+o dispositivo do usuário e a senha de login (que chega ao servidor). Lista
+completa em [`05-e2ee.md`](05-e2ee.md) §10.
+
 ### Limitação honesta sobre metadados
 
 Mesmo com E2EE, o servidor — e portanto o admin — sempre vai saber **quem
