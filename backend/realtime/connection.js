@@ -19,12 +19,16 @@ class Connection {
     this.ready = false;
     this.rooms = new Set(); // salas em que esta conexão está inscrita
     this.invalidPackets = 0;
+    this.alive = true; // respondeu ao último ping de controle?
     this.tokens = limits.rateBurst;
     this.lastRefill = Date.now();
     this.rateViolations = 0;
 
     this.helloTimer = setTimeout(() => this.close(CLOSE.HELLO_TIMEOUT, "HELLO não recebido"), limits.helloTimeoutMs);
     socket.on("message", (data, isBinary) => this.onFrame(data, isBinary));
+    socket.on("pong", () => {
+      this.alive = true;
+    });
     socket.on("close", () => clearTimeout(this.helloTimer));
   }
 

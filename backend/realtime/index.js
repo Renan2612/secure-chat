@@ -102,6 +102,46 @@ const attachRealtime = (server, { session, ...options } = {}) => {
 
   server.on("upgrade", onUpgrade);
 
+  const getSession = (sid) =>
+    new Promise((resolve, reject) => {
+      session.store.get(sid, (err, sess) => (err ? reject(err) : resolve(sess)));
+    });
+
+  // Sessões que terminaram sem passar pelo logout (expiraram, foram apagadas
+  // do banco, logout em outra instância): fecha as conexões delas com 4401.
+  // Se o store falhar (banco fora), mantém as conexões: o banco fora já
+  // impede gravar e autorizar, e derrubar todos agravaria a indisponibilidade.
+  const revalidateSessions = async () => {
+    const bySid = new Map();
+    for (const conn of registry.all) {
+      if (!bySid.has(conn.sid)) bySid.set(conn.sid, []);
+      bySid.get(conn.sid).push(conn);
+    }
+    for (const [sid, conns] of bySid) {
+      try {
+        const sess = await getSession(sid);
+        for (const conn of conns) {
+          if (sess?.userId !== conn.userId) conn.close(CLOSE.SESSION_ENDED, "sessão encerrada");
+        }
+      } catch (err) {
+        console.error("[ws] falha ao revalidar sessão:", err.message);
+      }
+    }
+  };
+
+  const heartbeat = setInterval(() => {
+    for (const conn of registry.all) {
+      if (!conn.alive) {
+        conn.socket.terminate(); // morta: sem handshake de fechamento
+        continue;
+      }
+      conn.alive = false;
+      conn.socket.ping();
+    }
+    revalidateSessions();
+  }, limits.heartbeatIntervalMs);
+  heartbeat.unref();
+
   return {
     registry,
     // Fim da sessão (logout): fecha todas as conexões do usuário.
@@ -109,6 +149,7 @@ const attachRealtime = (server, { session, ...options } = {}) => {
       for (const conn of registry.forUser(userId)) conn.close(CLOSE.SESSION_ENDED, "sessão encerrada");
     },
     close: () => {
+      clearInterval(heartbeat);
       server.off("upgrade", onUpgrade);
       for (const conn of registry.all) conn.socket.terminate();
       wss.close();

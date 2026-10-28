@@ -27,6 +27,10 @@ const DEFAULT_LIMITS = {
   // Após um 4429, o usuário não reabre conexão por este tempo (senão
   // reconectar daria um balde novo e cheio).
   rateLimitCooldownMs: 60 * 1000,
+  // A cada ciclo: ping de controle (RFC 6455) a todas as conexões; quem não
+  // respondeu ao ping anterior é derrubado. A sessão de cada conexão também
+  // é conferida no store (expirou ou foi apagada → close 4401).
+  heartbeatIntervalMs: 30 * 1000,
 };
 
 // Códigos de fechamento (RFC 6455 §7.4; 4000–4999 = uso privado da aplicação).
