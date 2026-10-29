@@ -93,3 +93,33 @@ test("membro que entrou sem chave e depois registra chaves → KEY_PENDING", asy
   expect(await nextPacket(a.inbox, "ROOM_EVENT")).toMatchObject({ room: room.roomId, kind: "KEY_PENDING" });
   a.ws.close();
 });
+
+describe("falha só no aviso não vira erro da operação (revisão \"errors\")", () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  test("se a busca de pendentes falha depois do SUBSCRIBED, a inscrição segue sem ERROR", async () => {
+    const { failQueriesMatching } = require("../helpers");
+    await join(bob, room);
+    jest.spyOn(console, "error").mockImplementation(() => {});
+    const injected = failQueriesMatching(/FROM room_current_wraps WHERE room/, new Error("banco instável"));
+    const a = await connect(srv, alice.cookie);
+    send(a.ws, { type: "SUBSCRIBE", id: "s", room: room.roomId });
+    await nextPacket(a.inbox, "SUBSCRIBED");
+    await expectNoPacket(a.inbox, "ERROR");
+    expect(injected.count).toBe(1);
+    expect(a.inbox.closed).toBeNull();
+    a.ws.close();
+  });
+
+  test("PUT /keys grava e responde 201 mesmo se o cálculo dos avisos falhar depois", async () => {
+    const { failQueriesMatching } = require("../helpers");
+    const carol = asCookie(srv, await loginUser(srv, "carol"));
+    await join(carol, room);
+    jest.spyOn(console, "error").mockImplementation(() => {});
+    const injected = failQueriesMatching(/SELECT m\.room FROM rooms_users m/, new Error("banco instável"));
+    carol.identity = await e2ee.generateIdentity();
+    const res = await carol.call("put", "/keys").send(await e2ee.exportPublicKeys(carol.identity));
+    expect(injected.count).toBe(1);
+    expect(res.status).toBe(201);
+  });
+});

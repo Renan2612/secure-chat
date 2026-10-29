@@ -6,15 +6,23 @@ const { fingerprint } = require("../helpers/publicKeys");
 const { withTransaction } = require("../helpers/transaction");
 
 // Salas em que o usuário é membro mas não tem o wrap da versão atual: quem
-// tem a chave nelas é avisado (ROOM_EVENT KEY_PENDING).
-const notifyPendingRooms = async (req, userId) => {
+// tem a chave nelas é avisado (ROOM_EVENT KEY_PENDING). Roda DEPOIS da
+// gravação e sem segurar a resposta: uma falha aqui só perde o aviso (os
+// clientes também descobrem pendentes ao se inscrever), nunca vira 500 de
+// uma operação que já foi gravada.
+const notifyPendingRooms = (req, userId) =>
+  findPendingRooms(userId)
+    .then((rooms) => rooms.forEach((room) => req.app.locals.notify.keyPending(room)))
+    .catch((err) => console.error(`[keys] falha ao calcular avisos KEY_PENDING: code=${err.code ?? "-"} ${err.message}`));
+
+const findPendingRooms = async (userId) => {
   const { rows } = await pool.query(
     `SELECT m.room FROM rooms_users m JOIN rooms r ON r.id = m.room
      WHERE m.user_id = $1 AND NOT EXISTS (
        SELECT 1 FROM room_current_wraps w WHERE w.room = r.id AND w.recipient_id = $1)`,
     [userId]
   );
-  for (const { room } of rows) req.app.locals.notify.keyPending(room);
+  return rows.map((row) => row.room);
 };
 
 const toJson = (row, { withCreatedAt = true } = {}) => ({
@@ -41,7 +49,7 @@ const putKeys = async (req, res, next) => {
     );
     if (inserted.rowCount > 0) {
       // Com chave registrada, já dá para receber wraps nas salas em que entrou.
-      await notifyPendingRooms(req, req.session.userId);
+      notifyPendingRooms(req, req.session.userId);
       return res.status(201).json(toJson(inserted.rows[0]));
     }
     const { rows } = await pool.query(`SELECT ${COLUMNS} FROM user_keys WHERE user_id = $1`, [req.session.userId]);
@@ -73,7 +81,7 @@ const resetKeys = async (req, res, next) => {
       return rows[0];
     });
     if (!row) return res.status(404).json({ message: "Sem chave registrada; use PUT /keys" });
-    await notifyPendingRooms(req, me);
+    notifyPendingRooms(req, me);
     return res.status(200).json(toJson(row));
   } catch (err) {
     return next(err);

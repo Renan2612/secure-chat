@@ -106,9 +106,14 @@ const createHandlers = (registry) => {
       if (!conn.isOpen()) return undefined;
       registry.subscribe(conn, room);
       conn.send({ type: "SUBSCRIBED", room });
-      // Quem tem a chave e chega com membros pendentes já é avisado.
-      if ((await keyHolders(room)).has(conn.userId) && (await hasPendingMembers(room))) {
-        conn.send({ type: "ROOM_EVENT", room, kind: "KEY_PENDING" });
+      // Quem tem a chave e chega com membros pendentes já é avisado. É só um
+      // aviso: se falhar, a inscrição (já confirmada) segue, sem ERROR.
+      try {
+        if ((await keyHolders(room)).has(conn.userId) && (await hasPendingMembers(room))) {
+          conn.send({ type: "ROOM_EVENT", room, kind: "KEY_PENDING" });
+        }
+      } catch (err) {
+        console.error(`[ws] falha ao verificar pendentes da sala ${room}: code=${err.code ?? "-"} ${err.message}`);
       }
       return undefined;
     },
