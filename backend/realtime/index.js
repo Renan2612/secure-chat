@@ -54,7 +54,7 @@ const loadSession = (sessionMiddleware, req) =>
 const attachRealtime = (server, { session, trustProxy = proxyaddr.compile([]), ...options } = {}) => {
   const limits = { ...DEFAULT_LIMITS, ...options };
   const registry = new ConnectionRegistry();
-  const { handlers, notifyKeyPending, notifyKeyReady } = createHandlers(registry);
+  const { handlers, notifyKeyPending, notifyKeyReady, notifyRemoved, notifyRotationPending } = createHandlers(registry);
   // perMessageDeflate desligado: compressão de dados com segredos abre
   // ataques do tipo CRIME/BREACH, e o ganho aqui seria pequeno.
   // maxPayload: quadro maior é recusado pela própria ws com close 1009,
@@ -190,6 +190,8 @@ const attachRealtime = (server, { session, trustProxy = proxyaddr.compile([]), .
     notify: {
       keyPending: (room) => fireAndLog("KEY_PENDING", notifyKeyPending(room)),
       keyReady: (userId, room) => fireAndLog("KEY_READY", notifyKeyReady(userId, room)),
+      removed: (userId, room) => fireAndLog("REMOVED", notifyRemoved(userId, room)),
+      rotationPending: (room) => fireAndLog("ROTATION_PENDING", notifyRotationPending(room)),
     },
     // Fim da sessão (logout): fecha todas as conexões do usuário.
     closeUser: (userId) => {

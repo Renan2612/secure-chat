@@ -17,6 +17,7 @@ const {
 } = require("./routes/rooms");
 const { getMessages, updateLastRead } = require("./routes/messages");
 const { putKeys, resetKeys, getKeys } = require("./routes/keys");
+const { leaveRoom, removeMember, transferOwner } = require("./routes/members");
 const { publishRoomKey, getMyWraps, getPending, postWrap, discardMyWrap } = require("./routes/roomKeys");
 const requireAuth = require("./middleware/requireAuth");
 const requireRoomMember = require("./middleware/requireRoomMember");
@@ -59,7 +60,9 @@ const createApp = ({
   onSessionEnd = () => {},
   // Avisos ROOM_EVENT do canal em tempo real (createServer liga ao realtime):
   // keyPending(room) → há membro sem a chave da sala; keyReady(userId, room)
-  // → chegou um wrap para o usuário. Sem realtime (testes HTTP), não fazem nada.
+  // → chegou um wrap para o usuário; removed(userId, room) → o usuário saiu
+  // ou foi removido; rotationPending(room) → a chave precisa ser trocada.
+  // Sem realtime (testes HTTP), não fazem nada.
   notify = {},
 } = {}) => {
   const app = express();
@@ -99,7 +102,8 @@ const createApp = ({
   // --- Sessão armazenada no servidor (Postgres) ---
   app.use(session.middleware);
   app.locals.onSessionEnd = onSessionEnd;
-  app.locals.notify = { keyPending: () => {}, keyReady: () => {}, ...notify };
+  const noop = () => {};
+  app.locals.notify = { keyPending: noop, keyReady: noop, removed: noop, rotationPending: noop, ...notify };
 
   // --- Rate limiting em rotas sensíveis (login/registro) ---
   const limiterDefaults = {
@@ -162,6 +166,11 @@ const createApp = ({
   app.get("/rooms/:id/keys/pending", validate(schemas.roomKeys), getPending);
   app.post("/rooms/:id/keys/wraps", validate(schemas.postWrap), postWrap);
   app.delete("/rooms/:id/keys/wraps/mine", validate(schemas.roomKeys), discardMyWrap);
+
+  // --- Ciclo de vida dos membros (Etapa 4b-2, docs/05-e2ee.md) ---
+  app.post("/rooms/:id/leave", validate(schemas.leaveRoom), leaveRoom);
+  app.delete("/rooms/:id/members/:userId", validate(schemas.removeMember), removeMember);
+  app.post("/rooms/:id/owner", validate(schemas.transferOwner), transferOwner);
 
   // As rotas de debug /session, /sessionRoom e /session (POST) foram REMOVIDAS.
   // A rota POST /session permitia que qualquer cliente definisse req.session.userId

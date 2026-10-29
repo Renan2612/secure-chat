@@ -73,6 +73,10 @@ const schemas = {
     body: z.object({ version: keyVersion, recipientId: id, recipientKeyEpoch: id, wrap }),
   },
   getKeys: { params: z.object({ userId: idParam }) },
+  // Ciclo de vida dos membros (Etapa 4b-2).
+  leaveRoom: { params: z.object({ id: idParam }) },
+  removeMember: { params: z.object({ id: idParam, userId: idParam }) },
+  transferOwner: { params: z.object({ id: idParam }), body: z.object({ userId: id }) },
 };
 
 module.exports = schemas;

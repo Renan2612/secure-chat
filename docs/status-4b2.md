@@ -6,7 +6,7 @@ este conteúdo vai para o `docs/05-e2ee.md` e este arquivo é removido.
 | Item | Estado |
 |---|---|
 | 1. Migração (owner_id, rotation_required, invite_hash, room_bans) | feito |
-| 2. Sair, transferir e remover | pendente |
+| 2. Sair, transferir e remover | feito |
 | 3. Rotação no servidor | pendente |
 | 4. Cliente: rotação, comandos, rotação automática, eventos | pendente |
 | 5. P1, P2 e P3 | pendente |
@@ -25,3 +25,15 @@ este conteúdo vai para o `docs/05-e2ee.md` e este arquivo é removido.
 - "Dono é membro" é garantido pela aplicação, não pelo banco (uma FK
   composta adiada quebraria limpezas diretas no banco feitas pelos testes e
   pelos scripts).
+- Rotas novas: `POST /rooms/:id/leave` (200 `{room, roomDeleted}`; 409
+  `{code: "OWNER_MUST_TRANSFER"}`), `DELETE /rooms/:id/members/:userId` (200
+  `{room, userId, invite}`), `POST /rooms/:id/owner {userId}` (200; 409 se o
+  alvo não tem a chave atual). Sala inexistente, sala alheia e alvo que não é
+  membro: o mesmo 404 `Sala ou membro inexistente`; membro que não é dono: 403;
+  remover a si ou transferir para si: 400.
+- `ROOM_EVENT` novos: `REMOVED` (para todas as conexões de quem saiu ou foi
+  removido, que é desinscrito sem fechar a conexão) e `ROTATION_PENDING` (para
+  os inscritos que ficaram).
+- Escolha mais segura: sair também desinscreve e avisa com `REMOVED`; o
+  `joinRooms` agora roda numa transação com `FOR SHARE` na sala (banido,
+  convite errado e sala inexistente: o mesmo 403).

@@ -97,6 +97,21 @@ const createHandlers = (registry) => {
     for (const conn of registry.forUser(userId)) conn.send({ type: "ROOM_EVENT", room, kind: "KEY_READY" });
   };
 
+  // Quem saiu ou foi removido: desinscrito da sala em todas as conexões (a
+  // conexão continua aberta, para as outras salas) e avisado com REMOVED.
+  const notifyRemoved = (userId, room) => {
+    for (const conn of registry.forUser(userId)) {
+      registry.unsubscribe(conn, room);
+      conn.send({ type: "ROOM_EVENT", room, kind: "REMOVED" });
+    }
+  };
+
+  // A chave precisa ser trocada (alguém saiu): todos os inscritos são
+  // avisados; quem tem a chave atual pode rotacionar.
+  const notifyRotationPending = (room) => {
+    for (const conn of registry.subscribers(room)) conn.send({ type: "ROOM_EVENT", room, kind: "ROTATION_PENDING" });
+  };
+
   const handlers = {
     // Sala inexistente e sala alheia recebem o mesmo NOT_MEMBER.
     async SUBSCRIBE(conn, { room, id }) {
@@ -155,7 +170,7 @@ const createHandlers = (registry) => {
     },
   };
 
-  return { handlers, notifyKeyPending, notifyKeyReady };
+  return { handlers, notifyKeyPending, notifyKeyReady, notifyRemoved, notifyRotationPending };
 };
 
 module.exports = { createHandlers };

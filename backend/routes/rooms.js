@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const pool = require("../db");
+const { withTransaction } = require("../helpers/transaction");
 
 // Erros inesperados seguem para o error handler central (next), que
 // responde 500 genérico e registra o erro sem dados da requisição.
@@ -94,23 +95,35 @@ const sameInvite = (provided, storedHash) => {
   return crypto.timingSafeEqual(Buffer.from(inviteHash(provided), "hex"), Buffer.from(storedHash, "hex"));
 };
 
-// CORRIGIDO (item E): exige a chave de convite da sala. Sala inexistente e
-// chave errada recebem a mesma resposta, para não revelar quais IDs existem.
+// CORRIGIDO (item E): exige a chave de convite da sala. Sala inexistente,
+// chave errada e usuário banido (removido pelo dono, room_bans) recebem a
+// mesma resposta, para não revelar quais IDs existem nem quem foi banido.
+// FOR SHARE na sala: uma remoção (que troca o convite e bane) ou a exclusão
+// da sala em andamento termina antes desta entrada ser avaliada.
 const joinRooms = async (req, res, next) => {
   const roomId = req.body.idRoom;
+  const me = req.session.userId;
   try {
-    const { rows } = await pool.query("SELECT id, name, invite_hash FROM rooms WHERE id = $1", [roomId]);
-    if (rows.length === 0 || !sameInvite(req.body.key, rows[0].invite_hash)) {
-      return res.status(403).json({ message: "Convite inválido" });
-    }
-    const joined = await pool.query(
-      `INSERT INTO rooms_users (room, user_id, last_msg_viewed) VALUES ($1, $2, 0)
-       ON CONFLICT (room, user_id) DO NOTHING`,
-      [roomId, req.session.userId]
-    );
+    const outcome = await withTransaction(async (client) => {
+      const { rows } = await client.query(
+        `SELECT r.id, r.name, r.invite_hash,
+                EXISTS (SELECT 1 FROM room_bans b WHERE b.room = r.id AND b.user_id = $2) AS banned
+         FROM rooms r WHERE r.id = $1 FOR SHARE`,
+        [roomId, me]
+      );
+      const room = rows[0];
+      if (!room || !sameInvite(req.body.key, room.invite_hash) || room.banned) return null;
+      const joined = await client.query(
+        `INSERT INTO rooms_users (room, user_id, last_msg_viewed) VALUES ($1, $2, 0)
+         ON CONFLICT (room, user_id) DO NOTHING`,
+        [roomId, me]
+      );
+      return { room, joined: joined.rowCount > 0 };
+    });
+    if (!outcome) return res.status(403).json({ message: "Convite inválido" });
     // Novo membro entra "sem chave": avisa quem pode lhe entregar um wrap.
-    if (joined.rowCount > 0) req.app.locals.notify.keyPending(roomId);
-    return res.status(200).json({ id: rows[0].id, name: rows[0].name });
+    if (outcome.joined) req.app.locals.notify.keyPending(roomId);
+    return res.status(200).json({ id: outcome.room.id, name: outcome.room.name });
   } catch (err) {
     return next(err);
   }
