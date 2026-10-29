@@ -9,12 +9,12 @@ const e2ee = require("../../../shared/e2ee");
 const { pool, resetDb, PASSWORD } = require("../helpers");
 const { startServer, loginUser, connect, nextPacket, send, ORIGIN } = require("../ws/helpers");
 const { asCookie, registerKeys, join, fetchRoomKey } = require("../e2ee/flow");
-
-const addMemberIfMissing = (room, userId) =>
-  pool.query("INSERT INTO rooms_users (room, user_id, last_msg_viewed) VALUES ($1, $2, 0) ON CONFLICT DO NOTHING", [room, userId]);
 const { clientSetup, KEY_PASSPHRASE } = require("./clientEnv");
 
 const CLIENT = path.join(__dirname, "..", "..", "tools", "ws-client.js");
+
+const addMemberIfMissing = (room, userId) =>
+  pool.query("INSERT INTO rooms_users (room, user_id, last_msg_viewed) VALUES ($1, $2, 0) ON CONFLICT DO NOTHING", [room, userId]);
 
 let srv;
 let alice;

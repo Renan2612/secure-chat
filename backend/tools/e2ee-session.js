@@ -5,6 +5,7 @@
 // `api(method, path, body)` faz a requisição autenticada e devolve
 // { status, body }. Nada aqui imprime segredos: só ids, fingerprints e
 // estados.
+const fs = require("node:fs");
 const e2ee = require("../../shared/e2ee");
 const files = require("../../shared/e2ee/node");
 
@@ -47,8 +48,7 @@ class E2eeSession {
   // Abre o keystore (ou cria um com identidade nova) e o trust store. Senha
   // errada ou arquivo adulterado: erro, e NADA é sobrescrito.
   async open() {
-    const exists = require("node:fs").existsSync(this.keystorePath);
-    if (exists) {
+    if (fs.existsSync(this.keystorePath)) {
       this.data = await files.readSealedFile(this.keystorePath, this.passphrase);
       if (this.data.userId !== this.me.id) {
         throw new Error(`o keystore ${this.keystorePath} é de outro usuário (${this.data.userId}); use --keystore`);
@@ -62,7 +62,7 @@ class E2eeSession {
     this.data.rooms = this.data.rooms ?? {}; // sala → { creator, version } fixados (TOFU por sala)
     this.identity = await e2ee.importIdentity(this.data.identity);
     this.pub = await e2ee.exportPublicKeys(this.identity);
-    this.trust = require("node:fs").existsSync(this.trustPath)
+    this.trust = fs.existsSync(this.trustPath)
       ? await files.readSealedFile(this.trustPath, this.passphrase)
       : e2ee.emptyTrustStore();
   }

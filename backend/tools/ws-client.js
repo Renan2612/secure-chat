@@ -524,7 +524,7 @@ const main = async () => {
       case "SUBSCRIBED":
         if (inputStarted) return undefined; // um segundo SUBSCRIBED não abre outra leitura da entrada
         inputStarted = true;
-        print(`inscrito na sala ${packet.room}. Digite mensagens (Ctrl+D para sair; /members, /safety, /trust, /approve, /keys).`);
+        print(`inscrito na sala ${clean(packet.room)}. Digite mensagens (Ctrl+D para sair; /members, /safety, /trust, /approve, /keys).`);
         enqueue(announceKey);
         return startInput();
       case "ROOM_EVENT":

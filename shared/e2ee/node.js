@@ -77,4 +77,4 @@ const readSealedFile = async (file, passphrase) => {
   return openJson(passphrase, JSON.parse(fs.readFileSync(file, "utf8")));
 };
 
-module.exports = { defaultKeystorePath, trustStorePath, writeSealedFile, readSealedFile, insideGitRepo };
+module.exports = { defaultKeystorePath, trustStorePath, writeSealedFile, readSealedFile };

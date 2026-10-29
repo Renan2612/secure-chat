@@ -114,10 +114,4 @@ const decryptMessage = async ({ body, roomKeys, roomId, senderId, cid, senderEcd
   }
 };
 
-module.exports = {
-  encryptMessage,
-  decryptMessage,
-  parseEnvelope,
-  MAX_TEXT_BYTES,
-  ENVELOPE: { VERSION: ENVELOPE_VERSION, IV_BYTES, SIG_BYTES, TAG_BYTES, PAD_BLOCK, MAX_PADDED_BYTES },
-};
+module.exports = { encryptMessage, decryptMessage, parseEnvelope, MAX_TEXT_BYTES };

@@ -15,6 +15,7 @@ const pool = require("../db");
 const { withTransaction } = require("../helpers/transaction");
 
 const FORBIDDEN = { message: "Acesso negado" };
+const VERSION_MISMATCH = { message: "Versão da chave diferente da atual da sala" };
 
 const roomState = async (roomId, userId) => {
   const { rows } = await pool.query(
@@ -38,7 +39,7 @@ const publishRoomKey = async (req, res, next) => {
     const room = await roomState(roomId, me);
     // Sala inexistente, alheia ou de outro criador: o mesmo 403.
     if (!room || !room.member || room.created_by !== me) return res.status(403).json(FORBIDDEN);
-    if (version !== room.key_version) return res.status(409).json({ message: "Versão da chave diferente da atual da sala" });
+    if (version !== room.key_version) return res.status(409).json(VERSION_MISMATCH);
     const hasKeys = (await pool.query("SELECT 1 FROM user_keys WHERE user_id = $1", [me])).rowCount > 0;
     if (!hasKeys) return res.status(409).json({ message: "Registre suas chaves públicas (PUT /keys) antes" });
     const published = await withTransaction(async (client) => {
@@ -139,7 +140,7 @@ const postWrap = async (req, res, next) => {
   try {
     const room = await roomState(roomId, me);
     if (!room?.member) return res.status(403).json(FORBIDDEN);
-    if (version !== room.key_version) return res.status(409).json({ message: "Versão da chave diferente da atual da sala" });
+    if (version !== room.key_version) return res.status(409).json(VERSION_MISMATCH);
     if (!room.has_key) return res.status(403).json(FORBIDDEN);
     const isMember = (await pool.query("SELECT 1 FROM rooms_users WHERE room = $1 AND user_id = $2", [roomId, recipientId])).rowCount > 0;
     if (!isMember) return res.status(400).json({ message: "Destinatário inválido" });

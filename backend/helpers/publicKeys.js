@@ -22,11 +22,11 @@ const isP256Spki = (value) => {
 };
 
 // base64url canônico que decodifica para exatamente `bytes` bytes.
-const isB64urlBytes = (value, bytes) =>
-  typeof value === "string" &&
-  /^[A-Za-z0-9_-]+$/.test(value) &&
-  Buffer.from(value, "base64url").length === bytes &&
-  Buffer.from(value, "base64url").toString("base64url") === value;
+const isB64urlBytes = (value, bytes) => {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]+$/.test(value)) return false;
+  const decoded = Buffer.from(value, "base64url");
+  return decoded.length === bytes && decoded.toString("base64url") === value;
+};
 
 const fingerprint = ({ ecdhPub, ecdsaPub }) =>
   crypto.createHash("sha256").update(JSON.stringify([FINGERPRINT_LABEL, ecdsaPub, ecdhPub]), "utf8").digest("hex");

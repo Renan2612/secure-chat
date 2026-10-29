@@ -117,5 +117,4 @@ module.exports = {
   unwrapRoomKey,
   commitRoomKey,
   verifyRoomKeyCommitment,
-  WRAP: { IV_BYTES, SIG_BYTES, WRAPPED_BYTES },
 };

@@ -39,7 +39,6 @@ const sealJson = async (passphrase, data, { iterations = MIN_ITERATIONS } = {}) 
 // Senha errada e arquivo adulterado são indistinguíveis (a tag do GCM não
 // confere): os dois viram BAD_PASSPHRASE.
 const openJson = async (passphrase, sealed) => {
-  const bad = () => new E2eeError("BAD_PASSPHRASE", "senha de cifragem errada ou arquivo adulterado");
   const kdf = sealed?.kdf;
   if (sealed?.format !== FORMAT || sealed.v !== VERSION || kdf?.name !== "PBKDF2-SHA-256") {
     throw new E2eeError("INVALID_KEYSTORE", "arquivo não é um keystore do secure-chat v1");
@@ -52,8 +51,8 @@ const openJson = async (passphrase, sealed) => {
     const plain = await p.aesGcmDecrypt(key, fromB64url(sealed.iv), fromB64url(sealed.ct), headerAad(kdf.iterations, kdf.salt));
     return JSON.parse(fromUtf8(plain));
   } catch {
-    throw bad();
+    throw new E2eeError("BAD_PASSPHRASE", "senha de cifragem errada ou arquivo adulterado");
   }
 };
 
-module.exports = { sealJson, openJson, KEYSTORE: { MIN_ITERATIONS, MIN_PASSPHRASE_CHARS } };
+module.exports = { sealJson, openJson };
