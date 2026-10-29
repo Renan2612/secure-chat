@@ -229,3 +229,42 @@ describe("transferir (POST /rooms/:id/owner)", () => {
     expect((await roomRow()).owner_id).toBe(alice.id);
   });
 });
+
+describe("concorrência: sair, remover e transferir são serializados pela sala (FOR UPDATE)", () => {
+  const ownerIsMember = async () => {
+    const { rows } = await pool.query(
+      "SELECT r.id, EXISTS (SELECT 1 FROM rooms_users m WHERE m.room = r.id AND m.user_id = r.owner_id) AS ok FROM rooms r WHERE r.id = $1",
+      [room.roomId]
+    );
+    return rows.length === 0 || rows[0].ok;
+  };
+
+  test("os dois últimos membros saem ao mesmo tempo: a sala some ou a dona fica (409); nunca sala sem membro", async () => {
+    const [b, a] = await Promise.all([leave(bob), leave(alice)]);
+    expect(b.status).toBe(200);
+    expect([200, 409]).toContain(a.status);
+    const exists = (await pool.query("SELECT 1 FROM rooms WHERE id = $1", [room.roomId])).rowCount === 1;
+    expect(exists).toBe(a.status === 409);
+    if (exists) expect(await memberIds()).toEqual([alice.id]);
+  });
+
+  test("transferir e remover o mesmo membro ao mesmo tempo: o dono é sempre membro", async () => {
+    for (let n = 0; n < 5; n += 1) {
+      const results = await Promise.all([transfer(alice, bob), remove(alice, bob)]);
+      expect(results.filter((r) => r.status === 200)).toHaveLength(1);
+      expect(await ownerIsMember()).toBe(true);
+      if ((await roomRow()).owner_id !== alice.id) break;
+      await pool.query("DELETE FROM room_bans WHERE room = $1", [room.roomId]);
+      await pool.query("INSERT INTO rooms_users (room, user_id, last_msg_viewed) VALUES ($1, $2, 0)", [room.roomId, bob.id]);
+      await pool.query("UPDATE rooms SET rotation_required = FALSE WHERE id = $1", [room.roomId]);
+      await grant(alice, room, bob);
+    }
+  });
+
+  test("dono sai enquanto transfere: nunca fica sala com dono fora dela", async () => {
+    const [t, l] = await Promise.all([transfer(alice, bob), leave(alice)]);
+    expect(t.status).toBe(200);
+    expect([200, 404, 409]).toContain(l.status);
+    expect(await ownerIsMember()).toBe(true);
+  });
+});

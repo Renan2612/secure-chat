@@ -8,7 +8,7 @@ este conteúdo vai para o `docs/05-e2ee.md` e este arquivo é removido.
 | 1. Migração (owner_id, rotation_required, invite_hash, room_bans) | feito |
 | 2. Sair, transferir e remover | feito |
 | 3. Rotação no servidor | feito (suíte completa: 593 passaram, 1 pulado, o e2e opt-in) |
-| 4. Cliente: `/kick`, `/leave`, `/rotate`, `/owner`, `/invite`, rotação automática com atraso de 0 a 2 s, só destinatários verificados, eventos na tela, testes criptográficos | pendente |
+| 4. Cliente: `/kick`, `/leave`, `/rotate`, `/owner`, `/invite`, rotação automática com atraso de 0 a 2 s, só destinatários verificados, eventos na tela, testes criptográficos | feito |
 | 5. P1: trust store ausente com keystore existente → aviso e TOFU reiniciado (id do trust store no keystore) | pendente |
 | 5. P2: gravação atômica (temporário no mesmo diretório, fsync do arquivo e do diretório, rename, 0600) + teste de falha | pendente |
 | 5. P3: vetores fixos de fingerprint e número de segurança por ferramenta independente | pendente |
@@ -69,3 +69,29 @@ este conteúdo vai para o `docs/05-e2ee.md` e este arquivo é removido.
 - Não implementado (registrar em docs/05 como pendência e limite): lista de
   membros assinada pelo dono; histórico de chaves públicas antigas no trust
   store.
+- Cliente (item 4, `tools/e2ee-session.js`): `ensureRoomKey` abre TODAS as
+  versões que ainda não tem (histórico legível depois da rotação). O
+  compromisso da v1 é conferido com o criador fixado; o das versões seguintes,
+  com a chave fixada de quem rotacionou. Wrap de versão antiga que não confere:
+  aviso, sem descarte (o descarte do servidor só vale para a versão atual).
+- Escolha mais segura: o cliente recusa uma versão nova cuja chave repete a
+  de outra versão (`KEY_REUSED`), o que pega um membro ou cliente com bug que
+  reaproveite a chave que o removido ainda tem.
+- Destinatários da rotação: só o próprio usuário e quem está verificado, ou
+  quem foi aprovado com `/approve` nesta sessão e nesta sala (a aprovação vive
+  só na memória). Os demais ficam pendentes e a saída lista quem ficou de fora.
+- Rotação automática: no `ROTATION_PENDING`, quem tem a chave atual espera de
+  0 a 2 s (de `getRandomValues`). Se a versão subiu nesse meio-tempo, não
+  rotaciona. `STALE_MEMBERSHIP`: refaz até 3 vezes. 409 de versão: busca a
+  chave de quem venceu e para.
+- Mensagem com kv maior que o conhecido: o cliente busca o wrap e tenta de
+  novo; sem wrap, mostra `[sem chave]`.
+- `/leave` do dono com outros membros: erro claro, pedindo `/owner`. O
+  `REMOVED` da própria saída não é mostrado como remoção.
+- Acréscimos (a), (b) e (c): testes em `ws/rotation.test.js` (sala sem ninguém
+  com a chave atual: rotação 403, envio `ROTATION_PENDING`, o último a sair
+  apaga a sala; mais de 200 wraps → 400; corpo > 100 KB → 413; outras rotas
+  seguem com 10 KB) e em `ws/members.test.js` (os dois últimos saem juntos;
+  transferir e remover o mesmo membro juntos; dono sai enquanto transfere: o
+  dono é sempre membro). Sair, remover, transferir, trocar o convite e
+  rotacionar travam a sala com `FOR UPDATE` (`lockRoomFor`, `rotateRoomKey`).

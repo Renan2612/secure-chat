@@ -195,12 +195,14 @@ class E2eeSession {
     return created;
   }
 
-  // Garante a chave atual da sala: já guardada, ou abre o próprio wrap
-  // (assinatura do remetente e compromisso do criador conferidos com as
-  // chaves FIXADAS). Wrap que não confere é descartado no servidor. O criador
-  // e a maior versão vistos de cada sala ficam FIXADOS no keystore: o
-  // servidor não pode, depois, apresentar outro "criador" nem voltar versão.
-  // Devolve { ok, sender } (sender = quem entregou, para mostrar a confiança).
+  // Garante a chave atual da sala e abre as versões que ainda não tem (o
+  // histórico de antes de uma rotação continua legível). Cada wrap é
+  // conferido com as chaves FIXADAS: assinatura do remetente e compromisso
+  // do autor da versão (o criador, na v1; quem rotacionou, nas seguintes).
+  // O criador da v1 e a maior versão vista de cada sala ficam FIXADOS no
+  // keystore: o servidor não pode, depois, apresentar outro "criador" nem
+  // voltar versão. Devolve { ok, sender } (sender = quem entregou a chave
+  // atual, para mostrar a confiança).
   async ensureRoomKey(room) {
     const state = ok(await this.api("get", `/rooms/${room}/keys`), 200);
     const pinned = this.data.rooms[room];
@@ -210,37 +212,62 @@ class E2eeSession {
     }
     this.currentVersion.set(room, state.currentVersion);
     if (this.hasCurrentKey(room)) return { ok: true };
-    const wrap = state.wraps.find((w) => w.version === state.currentVersion);
-    const info = state.versions.find((v) => v.version === state.currentVersion);
-    if (!wrap || !info) return { ok: false };
-    if (pinned && pinned.creator !== info.createdBy) {
+    const missing = state.wraps
+      .filter((w) => w.version <= state.currentVersion && !this.data.roomKeys[room]?.[w.version])
+      .sort((a, b) => a.version - b.version);
+    let sender;
+    for (const wrap of missing) {
+      if ((await this.openWrap(room, state, wrap)) && wrap.version === state.currentVersion) sender = wrap.senderId;
+    }
+    return this.hasCurrentKey(room) ? { ok: true, sender } : { ok: false };
+  }
+
+  // Abre e guarda UM wrap. false (com aviso) se não conferir; um wrap da
+  // versão atual que não confere é descartado no servidor (outro membro
+  // pode entregar um bom).
+  async openWrap(room, state, wrap) {
+    const info = state.versions.find((v) => v.version === wrap.version);
+    if (!info) return false;
+    const pinned = this.data.rooms[room];
+    if (wrap.version === 1 && pinned?.creator !== undefined && pinned.creator !== info.createdBy) {
       this.print(`! o criador da sala ${room} informado pelo servidor mudou (era usuário ${pinned.creator}, agora ${clean(info.createdBy)}): chave recusada`);
-      return { ok: false };
+      return false;
     }
     const sender = await this.senderKeyFor(wrap.senderId);
-    const creator = await this.senderKeyFor(info.createdBy);
-    if (!["verified", "unverified"].includes(sender.trust) || !["verified", "unverified"].includes(creator.trust)) {
-      this.print(`! a chave da sala ${room} veio de quem tem chave não confiável (usuário ${wrap.senderId}); não aceita`);
-      return { ok: false };
+    const author = await this.senderKeyFor(info.createdBy);
+    if (!["verified", "unverified"].includes(sender.trust) || !["verified", "unverified"].includes(author.trust)) {
+      this.print(`! a chave v${wrap.version} da sala ${room} veio de quem tem chave não confiável (usuário ${clean(wrap.senderId)}); não aceita`);
+      return false;
     }
-    // Só a CRIPTOGRAFIA fica no try: um wrap que não confere é descartado
-    // no servidor. Um erro local (disco cheio, permissão) sobe como erro —
-    // tratá-lo como "wrap inválido" apagaria um wrap bom.
+    // Só a CRIPTOGRAFIA fica no try: um erro local (disco cheio, permissão)
+    // sobe como erro — tratá-lo como "wrap inválido" apagaria um wrap bom.
     let roomKey;
     try {
       roomKey = await e2ee.unwrapRoomKey({ wrap, roomId: room, version: wrap.version, senderId: wrap.senderId, recipientId: this.me.id, recipientEcdhKey: this.identity.ecdh.privateKey, senderEcdsaPub: sender.ecdsaPub });
-      await e2ee.verifyRoomKeyCommitment({ roomKey, roomId: room, version: wrap.version, commitment: info.commitment, commitmentSig: info.commitmentSig, creatorEcdsaPub: creator.ecdsaPub });
+      await e2ee.verifyRoomKeyCommitment({ roomKey, roomId: room, version: wrap.version, commitment: info.commitment, commitmentSig: info.commitmentSig, creatorEcdsaPub: author.ecdsaPub });
+      // A chave de uma versão nova é aleatória (D4): repetir a de outra
+      // versão é um membro (ou cliente com bug) reaproveitando a chave que
+      // quem saiu ainda tem.
+      const raw = e2ee.encoding.toB64url(await e2ee.primitives.exportRaw(roomKey));
+      if (Object.values(this.data.roomKeys[room] ?? {}).includes(raw)) {
+        throw new e2ee.E2eeError("KEY_REUSED", "a chave nova repete a de outra versão");
+      }
     } catch (err) {
       if (!(err instanceof e2ee.E2eeError)) throw err;
+      if (wrap.version !== state.currentVersion) {
+        this.print(`! a chave v${wrap.version} da sala ${room} não confere (${err.code}); o histórico dessa versão fica ilegível`);
+        return false;
+      }
       const discarded = await this.api("delete", `/rooms/${room}/keys/wraps/mine`);
       this.print(
         `! a chave recebida para a sala ${room} não confere (${err.code}); ` +
           (discarded.status === 204 ? "wrap descartado, aguardando outro" : `o descarte do wrap falhou (${discarded.status})`)
       );
-      return { ok: false };
+      return false;
     }
-    await this.storeRoomKey(room, wrap.version, roomKey, { creator: info.createdBy, version: Math.max(wrap.version, pinned?.version ?? 0) });
-    return { ok: true, sender: wrap.senderId };
+    const creator = pinned?.creator ?? (wrap.version === 1 ? info.createdBy : undefined);
+    await this.storeRoomKey(room, wrap.version, roomKey, { creator, version: Math.max(wrap.version, pinned?.version ?? 0) });
+    return true;
   }
 
   async pendingOf(room) {
@@ -305,6 +332,111 @@ class E2eeSession {
     await this.deliverTo(room, res.version, (await this.roomKeysFor(room))[res.version], pending);
   }
 
+  // --- composição da sala e rotação (Etapa 4b-2) ----------------------------
+
+  // Membros que entram numa rotação: o próprio usuário e quem tem a chave
+  // pública fixada e VERIFICADA, ou foi aprovado (/approve) nesta sala — a
+  // mesma regra da entrega. Os demais (não verificados, CHAVE ALTERADA, sem
+  // chave) ficam de fora e voltam a ser pendentes: o servidor decide quem é
+  // membro e poderia inserir uma conta para receber a chave nova.
+  async rotationRecipients(room) {
+    const members = ok(await this.api("get", `/roomUsers/${room}`), 200);
+    const recipients = [{ userId: this.me.id, keyEpoch: this.keyEpoch, ecdhPub: this.pub.ecdhPub }];
+    const left = [];
+    for (const member of members) {
+      if (member.id === this.me.id) continue;
+      const res = await this.api("get", `/keys/${member.id}`);
+      if (res.status === 404 && !res.parseError) {
+        left.push(member.id);
+        continue;
+      }
+      const keys = ok(res, 200);
+      await this.observe(member.id, keys);
+      const state = e2ee.trustState(this.trust, member.id, keys);
+      if (state === "verified" || (state === "unverified" && this.approved.has(`${room}:${member.id}`))) {
+        recipients.push({ userId: member.id, keyEpoch: keys.keyEpoch, ecdhPub: keys.ecdhPub });
+      } else {
+        left.push(member.id);
+      }
+    }
+    return { recipients, left };
+  }
+
+  // Troca a chave da sala: chave NOVA de getRandomValues (nunca derivada da
+  // anterior: quem saiu a calcularia), compromisso assinado por mim e um
+  // wrap por destinatário. 409 STALE_MEMBERSHIP (alguém saiu ou trocou de
+  // chave no meio) → monta de novo, até `attempts` vezes. 409 de versão =
+  // outro membro rotacionou antes: busca a chave dele e para.
+  // Devolve { rotated, version, left } ou { rotated: false, reason }.
+  async rotate(room, { attempts = 3 } = {}) {
+    const got = await this.ensureRoomKey(room);
+    if (!got.ok) throw new Error(`você não tem a chave atual da sala ${room}: não dá para trocá-la`);
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const version = this.currentVersion.get(room) + 1;
+      const { recipients, left } = await this.rotationRecipients(room);
+      const roomKey = await e2ee.generateRoomKey();
+      const ctx = { roomId: room, version };
+      const commitment = await e2ee.commitRoomKey({ ...ctx, roomKey, creatorEcdsaKey: this.identity.ecdsa.privateKey });
+      const wraps = [];
+      for (const r of recipients) {
+        const wrap = await e2ee.wrapRoomKey({ ...ctx, roomKey, senderId: this.me.id, recipientId: r.userId, recipientEcdhPub: r.ecdhPub, senderEcdsaKey: this.identity.ecdsa.privateKey });
+        wraps.push({ recipientId: r.userId, recipientKeyEpoch: r.keyEpoch, wrap });
+      }
+      const res = await this.api("post", `/rooms/${room}/keys/rotate`, { version, ...commitment, wraps });
+      if (res.status === 201 && !res.parseError) {
+        const pinned = this.data.rooms[room];
+        await this.storeRoomKey(room, version, roomKey, { creator: pinned?.creator, version });
+        this.currentVersion.set(room, version);
+        return { rotated: true, version, left };
+      }
+      if (res.status === 409 && res.body?.code === "STALE_MEMBERSHIP") continue;
+      if (res.status === 409) {
+        await this.ensureRoomKey(room);
+        return { rotated: false, reason: "concurrent" };
+      }
+      throw new Error(`o servidor recusou a troca da chave da sala ${room} (${res.status})`);
+    }
+    return { rotated: false, reason: "stale" };
+  }
+
+  // ROTATION_PENDING: quem tem a chave atual tenta rotacionar depois de um
+  // atraso aleatório de 0 a `maxDelayMs` (reduz a colisão entre membros).
+  // Se, depois do atraso, a versão já subiu, outro membro rotacionou.
+  async autoRotate(room, { maxDelayMs = 2000 } = {}) {
+    const seen = this.currentVersion.get(room);
+    if (!this.hasCurrentKey(room)) return { rotated: false, reason: "no-key" };
+    const [hi, lo] = e2ee.primitives.randomBytes(2);
+    const delay = Math.floor((((hi << 8) | lo) / 65536) * maxDelayMs);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    await this.ensureRoomKey(room);
+    if (this.currentVersion.get(room) !== seen) return { rotated: false, reason: "concurrent" };
+    return this.rotate(room);
+  }
+
+  async leave(room) {
+    const res = await this.api("post", `/rooms/${room}/leave`);
+    if (res.status === 409 && res.body?.code === "OWNER_MUST_TRANSFER") {
+      throw new Error("você é o dono e há outros membros: transfira o cargo antes (/owner <userId>)");
+    }
+    return ok(res, 200);
+  }
+
+  // Remover e trocar a chave em sequência (/kick): sem a rotação, o removido
+  // leria com a chave que já tem tudo o que viesse depois — por isso o
+  // servidor bloqueia o envio até a troca. Devolve o convite novo (uma vez).
+  async kick(room, userId) {
+    const removed = ok(await this.api("delete", `/rooms/${room}/members/${userId}`), 200);
+    return { invite: removed.invite, rotation: await this.rotate(room) };
+  }
+
+  async transferOwner(room, userId) {
+    return ok(await this.api("post", `/rooms/${room}/owner`, { userId }), 200);
+  }
+
+  async rotateInvite(room) {
+    return ok(await this.api("post", `/rooms/${room}/invite/rotate`), 200).invite;
+  }
+
   // --- mensagens ------------------------------------------------------------
 
   async encrypt(room, cid, text) {
@@ -315,8 +447,14 @@ class E2eeSession {
 
   // Mensagem que não verifica pode ser de quem trocou de chave: confere o
   // diretório de novo (aviso de CHAVE ALTERADA) antes de só descartar.
+  // Envelope com kv MAIOR que o conhecido: a chave foi trocada e o wrap
+  // pode já estar no servidor; busca e tenta de novo (senão, "sem chave").
   async accept(packet) {
-    const result = await this.receiver.accept(packet);
+    let result = await this.receiver.accept(packet);
+    if (result.status === "missing_key" && result.kv > (this.currentVersion.get(packet.room) ?? 0)) {
+      await this.ensureRoomKey(packet.room);
+      result = await this.receiver.accept(packet);
+    }
     if (result.status === "invalid" && packet.from !== this.me.id && (await this.observe(packet.from)) === "CHANGED") {
       return { status: "untrusted", trust: "changed" };
     }

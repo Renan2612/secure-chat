@@ -21,10 +21,15 @@
 // dentro de um repositório git), --reset-keys (substitui as chaves públicas
 // no servidor pelas deste keystore).
 // Comandos (linhas que começam com /): /members, /safety <id>, /trust <id>,
-// /approve <id>, /keys. O /trust só confirma a chave cujo número de
-// segurança o /safety mostrou. A chave da sala só é entregue sozinha a
-// membros VERIFICADOS; os demais precisam de /approve (quem decide quem é
-// membro é o servidor).
+// /approve <id>, /keys, /kick <id>, /leave, /rotate, /owner <id>, /invite.
+// O /trust só confirma a chave cujo número de segurança o /safety mostrou. A
+// chave da sala só é entregue sozinha a membros VERIFICADOS; os demais
+// precisam de /approve (quem decide quem é membro é o servidor).
+// Composição da sala (Etapa 4b-2): /kick remove o membro e troca a chave em
+// seguida; /leave sai; /rotate troca a chave; /owner transfere o cargo de
+// dono; /invite troca o convite (mostrado uma única vez). Quando alguém sai,
+// o servidor bloqueia o envio até a troca da chave, e este cliente, se tem a
+// chave atual, a troca sozinho depois de um atraso aleatório de 0 a 2 s.
 //
 // A verificação do certificado NUNCA é desligada (não existe --insecure), e
 // com --server https:// o WebSocket só pode ser wss:// (o cookie de sessão
@@ -60,6 +65,7 @@ const describeError = (err) => {
     : base;
 };
 const LOOPBACK = /^(localhost|127(\.\d{1,3}){3}|\[::1\])$/;
+const COMMANDS = "/members, /safety <userId>, /trust <userId>, /approve <userId>, /keys, /kick <userId>, /leave, /rotate, /owner <userId>, /invite";
 const OPTIONS = ["server", "ws", "origin", "email", "room", "ca", "ack-timeout-ms", "keystore", "create-room", "join"];
 const FLAGS = ["reset-keys"];
 
@@ -316,6 +322,7 @@ const main = async () => {
   let inputEnded = false;
   let inputStarted = false;
   let room = args.room;
+  let leaving = false; // /leave em andamento: o REMOVED que vem depois é esperado
   // Linhas digitadas e eventos tratados EM ORDEM (cifrar é assíncrono).
   let queue = Promise.resolve();
   let queued = 0;
@@ -429,8 +436,35 @@ const main = async () => {
           return print(`! ${err.message}`);
         }
       }
+      case "/kick": {
+        if (!Number.isInteger(userId) || userId <= 0) return print("uso: /kick <userId>");
+        const { invite, rotation } = await session.kick(room, userId);
+        print(`usuário ${userId} removido da sala ${room}; convite novo (mostrado só agora): ${invite}`);
+        return reportRotation(rotation);
+      }
+      case "/rotate":
+        return reportRotation(await session.rotate(room));
+      case "/leave": {
+        leaving = true; // o REMOVED pode chegar antes da resposta HTTP
+        let left;
+        try {
+          left = await session.leave(room);
+        } catch (err) {
+          leaving = false;
+          throw err;
+        }
+        print(left.roomDeleted ? `você saiu da sala ${room}; ela ficou vazia e foi apagada` : `você saiu da sala ${room}`);
+        return ws.close(1000);
+      }
+      case "/owner": {
+        if (!Number.isInteger(userId) || userId <= 0) return print("uso: /owner <userId>");
+        await session.transferOwner(room, userId);
+        return print(`usuário ${userId} agora é o dono da sala ${room}`);
+      }
+      case "/invite":
+        return print(`convite novo da sala ${room} (mostrado só agora; o anterior deixou de valer): ${await session.rotateInvite(room)}`);
       default:
-        return print("comandos: /members, /safety <userId>, /trust <userId>, /approve <userId>, /keys");
+        return print(`comandos: ${COMMANDS}`);
     }
   };
 
@@ -462,6 +496,17 @@ const main = async () => {
     send({ type: "SUBSCRIBE", id: "subscribe", room });
   };
 
+  const reportRotation = (r) => {
+    if (r.rotated) {
+      const left = r.left.length ? `; sem a chave nova (não verificados: confira /safety e entregue com /approve): usuários ${r.left.join(", ")}` : "";
+      return print(`chave da sala ${room} trocada (v${r.version})${left}`);
+    }
+    if (r.reason === "concurrent") return print(`chave da sala ${room} trocada por outro membro`);
+    if (r.reason === "no-key") return print(`sem a chave atual da sala ${room}: aguardando um membro que a tenha trocá-la`);
+    exitCode = 1;
+    return print(`! não foi possível trocar a chave da sala ${room} (a lista de membros mudou várias vezes); tente /rotate`);
+  };
+
   const announceKey = async () => {
     const got = await session.ensureRoomKey(room);
     if (got.ok) {
@@ -484,7 +529,7 @@ const main = async () => {
       case "untrusted":
         return print(`! ${who}: mensagem recusada (${result.trust === "changed" ? "CHAVE ALTERADA" : "remetente sem chave conhecida"}); confira /safety ${packet.from} e /trust ${packet.from}`);
       case "missing_key":
-        return print(`! ${who}: mensagem com a chave v${result.kv}, que este cliente não tem`);
+        return print(`! ${who}: [sem chave] mensagem com a chave v${clean(result.kv)}, que este cliente não tem`);
       default:
         return print(`! ${who}: mensagem inválida descartada (${clean(result.reason ?? "não confere")})`);
     }
@@ -524,13 +569,26 @@ const main = async () => {
       case "SUBSCRIBED":
         if (inputStarted) return undefined; // um segundo SUBSCRIBED não abre outra leitura da entrada
         inputStarted = true;
-        print(`inscrito na sala ${clean(packet.room)}. Digite mensagens (Ctrl+D para sair; /members, /safety, /trust, /approve, /keys).`);
+        print(`inscrito na sala ${clean(packet.room)}. Digite mensagens (Ctrl+D para sair; ${COMMANDS}).`);
         enqueue(announceKey);
         return startInput();
       case "ROOM_EVENT":
         if (packet.room !== room) return undefined;
         if (packet.kind === "KEY_PENDING") return enqueue(() => session.distribute(room));
         if (packet.kind === "KEY_READY") return enqueue(announceKey);
+        if (packet.kind === "KEY_ROTATED") {
+          print(`evento: a chave da sala ${room} foi trocada`);
+          return enqueue(announceKey);
+        }
+        if (packet.kind === "ROTATION_PENDING") {
+          print(`evento: alguém saiu da sala ${room}; o envio fica bloqueado até a chave ser trocada`);
+          return enqueue(async () => reportRotation(await session.autoRotate(room)));
+        }
+        if (packet.kind === "REMOVED") {
+          if (leaving) return undefined;
+          print(`! evento: você não é mais membro da sala ${room} (removido pelo dono ou saiu em outra conexão)`);
+          return ws.close(1000);
+        }
         return undefined;
       case "MSG_ACK":
         // ACK de cid que não está pendente (expirado ou desconhecido) não
@@ -543,6 +601,7 @@ const main = async () => {
         return enqueue(() => showDelivery(packet));
       case "ERROR":
         print(`! ${clean(packet.code)}: ${clean(packet.message)}`);
+        if (packet.code === "ROTATION_PENDING") print("  (a mensagem NÃO foi enviada; reenvie depois que a chave for trocada)");
         if (packet.ref === "subscribe") {
           exitCode = 1; // sem a inscrição não há o que fazer
           return ws.close(1000);

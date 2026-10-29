@@ -295,3 +295,45 @@ describe("troca do convite (POST /rooms/:id/invite/rotate)", () => {
     expect((await dave.call("post", `/rooms/${room.roomId}/invite/rotate`)).status).toBe(404);
   });
 });
+
+describe("sala sem nenhum membro com a chave atual (acréscimo a)", () => {
+  test("ninguém rotaciona, o envio fica bloqueado, e a saída é o último membro sair (sala apagada)", async () => {
+    await carol.call("post", `/rooms/${room.roomId}/leave`); // exige rotação
+    await alice.call("post", `/rooms/${room.roomId}/owner`).send({ userId: bob.id });
+    await alice.call("post", `/rooms/${room.roomId}/leave`);
+    // O único que resta trocou de chave (outro dispositivo): perdeu os wraps.
+    await bob.call("post", "/keys/reset").send(await e2ee.exportPublicKeys((bob.identity = await e2ee.generateIdentity())));
+    const fresh = await bob.call("get", `/keys/${bob.id}`);
+    bob.pub = { ecdhPub: fresh.body.ecdhPub, ecdsaPub: fresh.body.ecdsaPub };
+    bob.keyEpoch = fresh.body.keyEpoch;
+    const { body } = await rotationBody(bob, { recipients: [bob] });
+    expect((await rotate(bob, body)).status).toBe(403);
+    const b = await subscribed(bob, room.roomId);
+    send(b.ws, { type: "MSG_SEND", id: "x", room: room.roomId, cid: "x", body: await envelopeFor(bob, room.roomKey, 1, "x") });
+    expect(await nextPacket(b.inbox, "ERROR")).toMatchObject({ code: "ROTATION_PENDING" });
+    expect((await bob.call("post", `/rooms/${room.roomId}/leave`)).body).toEqual({ room: room.roomId, roomDeleted: true });
+    expect((await pool.query("SELECT 1 FROM rooms WHERE id = $1", [room.roomId])).rowCount).toBe(0);
+    b.ws.close();
+  });
+});
+
+describe("limites do corpo da rotação (acréscimo c)", () => {
+  test("mais de 200 wraps → 400, nada gravado", async () => {
+    const { body } = await rotationBody(alice, { recipients: [alice] });
+    body.wraps = Array.from({ length: 201 }, (_, n) => ({ ...body.wraps[0], recipientId: n + 1 }));
+    expect((await rotate(alice, body)).status).toBe(400);
+    expect(await versions()).toEqual([1]);
+  });
+
+  test("corpo acima de 100 KB → 413, nada gravado", async () => {
+    const { body } = await rotationBody(alice, { recipients: [alice] });
+    body.padding = "x".repeat(101 * 1024);
+    expect((await rotate(alice, body)).status).toBe(413);
+    expect(await versions()).toEqual([1]);
+  });
+
+  test("as outras rotas continuam com o limite de 10 KB", async () => {
+    const res = await alice.call("post", `/rooms/${room.roomId}/owner`).send({ userId: bob.id, padding: "x".repeat(11 * 1024) });
+    expect(res.status).toBe(413);
+  });
+});
