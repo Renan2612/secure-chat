@@ -50,24 +50,64 @@ class E2eeSession {
 
   // Abre o keystore (ou cria um com identidade nova) e o trust store. Senha
   // errada ou arquivo adulterado: erro, e NADA é sobrescrito.
+  //
+  // P1: o keystore guarda o identificador do SEU trust store (trustStoreId).
+  // Trust store ausente com keystore existente (apagado, backup parcial,
+  // outra máquina) → aviso claro e TOFU reiniciado: todas as chaves voltam a
+  // ser não verificadas e precisam de /safety + /trust de novo. Trust store
+  // com outro identificador (de outro keystore) → recusa, sem sobrescrever.
   async open() {
-    if (fs.existsSync(this.keystorePath)) {
+    const fresh = !fs.existsSync(this.keystorePath);
+    if (fresh) {
+      const identity = await e2ee.generateIdentity();
+      this.data = { v: 1, userId: this.me.id, email: this.email, identity: await e2ee.exportIdentity(identity), roomKeys: {}, rooms: {} };
+    } else {
       this.data = await files.readSealedFile(this.keystorePath, this.passphrase);
       if (this.data.userId !== this.me.id) {
         throw new Error(`o keystore ${this.keystorePath} é de outro usuário (${this.data.userId}); use --keystore`);
       }
-    } else {
-      const identity = await e2ee.generateIdentity();
-      this.data = { v: 1, userId: this.me.id, email: this.email, identity: await e2ee.exportIdentity(identity), roomKeys: {}, rooms: {} };
-      await this.save();
-      this.print(`keystore novo criado em ${this.keystorePath} (sem recuperação: guarde o arquivo e a senha de cifragem)`);
     }
     this.data.rooms = this.data.rooms ?? {}; // sala → { creator, version } fixados (TOFU por sala)
     this.identity = await e2ee.importIdentity(this.data.identity);
     this.pub = await e2ee.exportPublicKeys(this.identity);
-    this.trust = fs.existsSync(this.trustPath)
-      ? await files.readSealedFile(this.trustPath, this.passphrase)
-      : e2ee.emptyTrustStore();
+    await this.openTrust(fresh);
+    if (fresh) this.print(`keystore novo criado em ${this.keystorePath} (sem recuperação: guarde o arquivo e a senha de cifragem)`);
+  }
+
+  async openTrust(fresh) {
+    const newId = () => e2ee.encoding.toB64url(e2ee.primitives.randomBytes(16));
+    const known = this.data.trustStoreId;
+    if (!fresh && fs.existsSync(this.trustPath)) {
+      const trust = await files.readSealedFile(this.trustPath, this.passphrase);
+      if (known && trust.id !== known) {
+        throw new Error(`o trust store ${this.trustPath} não pertence a este keystore (identificador diferente); nada foi alterado`);
+      }
+      if (known) {
+        this.trust = trust;
+        return;
+      }
+      // Keystore da 4b-1, sem identificador: adota (ou cria) o do trust store.
+      // O trust store é gravado primeiro: se a gravação do keystore falhar,
+      // a próxima abertura adota o mesmo identificador.
+      const id = trust.id ?? newId();
+      await this.saveTrust({ ...trust, id });
+      await this.save({ ...this.data, trustStoreId: id });
+      return;
+    }
+    if (!fresh) {
+      this.trustReset = true;
+      this.print(
+        `! ATENÇÃO: o trust store ${this.trustPath} não foi encontrado, mas o keystore existe. ` +
+          "TOFU reiniciado: as chaves de TODOS os outros usuários voltam a ser NÃO VERIFICADAS. " +
+          "Confira de novo cada pessoa com /safety <id> e confirme com /trust <id>. " +
+          "Se você não apagou o arquivo, alguém pode ter mexido nesta máquina."
+      );
+    }
+    // Keystore primeiro: se a gravação do trust store falhar, a próxima
+    // abertura avisa de novo (nunca fica um trust store "aceito" sem aviso).
+    const id = newId();
+    await this.save({ ...this.data, trustStoreId: id });
+    await this.saveTrust({ ...e2ee.emptyTrustStore(), id });
   }
 
   async save(data = this.data) {

@@ -46,20 +46,41 @@ const refuseRepo = (file) => {
   if (repo) throw new Error(`recusado: ${file} fica dentro de um repositório git (${repo}); use um caminho fora dele`);
 };
 
-// Grava de forma atômica: arquivo temporário 0600 criado do zero (wx) e
-// rename por cima — nunca deixa um keystore pela metade.
+// Grava de forma atômica (P2): arquivo temporário 0600 criado do zero (wx)
+// no MESMO diretório (o rename só é atômico dentro do mesmo sistema de
+// arquivos), fsync do conteúdo, rename por cima e fsync do diretório (sem
+// ele, uma queda de energia logo depois pode perder a entrada nova). Nunca
+// deixa um keystore pela metade: se algo falha antes do rename, o arquivo
+// anterior fica como estava e o temporário é apagado.
 const writeSealedFile = async (file, passphrase, data) => {
   refuseRepo(file);
   const sealed = await sealJson(passphrase, data);
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const tmp = `${file}.tmp-${crypto.randomUUID()}`;
+  const dir = path.dirname(file);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const tmp = path.join(dir, `.${path.basename(file)}.tmp-${crypto.randomUUID()}`);
   try {
-    fs.writeFileSync(tmp, `${JSON.stringify(sealed)}\n`, { mode: 0o600, flag: "wx" });
-    fs.chmodSync(tmp, 0o600); // independe do umask
+    const fd = fs.openSync(tmp, "wx", 0o600);
+    try {
+      fs.fchmodSync(fd, 0o600); // independe do umask
+      fs.writeSync(fd, `${JSON.stringify(sealed)}\n`);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
     fs.renameSync(tmp, file);
   } catch (err) {
     fs.rmSync(tmp, { force: true });
     throw err;
+  }
+  // Depois do rename o arquivo novo já está no lugar; uma falha aqui só
+  // significa que a gravação pode não sobreviver a uma queda de energia.
+  const dirFd = fs.openSync(dir, "r");
+  try {
+    fs.fsyncSync(dirFd);
+  } catch (err) {
+    throw new Error(`o arquivo foi gravado, mas o fsync do diretório ${dir} falhou (${err.code ?? err.message})`);
+  } finally {
+    fs.closeSync(dirFd);
   }
 };
 

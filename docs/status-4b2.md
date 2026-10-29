@@ -9,9 +9,9 @@ este conteúdo vai para o `docs/05-e2ee.md` e este arquivo é removido.
 | 2. Sair, transferir e remover | feito |
 | 3. Rotação no servidor | feito (suíte completa: 593 passaram, 1 pulado, o e2e opt-in) |
 | 4. Cliente: `/kick`, `/leave`, `/rotate`, `/owner`, `/invite`, rotação automática com atraso de 0 a 2 s, só destinatários verificados, eventos na tela, testes criptográficos | feito |
-| 5. P1: trust store ausente com keystore existente → aviso e TOFU reiniciado (id do trust store no keystore) | pendente |
-| 5. P2: gravação atômica (temporário no mesmo diretório, fsync do arquivo e do diretório, rename, 0600) + teste de falha | pendente |
-| 5. P3: vetores fixos de fingerprint e número de segurança por ferramenta independente | pendente |
+| 5. P1: trust store ausente com keystore existente → aviso e TOFU reiniciado (id do trust store no keystore) | feito |
+| 5. P2: gravação atômica (temporário no mesmo diretório, fsync do arquivo e do diretório, rename, 0600) + teste de falha | feito |
+| 5. P3: vetores fixos de fingerprint e número de segurança por ferramenta independente | feito (suíte completa: 632 passaram, 1 pulado) |
 | 6. `verify-e2ee.sh` com três usuários (remover, rotacionar, provas a/b/c, mutações sem rotação exigida e com chave antiga reutilizada) | pendente |
 | 7. Documentação: docs/05, docs/03, docs/01, README; incorporar este arquivo ao docs/05 e removê-lo | pendente |
 
@@ -105,3 +105,14 @@ este conteúdo vai para o `docs/05-e2ee.md` e este arquivo é removido.
   Depois do `/trust`, o cliente tenta a chave de novo. (2) quem foi removido
   com `/kick` sai do conjunto de aprovados e nunca entra numa rotação daquela
   sessão, mesmo se o servidor voltar a listá-lo.
+- P1: `trustStoreId` (16 bytes aleatórios) no keystore e `id` no trust store.
+  Trust store ausente → aviso e TOFU reiniciado, com identificador novo. `id`
+  diferente → recusa abrir, sem sobrescrever. Keystores da 4b-1 (sem `id`)
+  são migrados sem aviso. Ordem das gravações escolhida para que uma falha no
+  meio nunca deixe um trust store "aceito" sem aviso.
+- P2: `writeSealedFile` grava `.<nome>.tmp-<uuid>` no mesmo diretório, faz
+  `fchmod 0600`, escreve, faz `fsync`, `rename` e `fsync` do diretório. Uma
+  falha antes do rename apaga o temporário e deixa o arquivo antigo; uma falha
+  no `fsync` do diretório é informada (o arquivo novo já está no lugar).
+- P3: `tests/e2ee/vectors.test.js`, com chaves do OpenSSL, valores calculados
+  em Python (`hashlib`) e a receita de reprodução no próprio teste.

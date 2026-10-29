@@ -183,3 +183,63 @@ describe("entrega da chave da sala", () => {
     await expect(s.approve(7, 3)).rejects.toThrow(/pendentes.*403/);
   });
 });
+
+describe("P1: trust store ausente com keystore existente", () => {
+  const files = require("../../../shared/e2ee/node");
+  const reopen = async (keystorePath) => {
+    const printed = [];
+    const s = new E2eeSession({ api: async () => ({ status: 404, body: {} }), me: { id: 1 }, email: "me@example.com", keystorePath, passphrase: PASS, print: (l) => printed.push(l) });
+    await s.open();
+    return { s, printed };
+  };
+
+  test("keystore novo já nasce com o trust store e o mesmo identificador nos dois", async () => {
+    const { s } = await newSession({});
+    expect(fs.existsSync(s.trustPath)).toBe(true);
+    const trust = await files.readSealedFile(s.trustPath, PASS);
+    expect(s.data.trustStoreId).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(trust.id).toBe(s.data.trustStoreId);
+  });
+
+  test("ataque/acidente: o trust store some → aviso claro, TODAS as chaves voltam a não verificadas (TOFU reiniciado)", async () => {
+    const { s } = await newSession({ "GET /keys/2": () => ({ status: 200, body: { ...alice.pub, keyEpoch: 1 } }) });
+    await s.observe(2);
+    await s.safety(2);
+    await s.confirm(2);
+    expect(s.trustLabel(2)).toBe("verificado");
+    const oldId = s.data.trustStoreId;
+    fs.rmSync(s.trustPath);
+    const { s: again, printed } = await reopen(s.keystorePath);
+    expect(printed.join("\n")).toMatch(/trust store .* não foi encontrado.*NÃO VERIFICADAS/s);
+    expect(again.trustReset).toBe(true);
+    expect(again.trustLabel(2)).toBe("desconhecido");
+    again.api = async () => ({ status: 200, body: { ...alice.pub, keyEpoch: 1 } });
+    await again.observe(2);
+    expect(again.trustLabel(2)).toBe("não verificado"); // exige reconfirmação
+    // O identificador muda: o trust store antigo, se reaparecer, não vale mais.
+    expect(again.data.trustStoreId).not.toBe(oldId);
+    expect((await files.readSealedFile(again.trustPath, PASS)).id).toBe(again.data.trustStoreId);
+    // Na abertura seguinte, sem aviso.
+    expect((await reopen(s.keystorePath)).printed.join("\n")).not.toMatch(/não foi encontrado/);
+  });
+
+  test("trust store de OUTRO keystore no lugar → recusa abrir e não sobrescreve nada", async () => {
+    const { s } = await newSession({});
+    const foreign = { ...e2ee.emptyTrustStore(), id: "outro-id-qualquer-0000", peers: { 9: { forged: true } } };
+    await files.writeSealedFile(s.trustPath, PASS, foreign);
+    await expect(reopen(s.keystorePath)).rejects.toThrow(/não pertence a este keystore/);
+    expect(await files.readSealedFile(s.trustPath, PASS)).toEqual(foreign);
+  });
+
+  test("keystore e trust store da 4b-1 (sem identificador) são migrados sem aviso, mantendo os pins", async () => {
+    const { s } = await newSession({});
+    const { trustStoreId, ...legacy } = s.data;
+    await files.writeSealedFile(s.keystorePath, PASS, legacy);
+    await files.writeSealedFile(s.trustPath, PASS, { v: 1, peers: { 2: { ...alice.pub, verified: true, fingerprint: "x" } } });
+    const { s: again, printed } = await reopen(s.keystorePath);
+    expect(printed.join("\n")).not.toMatch(/não foi encontrado/);
+    expect(again.trustLabel(2)).toBe("verificado");
+    expect(again.data.trustStoreId).toBeTruthy();
+    expect((await files.readSealedFile(again.trustPath, PASS)).id).toBe(again.data.trustStoreId);
+  });
+});
