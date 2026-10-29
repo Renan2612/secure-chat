@@ -7,6 +7,7 @@
 -- DB_NAME usado pelo backend (secure_chat) e a aplicação não as encontrava.
 
 DROP VIEW IF EXISTS room_current_wraps;
+DROP TABLE IF EXISTS room_bans;
 DROP TABLE IF EXISTS room_key_wraps;
 DROP TABLE IF EXISTS room_key_versions;
 DROP TABLE IF EXISTS user_keys;
@@ -26,15 +27,22 @@ CREATE TABLE IF NOT EXISTS users(
    password VARCHAR(255) NOT NULL
 );
 
--- `key` é a chave de CONVITE (Etapa 2), não a chave de cifragem da sala.
--- key_version: versão atual da chave da sala (E2EE, docs/05-e2ee.md); nesta
--- etapa é sempre 1 (rotação de chave fica para a 4b-2).
+-- Convite (Etapa 2): só o SHA-256 em hex fica gravado (invite_hash, Etapa
+-- 4b-2); o convite em si é devolvido uma única vez ao dono e comparado pelo
+-- hash. Não é a chave de cifragem da sala.
+-- created_by: quem criou (publica a versão 1). owner_id: o dono atual
+-- (remove membros, transfere o cargo, troca o convite); nasce = created_by.
+-- key_version: versão atual da chave da sala (docs/05-e2ee.md).
+-- rotation_required: alguém saiu ou foi removido e a chave ainda não foi
+-- trocada; enquanto for true, MSG_SEND é recusado (falha fechada).
 CREATE TABLE IF NOT EXISTS rooms(
    id SERIAL PRIMARY KEY,
    name VARCHAR(255) NOT NULL,
-   key VARCHAR(255) NOT NULL,
+   invite_hash CHAR(64) NOT NULL CHECK (invite_hash ~ '^[0-9a-f]{64}$'),
    created_by INTEGER NOT NULL REFERENCES users (id),
-   key_version INTEGER NOT NULL DEFAULT 1 CHECK (key_version >= 1)
+   owner_id INTEGER NOT NULL REFERENCES users (id),
+   key_version INTEGER NOT NULL DEFAULT 1 CHECK (key_version >= 1),
+   rotation_required BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS rooms_users (
@@ -46,8 +54,9 @@ CREATE TABLE IF NOT EXISTS rooms_users (
    UNIQUE (room, user_id),
    FOREIGN KEY (user_id)
       REFERENCES users (id),
+   -- ON DELETE CASCADE: a sala que fica sem membros é apagada com tudo.
    FOREIGN KEY (room)
-      REFERENCES rooms (id)
+      REFERENCES rooms (id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS messages(
@@ -70,13 +79,13 @@ CREATE TABLE IF NOT EXISTS messages(
    FOREIGN KEY (user_id)
       REFERENCES users (id),
    FOREIGN KEY (room)
-      REFERENCES rooms (id)
+      REFERENCES rooms (id) ON DELETE CASCADE
 );
 
 -- Versões publicadas da chave da sala (D4). A chave em si NUNCA vem para
 -- cá: só existe embrulhada (room_key_wraps) para cada membro.
 CREATE TABLE IF NOT EXISTS room_key_versions (
-   room INTEGER NOT NULL REFERENCES rooms (id),
+   room INTEGER NOT NULL REFERENCES rooms (id) ON DELETE CASCADE,
    version INTEGER NOT NULL CHECK (version >= 1),
    created_by INTEGER NOT NULL REFERENCES users (id),
    -- Compromisso da chave (SHA-256 em base64url, 43 caracteres) e a
@@ -107,7 +116,16 @@ CREATE TABLE IF NOT EXISTS room_key_wraps (
    sig CHAR(86) NOT NULL CHECK (sig ~ '^[A-Za-z0-9_-]{86}$'),
    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
    PRIMARY KEY (room, version, recipient_id),
-   FOREIGN KEY (room, version) REFERENCES room_key_versions (room, version)
+   FOREIGN KEY (room, version) REFERENCES room_key_versions (room, version) ON DELETE CASCADE
+);
+
+-- Quem foi REMOVIDO pelo dono (Etapa 4b-2): não volta com o convite antigo
+-- nem com um novo. Sair por conta própria não bane.
+CREATE TABLE IF NOT EXISTS room_bans (
+   room INTEGER NOT NULL REFERENCES rooms (id) ON DELETE CASCADE,
+   user_id INTEGER NOT NULL REFERENCES users (id),
+   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+   PRIMARY KEY (room, user_id)
 );
 
 -- Diretório de chaves PÚBLICAS da E2EE (docs/05-e2ee.md, D3). As privadas

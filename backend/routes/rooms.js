@@ -39,7 +39,7 @@ const checkRoomExists = async (req, res, next) => {
 
 // Chave de convite com 128 bits aleatórios (era o literal fixo "41421" no
 // projeto original). Só é devolvida aqui, ao criador, que a repassa por fora
-// do sistema a quem quiser convidar. O criador já entra na sala, na mesma
+// do sistema a quem quiser convidar; o banco guarda só o SHA-256 (D5 da 4b-2). O criador já entra na sala, na mesma
 // transação da criação (sem isso, a sala nascia sem nenhum membro).
 const createRooms = async (req, res, next) => {
   const key = crypto.randomBytes(16).toString("hex");
@@ -57,8 +57,8 @@ const createRooms = async (req, res, next) => {
     client.on("error", onConnectionError);
     await client.query("BEGIN");
     const { rows } = await client.query(
-      "INSERT INTO rooms (name, key, created_by) VALUES ($1, $2, $3) RETURNING id, name",
-      [req.body.name, key, req.session.userId]
+      "INSERT INTO rooms (name, invite_hash, created_by, owner_id) VALUES ($1, $2, $3, $3) RETURNING id, name",
+      [req.body.name, inviteHash(key), req.session.userId]
     );
     await client.query(
       "INSERT INTO rooms_users (room, user_id, last_msg_viewed) VALUES ($1, $2, 0)",
@@ -84,13 +84,14 @@ const createRooms = async (req, res, next) => {
   }
 };
 
-// Comparação em tempo constante. timingSafeEqual exige buffers do mesmo
-// tamanho (e lança erro se não forem); comparar os SHA-256 das duas chaves
-// resolve isso sem vazar, pelo tempo ou por exceção, o tamanho da chave real.
-const sameKey = (provided, expected) => {
+const inviteHash = (invite) => crypto.createHash("sha256").update(invite, "utf8").digest("hex");
+
+// Comparação em tempo constante dos SHA-256 (o convite em si não está no
+// banco). Os dois lados têm 32 bytes, então timingSafeEqual não lança nem
+// vaza, pelo tempo, o tamanho do convite real.
+const sameInvite = (provided, storedHash) => {
   if (typeof provided !== "string") return false;
-  const digest = (value) => crypto.createHash("sha256").update(value, "utf8").digest();
-  return crypto.timingSafeEqual(digest(provided), digest(expected));
+  return crypto.timingSafeEqual(Buffer.from(inviteHash(provided), "hex"), Buffer.from(storedHash, "hex"));
 };
 
 // CORRIGIDO (item E): exige a chave de convite da sala. Sala inexistente e
@@ -98,8 +99,8 @@ const sameKey = (provided, expected) => {
 const joinRooms = async (req, res, next) => {
   const roomId = req.body.idRoom;
   try {
-    const { rows } = await pool.query("SELECT id, name, key FROM rooms WHERE id = $1", [roomId]);
-    if (rows.length === 0 || !sameKey(req.body.key, rows[0].key)) {
+    const { rows } = await pool.query("SELECT id, name, invite_hash FROM rooms WHERE id = $1", [roomId]);
+    if (rows.length === 0 || !sameInvite(req.body.key, rows[0].invite_hash)) {
       return res.status(403).json({ message: "Convite inválido" });
     }
     const joined = await pool.query(
@@ -133,4 +134,4 @@ const roomsUsers = async (req, res, next) => {
   }
 };
 
-module.exports = { getRooms, createRooms, joinRooms, checkRoomExists, roomsUsers };
+module.exports = { inviteHash, getRooms, createRooms, joinRooms, checkRoomExists, roomsUsers };
