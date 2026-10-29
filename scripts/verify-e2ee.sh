@@ -67,7 +67,8 @@ PIDS=()
 psql_dev() { "${COMPOSE[@]}" exec -T db psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -qAt "$@"; }
 
 cleanup() {
-  trap - EXIT INT TERM HUP
+  local rc=$?
+  trap - EXIT INT TERM HUP PIPE
   for pid in "${PIDS[@]}"; do kill "$pid" 2>/dev/null; done
   wait 2>/dev/null
   if ! psql_dev -v a="$A_EMAIL" -v b="$B_EMAIL" >/dev/null 2>"$TMP/cleanup.err" <<'SQL'
@@ -86,20 +87,28 @@ DELETE FROM rooms WHERE created_by IN (SELECT id FROM users WHERE email IN (:'a'
 DELETE FROM users WHERE email IN (:'a', :'b');
 SQL
   then
-    echo "aviso: a limpeza do banco falhou:" >&2
+    echo "ERRO: a limpeza do banco falhou:" >&2
     sed 's/^/  | /' "$TMP/cleanup.err" >&2
+    rc=3
   fi
   local left
   left="$(psql_dev -v a="$A_EMAIL" -v b="$B_EMAIL" 2>/dev/null <<<"SELECT COUNT(*) FROM users WHERE email IN (:'a', :'b');" || echo "?")"
-  if [ "$left" = "0" ]; then echo "(usuários, sala e mensagens temporários removidos do banco)"; else echo "aviso: confira a remoção dos usuários temporários" >&2; fi
+  if [ "$left" = "0" ]; then
+    echo "(usuários, sala e mensagens temporários removidos do banco)"
+  else
+    echo "ERRO: usuários temporários ainda no banco ($A_EMAIL, $B_EMAIL)" >&2
+    rc=3
+  fi
   if [ -n "${KEEP_CAPTURE:-}" ] && [ -s "$CAPTURE" ]; then
-    mkdir -p "$KEEP_CAPTURE" && cp "$CAPTURE" "$KEEP_CAPTURE/verify-e2ee-$STAMP${MUTATION:+-$MUTATION}.pcapng" \
-      && echo "(captura guardada em $KEEP_CAPTURE/verify-e2ee-$STAMP${MUTATION:+-$MUTATION}.pcapng)"
+    local kept="$KEEP_CAPTURE/verify-e2ee-$STAMP${MUTATION:+-$MUTATION}.pcapng"
+    if mkdir -p "$KEEP_CAPTURE" && cp "$CAPTURE" "$kept"; then echo "(captura guardada em $kept)"; else echo "aviso: não foi possível guardar a captura em $KEEP_CAPTURE" >&2; fi
   fi
   rm -rf "$TMP" # keystores, trust stores, cookies e a captura
+  exit "$rc"   # limpeza que falhou nunca termina com 0
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP   # o EXIT acima roda a limpeza também em sinais
+trap 'exit 141' PIPE           # escrever para um cliente que já saiu: falha, com limpeza
 
 # Espera uma linha casar com o regex no arquivo (até N segundos).
 wait_for() { # wait_for ARQUIVO REGEX SEGUNDOS
@@ -111,13 +120,20 @@ wait_for() { # wait_for ARQUIVO REGEX SEGUNDOS
 # Asserção parametrizada: esperar-claro (o texto TEM de aparecer, controle
 # positivo) ou esperar-cifrado (NÃO pode aparecer nem decodificado).
 expect_text() { # expect_text esperar-claro|esperar-cifrado "descrição" TEXTO ARQUIVO...
-  local mode="$1" desc="$2" needle="$3" where
+  local mode="$1" desc="$2" needle="$3" where found file
   shift 3
+  for file in "$@"; do
+    [ -r "$file" ] || { ko "$desc — arquivo não legível: $file"; return; }
+  done
+  [ -n "$needle" ] || { ko "$desc — texto procurado vazio"; return; }
   where="$(cat "$@" | node scripts/lib/find-plaintext.js "$needle")"
-  local found=$?
+  found=$?
+  # 0 = achou, 10 = não achou; qualquer outro código é o DETECTOR que falhou
+  # e nunca conta como "não achou".
+  case "$found" in 0 | 10) ;; *) ko "$desc — o detector falhou (código $found)"; return ;; esac
   case "$mode" in
     esperar-claro) if [ "$found" = 0 ]; then ok "$desc (achado $where)"; else ko "$desc (NÃO achado)"; fi ;;
-    esperar-cifrado) if [ "$found" = 1 ]; then ok "$desc"; else ko "$desc — ACHADO $where"; fi ;;
+    esperar-cifrado) if [ "$found" = 10 ]; then ok "$desc"; else ko "$desc — ACHADO $where"; fi ;;
     *) echo "erro: modo $mode" >&2; exit 2 ;;
   esac
 }
@@ -170,8 +186,10 @@ B_ID="$(sed -nE 's/.*logado como .* \(usuário ([0-9]+)\).*/\1/p' "$TMP/bob.out"
 # Quem decide quem é membro é o servidor: o cliente da Alice só ANUNCIA o
 # Bob, e a chave só é entregue com a aprovação explícita dela.
 wait_for "$TMP/alice.out" "/approve ${B_ID:-x}" 30
-check "o cliente da Alice anunciou o Bob sem lhe entregar a chave sozinho" \
-  bash -c "! grep -q 'chave da sala entregue' '$TMP/alice.out'"
+announced_only() {
+  [ -n "${B_ID:-}" ] && grep -qF "/approve $B_ID" "$TMP/alice.out" && ! grep -q 'chave da sala entregue' "$TMP/alice.out"
+}
+check "o cliente da Alice anunciou o Bob (usuário ${B_ID:-?}) sem lhe entregar a chave sozinho" announced_only
 echo "/approve ${B_ID:-x}" >&"$ALICE_IN"
 wait_for "$TMP/bob.out" "chave da sala [0-9]+ disponível" 30
 check "Bob recebeu a chave da sala após o /approve da Alice" grep -q "chave da sala ${ROOM_ID:-x} disponível" "$TMP/bob.out"
@@ -186,6 +204,7 @@ wait "$alice_PID"; A_STATUS=$?
 wait "$bob_PID"; B_STATUS=$?
 kill -INT "$DUMPCAP" 2>/dev/null; wait "$DUMPCAP" 2>/dev/null
 PACKETS="$(tshark -r "$CAPTURE" 2>/dev/null | wc -l)"
+DROPPED="$(sed -nE 's#.*received/dropped on interface.*: [0-9]+/([0-9]+).*#\1#p' "$TMP/dumpcap.err" | head -n 1)"
 tshark -r "$CAPTURE" -d tcp.port==8000,http -T fields -e text 2>/dev/null >"$TMP/capture.txt"
 
 section "(b) cada cliente decifrou a mensagem do outro"
@@ -195,6 +214,7 @@ check "os dois clientes terminaram sem erro (saídas $A_STATUS e $B_STATUS)" tes
 
 section "(a) captura da rede interna (onde o TLS já terminou)"
 check "controle positivo: a captura tem tráfego ($PACKETS pacotes)" test "$PACKETS" -gt 0
+check "a captura não perdeu pacotes (descartados: ${DROPPED:-?})" test "${DROPPED:-x}" = "0"
 expect_text esperar-claro "controle positivo: o upgrade do /ws aparece em claro" "Upgrade: websocket" "$CAPTURE" "$TMP/capture.txt"
 expect_text esperar-claro "controle positivo: o JSON do protocolo aparece em claro (MSG_SEND)" '"type":"MSG_SEND"' "$TMP/capture.txt"
 printf '%s' "$MARK_A" | node -e 'process.stdout.write(Buffer.from(require("fs").readFileSync(0)).toString("base64url"))' >"$TMP/selftest.txt"
@@ -204,13 +224,23 @@ expect_text esperar-cifrado "marcador do Bob não aparece na captura" "$MARK_B" 
 
 section "(a) e (c) banco de dados"
 : >"$TMP/db.txt"
-for table in $(psql_dev -c "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY 1"); do
-  psql_dev -c "SELECT row_to_json(t)::text FROM \"$table\" t" >>"$TMP/db.txt"
+TABLES="$(psql_dev -c "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY 1")"
+check "lista de tabelas do banco obtida ($(wc -w <<<"$TABLES") tabelas)" test "$(wc -w <<<"$TABLES")" -ge 8
+DUMP_FAILS=0
+for table in $TABLES; do
+  psql_dev -c "SELECT row_to_json(t)::text FROM \"$table\" t" >>"$TMP/db.txt" || { ko "despejo da tabela $table falhou"; DUMP_FAILS=1; }
 done
+check "todas as tabelas foram despejadas para a varredura" test "$DUMP_FAILS" = 0
 expect_text esperar-claro "controle positivo: o nome da sala (metadado) aparece em claro no banco" "$ROOM_NAME" "$TMP/db.txt"
 expect_text esperar-cifrado "marcador da Alice não aparece em nenhuma coluna" "$MARK_A" "$TMP/db.txt"
 expect_text esperar-cifrado "marcador do Bob não aparece em nenhuma coluna" "$MARK_B" "$TMP/db.txt"
 psql_dev -c "SELECT message FROM messages WHERE room = ${ROOM_ID:-0} ORDER BY id" >"$TMP/bodies.txt"
+# Controle positivo amarrado a ESTA execução: o texto cifrado exato que o
+# banco guardou precisa aparecer no despejo e na captura (prova que as
+# mensagens com os marcadores foram mesmo varridas).
+CT_A="$(head -n 1 "$TMP/bodies.txt" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{process.stdout.write(JSON.parse(d).ct.slice(0,40))}catch{}})')"
+expect_text esperar-claro "controle positivo: o ct da 1ª mensagem desta execução está no despejo do banco" "$CT_A" "$TMP/db.txt"
+expect_text esperar-claro "controle positivo: o mesmo ct está na captura (as mensagens desta execução foram capturadas)" "$CT_A" "$TMP/capture.txt"
 psql_dev -c "SELECT DISTINCT key_version FROM messages WHERE room = ${ROOM_ID:-0}" >"$TMP/kv.txt"
 check "o banco tem as 2 mensagens da sala" test "$(grep -c . "$TMP/bodies.txt")" = "2"
 envelopes_ok() {
@@ -219,7 +249,7 @@ envelopes_ok() {
     const lines = require("fs").readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean);
     for (const body of lines) parseEnvelope(body);
     process.exit(lines.length > 0 ? 0 : 1);
-  ' "$TMP/bodies.txt" 2>/dev/null
+  ' "$TMP/bodies.txt" 2>"$TMP/envelopes.err" || { sed 's/^/         | /' "$TMP/envelopes.err"; return 1; }
 }
 check "cada mensagem no banco é só o envelope E2EE v1 {v,kv,iv,ct,sig}" envelopes_ok
 check "versão da chave gravada = 1" test "$(cat "$TMP/kv.txt")" = "1"
