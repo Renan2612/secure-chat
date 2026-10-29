@@ -38,6 +38,9 @@ class E2eeSession {
     // aprovação explícita (/approve), senão um admin malicioso inseriria um
     // "membro fantasma" e receberia a chave dos clientes honestos.
     this.approved = new Set(); // `${sala}:${userId}`
+    // Quem este usuário removeu (/kick) nunca entra numa rotação desta
+    // sessão, mesmo que o servidor volte a listá-lo como membro.
+    this.kicked = new Set(); // `${sala}:${userId}`
     this.announced = new Set();
     this.receiver = e2ee.createReceiver({
       roomKeysFor: (room) => this.roomKeysFor(room),
@@ -222,6 +225,10 @@ class E2eeSession {
     return this.hasCurrentKey(room) ? { ok: true, sender } : { ok: false };
   }
 
+  mayAuthor(room, userId, key) {
+    return userId === this.me.id || key.trust === "verified" || this.approved.has(`${room}:${userId}`);
+  }
+
   // Abre e guarda UM wrap. false (com aviso) se não conferir; um wrap da
   // versão atual que não confere é descartado no servidor (outro membro
   // pode entregar um bom).
@@ -237,6 +244,18 @@ class E2eeSession {
     const author = await this.senderKeyFor(info.createdBy);
     if (!["verified", "unverified"].includes(sender.trust) || !["verified", "unverified"].includes(author.trust)) {
       this.print(`! a chave v${wrap.version} da sala ${room} veio de quem tem chave não confiável (usuário ${clean(wrap.senderId)}); não aceita`);
+      return false;
+    }
+    // Achado da revisão: a partir da v2, quem escolheu a chave é quem
+    // rotacionou. Aceitar um autor só fixado por TOFU deixaria o servidor
+    // inserir uma conta, "rotacionar" com uma chave dele e ler o que viesse
+    // depois. Vale só o próprio usuário, alguém VERIFICADO ou alguém a quem
+    // ele já entregou a chave desta sala (/approve), que a teria de qualquer jeito.
+    if (wrap.version > 1 && !this.mayAuthor(room, info.createdBy, author)) {
+      this.print(
+        `! a chave v${wrap.version} da sala ${room} foi trocada por usuário ${clean(info.createdBy)}, que você não verificou: não aceita. ` +
+          `Confira /safety ${clean(info.createdBy)} e confirme com /trust ${clean(info.createdBy)}`
+      );
       return false;
     }
     // Só a CRIPTOGRAFIA fica no try: um erro local (disco cheio, permissão)
@@ -345,6 +364,10 @@ class E2eeSession {
     const left = [];
     for (const member of members) {
       if (member.id === this.me.id) continue;
+      if (this.kicked.has(`${room}:${member.id}`)) {
+        left.push(member.id);
+        continue;
+      }
       const res = await this.api("get", `/keys/${member.id}`);
       if (res.status === 404 && !res.parseError) {
         left.push(member.id);
@@ -426,6 +449,8 @@ class E2eeSession {
   // servidor bloqueia o envio até a troca. Devolve o convite novo (uma vez).
   async kick(room, userId) {
     const removed = ok(await this.api("delete", `/rooms/${room}/members/${userId}`), 200);
+    this.approved.delete(`${room}:${userId}`);
+    this.kicked.add(`${room}:${userId}`);
     return { invite: removed.invite, rotation: await this.rotate(room) };
   }
 

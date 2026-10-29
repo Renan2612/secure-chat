@@ -426,7 +426,9 @@ const main = async () => {
           return print(`! ${err.message}`);
         }
         print(`usuário ${userId} marcado como verificado`);
-        return session.distribute(room); // pode ter ficado sem chave por causa da mudança
+        // Pode haver uma chave trocada por ele esperando a verificação, ou
+        // um pendente que ficou sem a chave por causa da mudança.
+        return announceKey();
       }
       case "/approve": {
         if (!Number.isInteger(userId) || userId <= 0) return print("uso: /approve <userId>");

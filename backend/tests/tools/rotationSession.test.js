@@ -141,6 +141,9 @@ test("ataque: o servidor insere uma conta nova na sala; o cliente NÃO a inclui 
   expect((await dave.ensureRoomKey(room)).ok).toBe(false);
   // Com /approve explícito, recebe a v2 (só a v2: o histórico não é retroativo).
   await alice.approve(room, dave.id);
+  // A v2 foi escolhida pela Alice: o Dave só a aceita depois de verificá-la.
+  expect((await dave.ensureRoomKey(room)).ok).toBe(false);
+  await verify(dave, alice);
   expect((await dave.ensureRoomKey(room)).ok).toBe(true);
   expect(Object.keys(await dave.roomKeysFor(room))).toEqual(["2"]);
 });
@@ -228,4 +231,50 @@ test("/invite devolve um convite novo, e o antigo deixa de valer", async () => {
   const dave = await sessionFor("dave");
   await expect(joinWith(dave, room, invite)).rejects.toThrow(/403/);
   await joinWith(dave, room, fresh);
+});
+
+describe("achados da revisão de segurança", () => {
+  test("ataque: o servidor insere uma conta e 'rotaciona' em nome dela (autor só fixado por TOFU) → a chave nova não é aceita", async () => {
+    const mallory = await sessionFor("mallory");
+    await pool.query("INSERT INTO rooms_users (room, user_id, last_msg_viewed) VALUES ($1, $2, 0)", [room, mallory.id]);
+    // O servidor dá a Mallory a chave atual (wrap forjado não importa: ela é cúmplice do servidor).
+    await alice.approve(room, mallory.id);
+    alice.approved.clear(); // a aprovação era de outra sessão: aqui ninguém aprovou a Mallory
+    expect((await mallory.ensureRoomKey(room)).ok).toBe(true);
+    await mallory.observe(carol.id);
+    await mallory.safety(carol.id);
+    await mallory.confirm(carol.id); // para a Mallory incluir a Carol
+    expect((await mallory.rotate(room)).rotated).toBe(true);
+    expect(await carol.ensureRoomKey(room)).toEqual({ ok: false });
+    expect(carol.printed.join("\n")).toMatch(new RegExp(`trocada por usuário ${mallory.id}, que você não verificou`));
+    // Depois de conferir e confirmar a Mallory, a Carol aceita (decisão dela).
+    await carol.safety(mallory.id);
+    await carol.confirm(mallory.id);
+    expect((await carol.ensureRoomKey(room)).ok).toBe(true);
+  });
+
+  test("autor aprovado com /approve nesta sala é aceito (já tinha a chave)", async () => {
+    const dave = await sessionFor("dave");
+    await joinWith(dave, room, invite);
+    await carol.approve(room, dave.id); // Carol entregou a chave ao Dave
+    expect((await dave.ensureRoomKey(room)).ok).toBe(true);
+    await dave.observe(carol.id);
+    await dave.safety(carol.id);
+    await dave.confirm(carol.id);
+    expect((await dave.rotate(room)).rotated).toBe(true);
+    expect((await carol.ensureRoomKey(room)).ok).toBe(true);
+  });
+
+  test("ataque: quem foi removido com /kick não volta a uma rotação desta sessão, mesmo se o servidor o relistar", async () => {
+    const dave = await sessionFor("dave");
+    await joinWith(dave, room, invite);
+    await alice.approve(room, dave.id);
+    await alice.kick(room, dave.id);
+    await pool.query("INSERT INTO rooms_users (room, user_id, last_msg_viewed) VALUES ($1, $2, 0)", [room, dave.id]);
+    await pool.query("DELETE FROM room_bans WHERE user_id = $1", [dave.id]);
+    const { rotated, left } = await alice.rotate(room);
+    expect(rotated).toBe(true);
+    expect(left).toContain(dave.id);
+    expect((await pool.query("SELECT 1 FROM room_key_wraps WHERE room = $1 AND version = 3 AND recipient_id = $2", [room, dave.id])).rowCount).toBe(0);
+  });
 });

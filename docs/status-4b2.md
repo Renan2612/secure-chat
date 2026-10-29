@@ -95,3 +95,13 @@ este conteúdo vai para o `docs/05-e2ee.md` e este arquivo é removido.
   transferir e remover o mesmo membro juntos; dono sai enquanto transfere: o
   dono é sempre membro). Sair, remover, transferir, trocar o convite e
   rotacionar travam a sala com `FOR UPDATE` (`lockRoomFor`, `rotateRoomKey`).
+- Achados da revisão automática de segurança (corrigidos depois do item 4):
+  (1) a partir da v2, o autor da rotação precisa ser o próprio usuário,
+  alguém VERIFICADO ou alguém aprovado com `/approve` nesta sala. Um autor só
+  fixado por TOFU não basta: senão, o servidor inseriria uma conta,
+  "rotacionaria" com uma chave dele e leria o que viesse depois. Limite: quem
+  entra depois de uma rotação precisa verificar quem rotacionou para receber a
+  chave (na v1, o criador fixado por TOFU continua aceito, como na 4b-1).
+  Depois do `/trust`, o cliente tenta a chave de novo. (2) quem foi removido
+  com `/kick` sai do conjunto de aprovados e nunca entra numa rotação daquela
+  sessão, mesmo se o servidor voltar a listá-lo.
