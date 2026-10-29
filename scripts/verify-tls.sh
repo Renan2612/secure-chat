@@ -156,7 +156,7 @@ CHAT_PASSWORD="$PASSWORD" CHAT_KEY_PASSPHRASE="$KEY_PASSPHRASE" timeout 30 node 
   --create-room "verify-tls" <<<"mensagem da verificação TLS" >"$TMP/client.out" 2>&1
 client_status=$?
 check "sala temporária criada pelo ws-client (com a chave da sala)" grep -q 'sala criada: id' "$TMP/client.out"
-client_ok() { [ "$client_status" = 0 ] && grep -q 'enviada' "$TMP/client.out"; }
+client_ok() { [ "$client_status" = 0 ] && grep -q '✓ enviada' "$TMP/client.out"; }
 check "ws-client por wss:// com a CA: login, inscrição e envio cifrado confirmado (saída $client_status)" client_ok
 [ "$client_status" = 0 ] || sed 's/^/         | /' "$TMP/client.out"
 

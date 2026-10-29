@@ -259,12 +259,13 @@ const apiFor = ({ server, origin, tlsCa }, cookie) => async (method, path, body)
     ca: tlsCa,
   });
   let parsed = null;
+  let parseError = false;
   try {
     parsed = res.body ? JSON.parse(res.body) : null;
   } catch {
-    parsed = null;
+    parseError = true; // a sessão transforma isso num erro claro (ok())
   }
-  return { status: res.status, body: parsed };
+  return { status: res.status, body: parsed, parseError };
 };
 
 const main = async () => {
@@ -299,14 +300,21 @@ const main = async () => {
     fail(err.code === "BAD_PASSPHRASE" ? "senha de cifragem errada (ou keystore adulterado); o keystore NÃO foi alterado" : err.message);
   }
 
-  const ws = new WebSocket(args.ws, {
-    headers: { Cookie: cookie },
-    origin: args.origin,
-    ...(args.tlsCa ? { ca: args.tlsCa } : {}),
-  });
+  let ws;
+  try {
+    ws = new WebSocket(args.ws, {
+      headers: { Cookie: cookie },
+      origin: args.origin,
+      ...(args.tlsCa ? { ca: args.tlsCa } : {}),
+    });
+  } catch (err) {
+    await logout(args, cookie); // a sessão já existe: não largá-la viva
+    fail(`conexão: ${describeError(err)}`);
+  }
   const send = (packet) => ws.send(JSON.stringify({ v: PROTOCOL_VERSION, ...packet }));
   const pending = new Map(); // cid → timer, para envios ainda sem MSG_ACK
   let inputEnded = false;
+  let inputStarted = false;
   let room = args.room;
   // Linhas digitadas e eventos tratados EM ORDEM (cifrar é assíncrono).
   let queue = Promise.resolve();
@@ -514,7 +522,9 @@ const main = async () => {
           ws.close(1000);
         });
       case "SUBSCRIBED":
-        print(`inscrito na sala ${packet.room}. Digite mensagens (Ctrl+D para sair; /members, /safety, /trust, /keys).`);
+        if (inputStarted) return undefined; // um segundo SUBSCRIBED não abre outra leitura da entrada
+        inputStarted = true;
+        print(`inscrito na sala ${packet.room}. Digite mensagens (Ctrl+D para sair; /members, /safety, /trust, /approve, /keys).`);
         enqueue(announceKey);
         return startInput();
       case "ROOM_EVENT":
@@ -523,6 +533,9 @@ const main = async () => {
         if (packet.kind === "KEY_READY") return enqueue(announceKey);
         return undefined;
       case "MSG_ACK":
+        // ACK de cid que não está pendente (expirado ou desconhecido) não
+        // vira "enviada".
+        if (!pending.has(packet.cid)) return undefined;
         settle(packet.cid);
         print(`✓ enviada (id ${packet.id})`);
         return maybeFinish();

@@ -16,9 +16,14 @@ const clean = (value) =>
   String(value).replace(/[\u0000-\u001f\u007f-\u009f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 
 const ok = (res, ...statuses) => {
+  if (res.parseError) throw new Error(`resposta do servidor não é JSON (status ${res.status})`);
   if (!statuses.includes(res.status)) throw new Error(`resposta inesperada do servidor (${res.status})`);
   return res.body;
 };
+
+// Estado (keystore e trust store) só muda na memória DEPOIS de gravado no
+// disco: se a gravação falhar, nada fica "valendo só nesta sessão" (um pin
+// que sumiria no reinício, uma confirmação que o usuário viu falhar).
 
 class E2eeSession {
   constructor({ api, me, email, keystorePath, passphrase, print }) {
@@ -62,12 +67,14 @@ class E2eeSession {
       : e2ee.emptyTrustStore();
   }
 
-  save() {
-    return files.writeSealedFile(this.keystorePath, this.passphrase, this.data);
+  async save(data = this.data) {
+    await files.writeSealedFile(this.keystorePath, this.passphrase, data);
+    this.data = data;
   }
 
-  saveTrust() {
-    return files.writeSealedFile(this.trustPath, this.passphrase, this.trust);
+  async saveTrust(store = this.trust) {
+    await files.writeSealedFile(this.trustPath, this.passphrase, store);
+    this.trust = store;
   }
 
   // Registra as chaves públicas no diretório, ou confere as que já estão lá.
@@ -89,8 +96,7 @@ class E2eeSession {
       );
     }
     this.keyEpoch = ok(await this.api("post", "/keys/reset", this.pub), 200).keyEpoch;
-    this.data.roomKeys = {}; // os wraps antigos foram apagados no servidor
-    await this.save();
+    await this.save({ ...this.data, roomKeys: {} }); // os wraps antigos foram apagados no servidor
     this.print(`chaves substituídas no servidor (key_epoch ${this.keyEpoch})`);
   }
 
@@ -102,14 +108,11 @@ class E2eeSession {
     let pub = keys;
     if (!pub) {
       const res = await this.api("get", `/keys/${userId}`);
-      if (res.status === 404) return null;
+      if (res.status === 404 && !res.parseError) return null;
       pub = ok(res, 200);
     }
     const r = await e2ee.observeKeys(this.trust, userId, pub);
-    if (r.status !== "MATCH") {
-      this.trust = r.store;
-      await this.saveTrust();
-    }
+    if (r.status !== "MATCH") await this.saveTrust(r.store);
     if (r.status === "CHANGED") {
       this.print(`! CHAVE ALTERADA de usuário ${clean(userId)}: nada dele é aceito e a chave da sala não lhe é entregue até você conferir (/safety ${userId}) e confirmar (/trust ${userId})`);
     }
@@ -138,9 +141,8 @@ class E2eeSession {
   async confirm(userId) {
     const shown = this.shownFingerprint.get(userId);
     if (!shown) throw new Error(`use /safety ${userId} antes de /trust ${userId}`);
-    this.trust = e2ee.confirmTrust(this.trust, userId, shown);
+    await this.saveTrust(e2ee.confirmTrust(this.trust, userId, shown));
     this.shownFingerprint.delete(userId);
-    await this.saveTrust();
   }
 
   trustLabel(userId) {
@@ -170,9 +172,15 @@ class E2eeSession {
     return Boolean(version && this.data.roomKeys[room]?.[version]);
   }
 
-  async storeRoomKey(room, version, roomKey) {
-    this.data.roomKeys[room] = { ...this.data.roomKeys[room], [version]: e2ee.encoding.toB64url(await e2ee.primitives.exportRaw(roomKey)) };
-    await this.save();
+  // Guarda a chave da sala e o que fica fixado da sala (criador e maior
+  // versão) numa gravação só.
+  async storeRoomKey(room, version, roomKey, pin) {
+    const raw = e2ee.encoding.toB64url(await e2ee.primitives.exportRaw(roomKey));
+    await this.save({
+      ...this.data,
+      roomKeys: { ...this.data.roomKeys, [room]: { ...this.data.roomKeys[room], [version]: raw } },
+      rooms: { ...this.data.rooms, [room]: pin },
+    });
   }
 
   async createRoom(name) {
@@ -182,8 +190,7 @@ class E2eeSession {
     const wrap = await e2ee.wrapRoomKey({ ...ctx, roomKey, senderId: this.me.id, recipientId: this.me.id, recipientEcdhPub: this.pub.ecdhPub, senderEcdsaKey: this.identity.ecdsa.privateKey });
     const commitment = await e2ee.commitRoomKey({ ...ctx, roomKey, creatorEcdsaKey: this.identity.ecdsa.privateKey });
     ok(await this.api("post", `/rooms/${created.id}/keys`, { version: 1, wrap, ...commitment }), 201);
-    this.data.rooms[created.id] = { creator: this.me.id, version: 1 };
-    await this.storeRoomKey(created.id, 1, roomKey);
+    await this.storeRoomKey(created.id, 1, roomKey, { creator: this.me.id, version: 1 });
     this.currentVersion.set(created.id, 1);
     return created;
   }
@@ -216,28 +223,43 @@ class E2eeSession {
       this.print(`! a chave da sala ${room} veio de quem tem chave não confiável (usuário ${wrap.senderId}); não aceita`);
       return { ok: false };
     }
+    // Só a CRIPTOGRAFIA fica no try: um wrap que não confere é descartado
+    // no servidor. Um erro local (disco cheio, permissão) sobe como erro —
+    // tratá-lo como "wrap inválido" apagaria um wrap bom.
+    let roomKey;
     try {
-      const roomKey = await e2ee.unwrapRoomKey({ wrap, roomId: room, version: wrap.version, senderId: wrap.senderId, recipientId: this.me.id, recipientEcdhKey: this.identity.ecdh.privateKey, senderEcdsaPub: sender.ecdsaPub });
+      roomKey = await e2ee.unwrapRoomKey({ wrap, roomId: room, version: wrap.version, senderId: wrap.senderId, recipientId: this.me.id, recipientEcdhKey: this.identity.ecdh.privateKey, senderEcdsaPub: sender.ecdsaPub });
       await e2ee.verifyRoomKeyCommitment({ roomKey, roomId: room, version: wrap.version, commitment: info.commitment, commitmentSig: info.commitmentSig, creatorEcdsaPub: creator.ecdsaPub });
-      this.data.rooms[room] = { creator: info.createdBy, version: Math.max(wrap.version, pinned?.version ?? 0) };
-      await this.storeRoomKey(room, wrap.version, roomKey);
-      return { ok: true, sender: wrap.senderId };
     } catch (err) {
-      this.print(`! a chave recebida para a sala ${room} não confere (${clean(err.code ?? err.message)}); descartando o wrap e aguardando outro`);
-      await this.api("delete", `/rooms/${room}/keys/wraps/mine`);
+      if (!(err instanceof e2ee.E2eeError)) throw err;
+      const discarded = await this.api("delete", `/rooms/${room}/keys/wraps/mine`);
+      this.print(
+        `! a chave recebida para a sala ${room} não confere (${err.code}); ` +
+          (discarded.status === 204 ? "wrap descartado, aguardando outro" : `o descarte do wrap falhou (${discarded.status})`)
+      );
       return { ok: false };
     }
+    await this.storeRoomKey(room, wrap.version, roomKey, { creator: info.createdBy, version: Math.max(wrap.version, pinned?.version ?? 0) });
+    return { ok: true, sender: wrap.senderId };
   }
 
   async pendingOf(room) {
     const res = await this.api("get", `/rooms/${room}/keys/pending`);
-    return res.status === 200 ? res.body : null;
+    if (res.status === 403) throw new Error(`o servidor não reconhece sua chave atual da sala ${room}: não dá para consultar os pendentes (403)`);
+    return ok(res, 200);
   }
 
+  // Falha na entrega é sempre AVISADA (o pendente ficaria esperando para
+  // sempre sem que ninguém soubesse).
   async deliverTo(room, version, roomKey, pending) {
     const wrap = await e2ee.wrapRoomKey({ roomKey, roomId: room, version, senderId: this.me.id, recipientId: pending.userId, recipientEcdhPub: pending.keys.ecdhPub, senderEcdsaKey: this.identity.ecdsa.privateKey });
     const posted = await this.api("post", `/rooms/${room}/keys/wraps`, { version, recipientId: pending.userId, recipientKeyEpoch: pending.keys.keyEpoch, wrap });
-    if (posted.status === 201) this.print(`chave da sala entregue a usuário ${pending.userId} (${clean(pending.name)})`);
+    if (posted.status === 201) {
+      this.print(`chave da sala entregue a usuário ${pending.userId} (${clean(pending.name)})`);
+      return;
+    }
+    const hint = posted.status === 409 ? "; as chaves dele podem ter mudado: confira /members e /safety" : "";
+    throw new Error(`não foi possível entregar a chave da sala a usuário ${pending.userId} (${posted.status})${hint}`);
   }
 
   // Pendentes: a chave pública de cada um é conferida no trust store (CHAVE
@@ -247,7 +269,6 @@ class E2eeSession {
   async distribute(room) {
     if (!this.hasCurrentKey(room)) return;
     const res = await this.pendingOf(room);
-    if (!res) return;
     const roomKey = (await this.roomKeysFor(room))[res.version];
     if (!roomKey) return;
     for (const pending of res.pending) {
@@ -273,7 +294,7 @@ class E2eeSession {
   async approve(room, userId) {
     if (!this.hasCurrentKey(room)) throw new Error("você ainda não tem a chave desta sala");
     const res = await this.pendingOf(room);
-    const pending = res?.pending.find((p) => p.userId === userId);
+    const pending = res.pending.find((p) => p.userId === userId);
     if (!pending) throw new Error(`usuário ${userId} não está aguardando a chave da sala ${room}`);
     if (!pending.keys) throw new Error(`usuário ${userId} ainda não registrou chaves públicas`);
     await this.observe(userId, pending.keys);

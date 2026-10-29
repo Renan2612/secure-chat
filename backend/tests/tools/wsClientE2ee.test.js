@@ -194,6 +194,8 @@ test("CHAVE ALTERADA: Bob troca as chaves → o cliente NÃO entrega a chave da 
   bob.pub = await e2ee.exportPublicKeys(bob.identity);
   bob.keyEpoch = (await bob.call("post", "/keys/reset").send(bob.pub)).body.keyEpoch;
   await waitUntil(() => /CHAVE ALTERADA de usuário/.test(out.stdout), "aviso de chave alterada");
+  // Janela para uma entrega que estivesse em andamento chegar ao banco.
+  await new Promise((r) => setTimeout(r, 500));
   expect((await pool.query("SELECT 1 FROM room_key_wraps WHERE recipient_id = $1", [bob.id])).rowCount).toBe(0);
 
   await bobSays(room, "com a chave nova", "b2"); // Bob ainda tem a chave da sala na memória
