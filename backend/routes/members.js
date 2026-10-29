@@ -139,4 +139,26 @@ const transferOwner = async (req, res, next) => {
   }
 };
 
-module.exports = { leaveRoom, removeMember, transferOwner };
+// Só o dono: troca o convite (D5). O novo é devolvido uma única vez; o
+// antigo deixa de valer para todos.
+const rotateInvite = async (req, res, next) => {
+  const roomId = req.params.id;
+  const me = req.session.userId;
+  const invite = crypto.randomBytes(16).toString("hex");
+  try {
+    const status = await withTransaction(async (client) => {
+      const room = await lockRoomFor(client, roomId, me);
+      if (!room) return 404;
+      if (room.owner_id !== me) return 403;
+      await client.query("UPDATE rooms SET invite_hash = $2 WHERE id = $1", [roomId, inviteHash(invite)]);
+      return 200;
+    });
+    if (status === 404) return res.status(404).json(NOT_FOUND);
+    if (status === 403) return res.status(403).json(FORBIDDEN);
+    return res.status(200).json({ room: roomId, invite });
+  } catch (err) {
+    return next(err);
+  }
+};
+
+module.exports = { leaveRoom, removeMember, transferOwner, rotateInvite };

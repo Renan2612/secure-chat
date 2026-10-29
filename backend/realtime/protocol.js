@@ -62,6 +62,8 @@ const ERRORS = {
   // versão atual da chave da sala; o servidor confere só a estrutura.
   E2EE_REQUIRED: "O body precisa ser um envelope E2EE v1",
   KEY_VERSION_MISMATCH: "Versão da chave diferente da atual da sala",
+  // Etapa 4b-2: alguém saiu ou foi removido e a chave ainda não foi trocada.
+  ROTATION_PENDING: "A chave da sala precisa ser trocada antes de enviar",
   INTERNAL: "Erro interno",
 };
 

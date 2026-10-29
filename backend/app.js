@@ -17,8 +17,8 @@ const {
 } = require("./routes/rooms");
 const { getMessages, updateLastRead } = require("./routes/messages");
 const { putKeys, resetKeys, getKeys } = require("./routes/keys");
-const { leaveRoom, removeMember, transferOwner } = require("./routes/members");
-const { publishRoomKey, getMyWraps, getPending, postWrap, discardMyWrap } = require("./routes/roomKeys");
+const { leaveRoom, removeMember, transferOwner, rotateInvite } = require("./routes/members");
+const { publishRoomKey, getMyWraps, getPending, postWrap, discardMyWrap, rotateRoomKey } = require("./routes/roomKeys");
 const requireAuth = require("./middleware/requireAuth");
 const requireRoomMember = require("./middleware/requireRoomMember");
 const validate = require("./middleware/validate");
@@ -51,6 +51,8 @@ const trustProxyHops = () => {
   return Number(raw);
 };
 
+const ROTATE_PATH = /^\/rooms\/[^/]+\/keys\/rotate$/;
+
 // onSessionEnd(userId): chamado quando uma sessão termina por logout, para o
 // canal em tempo real derrubar as conexões abertas daquele usuário.
 const createApp = ({
@@ -61,7 +63,8 @@ const createApp = ({
   // Avisos ROOM_EVENT do canal em tempo real (createServer liga ao realtime):
   // keyPending(room) → há membro sem a chave da sala; keyReady(userId, room)
   // → chegou um wrap para o usuário; removed(userId, room) → o usuário saiu
-  // ou foi removido; rotationPending(room) → a chave precisa ser trocada.
+  // ou foi removido; rotationPending(room) → a chave precisa ser trocada;
+  // keyRotated(room) → há uma versão nova da chave.
   // Sem realtime (testes HTTP), não fazem nada.
   notify = {},
 } = {}) => {
@@ -97,13 +100,17 @@ const createApp = ({
   );
 
   // --- Limite de tamanho do corpo da requisição ---
-  app.use(express.json({ limit: "10kb" }));
+  // A rotação leva um wrap por membro (~350 bytes cada): o corpo dela é lido
+  // com limite próprio, só DEPOIS do requireAuth (quem não tem sessão não
+  // consegue mandar 100 KB para o servidor ler).
+  const json10kb = express.json({ limit: "10kb" });
+  app.use((req, res, next) => (ROTATE_PATH.test(req.path) ? next() : json10kb(req, res, next)));
 
   // --- Sessão armazenada no servidor (Postgres) ---
   app.use(session.middleware);
   app.locals.onSessionEnd = onSessionEnd;
   const noop = () => {};
-  app.locals.notify = { keyPending: noop, keyReady: noop, removed: noop, rotationPending: noop, ...notify };
+  app.locals.notify = { keyPending: noop, keyReady: noop, removed: noop, rotationPending: noop, keyRotated: noop, ...notify };
 
   // --- Rate limiting em rotas sensíveis (login/registro) ---
   const limiterDefaults = {
@@ -166,11 +173,13 @@ const createApp = ({
   app.get("/rooms/:id/keys/pending", validate(schemas.roomKeys), getPending);
   app.post("/rooms/:id/keys/wraps", validate(schemas.postWrap), postWrap);
   app.delete("/rooms/:id/keys/wraps/mine", validate(schemas.roomKeys), discardMyWrap);
+  app.post("/rooms/:id/keys/rotate", express.json({ limit: "100kb" }), validate(schemas.rotateRoomKey), rotateRoomKey);
 
   // --- Ciclo de vida dos membros (Etapa 4b-2, docs/05-e2ee.md) ---
   app.post("/rooms/:id/leave", validate(schemas.leaveRoom), leaveRoom);
   app.delete("/rooms/:id/members/:userId", validate(schemas.removeMember), removeMember);
   app.post("/rooms/:id/owner", validate(schemas.transferOwner), transferOwner);
+  app.post("/rooms/:id/invite/rotate", validate(schemas.leaveRoom), rotateInvite);
 
   // As rotas de debug /session, /sessionRoom e /session (POST) foram REMOVIDAS.
   // A rota POST /session permitia que qualquer cliente definisse req.session.userId

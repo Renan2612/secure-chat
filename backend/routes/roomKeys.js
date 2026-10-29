@@ -10,16 +10,21 @@
 //                          conferiu com o compromisso do criador)
 //   publicar um wrap     → remetente membro com o wrap da versão atual;
 //                          destinatário membro, com o key_epoch informado;
-//                          um wrap por (sala, versão, destinatário)
+//                          um wrap por (sala, versão, destinatário); recusado
+//                          enquanto a sala exige rotação (quem entra depois
+//                          de uma saída recebe só a chave NOVA)
+//   rotacionar           → membro com o wrap da versão atual (Etapa 4b-2, D3)
 const pool = require("../db");
 const { withTransaction } = require("../helpers/transaction");
+const { verifyWrapSig, verifyCommitmentSig } = require("../helpers/signatures");
 
 const FORBIDDEN = { message: "Acesso negado" };
 const VERSION_MISMATCH = { message: "Versão da chave diferente da atual da sala" };
+const ROTATION_PENDING = { code: "ROTATION_PENDING", message: "A chave da sala precisa ser trocada antes" };
 
 const roomState = async (roomId, userId) => {
   const { rows } = await pool.query(
-    `SELECT r.id, r.created_by, r.key_version,
+    `SELECT r.id, r.created_by, r.key_version, r.rotation_required,
             EXISTS (SELECT 1 FROM rooms_users m WHERE m.room = r.id AND m.user_id = $2) AS member,
             EXISTS (SELECT 1 FROM room_current_wraps w WHERE w.room = r.id AND w.recipient_id = $2) AS has_key
      FROM rooms r WHERE r.id = $1`,
@@ -142,6 +147,7 @@ const postWrap = async (req, res, next) => {
     if (!room?.member) return res.status(403).json(FORBIDDEN);
     if (version !== room.key_version) return res.status(409).json(VERSION_MISMATCH);
     if (!room.has_key) return res.status(403).json(FORBIDDEN);
+    if (room.rotation_required) return res.status(409).json(ROTATION_PENDING);
     const isMember = (await pool.query("SELECT 1 FROM rooms_users WHERE room = $1 AND user_id = $2", [roomId, recipientId])).rowCount > 0;
     if (!isMember) return res.status(400).json({ message: "Destinatário inválido" });
     const outcome = await withTransaction(async (client) => {
@@ -191,4 +197,98 @@ const discardMyWrap = async (req, res, next) => {
   }
 };
 
-module.exports = { publishRoomKey, getMyWraps, getPending, postWrap, discardMyWrap };
+// Rotação (D3). A chave nova é gerada no cliente, aleatória (nunca derivada
+// da anterior: um ratchet deixaria quem saiu calculá-la). O servidor confere,
+// numa transação com a sala travada (FOR UPDATE: rotações, saídas e
+// remoções da mesma sala acontecem uma de cada vez):
+//   - o autor é membro e tem o wrap da versão atual (senão 403);
+//   - version = key_version + 1 (senão 409; a rotação concorrente que
+//     perder cai aqui ou na PK de room_key_versions);
+//   - os destinatários são exatamente membros atuais, cada um no key_epoch
+//     atual, nenhum banido; senão 409 STALE_MEMBERSHIP com a lista atual
+//     (o cliente refaz). Quem é membro e ficou de fora fica pendente;
+//   - o autor está entre os destinatários, sem repetição (senão 400);
+//   - o compromisso e cada wrap foram assinados pelo autor, com a chave
+//     pública registrada dele, para esta sala, versão e destinatário (400).
+// Então grava a versão e os wraps, sobe key_version e zera rotation_required.
+// Os wraps antigos de quem ficou continuam (relê o histórico).
+const STALE_MEMBERSHIP = "STALE_MEMBERSHIP";
+
+const rotateRoomKey = async (req, res, next) => {
+  const roomId = req.params.id;
+  const me = req.session.userId;
+  const { version, commitment, commitmentSig, wraps } = req.body;
+  const recipients = wraps.map((w) => w.recipientId);
+  if (new Set(recipients).size !== recipients.length || !recipients.includes(me)) {
+    return res.status(400).json({ message: "Um wrap por membro atual, incluindo o autor" });
+  }
+  try {
+    const outcome = await withTransaction(async (client) => {
+      const { rows: rooms } = await client.query(
+        `SELECT r.key_version,
+                EXISTS (SELECT 1 FROM room_current_wraps w WHERE w.room = r.id AND w.recipient_id = $2) AS has_key
+         FROM rooms r
+         WHERE r.id = $1 AND EXISTS (SELECT 1 FROM rooms_users m WHERE m.room = r.id AND m.user_id = $2)
+         FOR UPDATE OF r`,
+        [roomId, me]
+      );
+      const room = rooms[0];
+      if (!room?.has_key) return { status: 403 };
+      if (version !== room.key_version + 1) return { status: 409, body: VERSION_MISMATCH };
+      // Membros atuais e suas chaves; FOR SHARE em user_keys: um reset
+      // concorrente espera esta transação (e então apaga os wraps novos).
+      const { rows: members } = await client.query(
+        `SELECT m.user_id FROM rooms_users m
+         WHERE m.room = $1 AND NOT EXISTS (SELECT 1 FROM room_bans b WHERE b.room = m.room AND b.user_id = m.user_id)`,
+        [roomId]
+      );
+      const { rows: keyed } = await client.query(
+        "SELECT user_id, key_epoch, ecdsa_pub FROM user_keys WHERE user_id = ANY($1::int[]) ORDER BY user_id FOR SHARE",
+        [members.map((m) => m.user_id)]
+      );
+      const current = new Map(keyed.map((m) => [m.user_id, m]));
+      const stale = wraps.some((w) => current.get(w.recipientId)?.key_epoch !== w.recipientKeyEpoch);
+      if (stale) {
+        return {
+          status: 409,
+          body: {
+            code: STALE_MEMBERSHIP,
+            message: "A lista de membros mudou; monte a rotação de novo",
+            members: [...current.values()].map((m) => ({ userId: m.user_id, keyEpoch: m.key_epoch })),
+          },
+        };
+      }
+      const authorPub = current.get(me).ecdsa_pub;
+      const signed =
+        verifyCommitmentSig(authorPub, { roomId, version, commitment }, commitmentSig) &&
+        wraps.every((w) => verifyWrapSig(authorPub, { roomId, version, recipientId: w.recipientId, senderId: me }, w.wrap));
+      if (!signed) return { status: 400, body: { message: "Assinatura inválida na rotação" } };
+      const inserted = await client.query(
+        `INSERT INTO room_key_versions (room, version, created_by, commitment, commitment_sig) VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT DO NOTHING RETURNING version`,
+        [roomId, version, me, commitment, commitmentSig]
+      );
+      if (inserted.rowCount === 0) return { status: 409, body: VERSION_MISMATCH };
+      for (const w of wraps) {
+        await client.query(
+          `INSERT INTO room_key_wraps (room, version, recipient_id, sender_id, recipient_key_epoch, eph_pub, iv, wrapped, sig)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [roomId, version, w.recipientId, me, w.recipientKeyEpoch, w.wrap.ephPub, w.wrap.iv, w.wrap.wrapped, w.wrap.sig]
+        );
+      }
+      await client.query("UPDATE rooms SET key_version = $2, rotation_required = FALSE WHERE id = $1", [roomId, version]);
+      return { status: 201, pending: members.length > wraps.length };
+    });
+    if (outcome.status === 403) return res.status(403).json(FORBIDDEN);
+    if (outcome.status !== 201) return res.status(outcome.status).json(outcome.body);
+    const { notify } = req.app.locals;
+    for (const recipientId of recipients) notify.keyReady(recipientId, roomId);
+    notify.keyRotated(roomId);
+    if (outcome.pending) notify.keyPending(roomId);
+    return res.status(201).json({ room: roomId, version });
+  } catch (err) {
+    return next(err);
+  }
+};
+
+module.exports = { publishRoomKey, getMyWraps, getPending, postWrap, discardMyWrap, rotateRoomKey };

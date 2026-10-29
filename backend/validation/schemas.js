@@ -77,6 +77,17 @@ const schemas = {
   leaveRoom: { params: z.object({ id: idParam }) },
   removeMember: { params: z.object({ id: idParam, userId: idParam }) },
   transferOwner: { params: z.object({ id: idParam }), body: z.object({ userId: id }) },
+  // Rotação (D3): versão nova, compromisso do autor e um wrap por membro
+  // atual (incluindo o autor). Até 200 wraps (limite de corpo de 100 KB).
+  rotateRoomKey: {
+    params: z.object({ id: idParam }),
+    body: z.object({
+      version: keyVersion,
+      commitment: b64urlBytes(32),
+      commitmentSig: b64urlBytes(64),
+      wraps: z.array(z.object({ recipientId: id, recipientKeyEpoch: id, wrap })).min(1).max(200),
+    }),
+  },
 };
 
 module.exports = schemas;

@@ -8,36 +8,42 @@ const isMember = async (userId, room) =>
   (await pool.query("SELECT 1 FROM rooms_users WHERE room = $1 AND user_id = $2", [room, userId]))
     .rowCount > 0;
 
-// Grava só se o remetente for membro, na MESMA consulta: não há janela entre
-// checar a pertinência e gravar. O remetente vem da sessão (conn.userId),
-// nunca do pacote. Devolve { saved } (nova), { duplicate } (o cid já foi
-// gravado nesta sala: reenvio), { reused } (cid já usado em outra sala) ou
-// {} (não é membro da sala pedida) ou { staleKey } (é membro, cid novo, mas
-// o kv do envelope não é a versão atual da chave da sala).
+// Grava só se o remetente for membro, a sala não exigir rotação e o kv for a
+// versão atual, na MESMA consulta: não há janela entre checar e gravar. A
+// linha da sala é lida com FOR SHARE: uma saída, remoção ou rotação em
+// andamento (FOR UPDATE) termina antes, e a condição é reavaliada sobre a
+// linha nova (rotation_required = true → nada é gravado). O remetente vem
+// da sessão (conn.userId), nunca do pacote. Devolve { saved } (nova),
+// { duplicate } (o cid já foi gravado nesta sala: reenvio), { reused } (cid
+// já usado em outra sala), {} (não é membro da sala pedida), { rotation }
+// (é membro, cid novo, mas a chave precisa ser trocada antes) ou
+// { staleKey } (o kv do envelope não é a versão atual da chave da sala).
 const insertIfMember = async (userId, room, cid, body, kv) => {
   const inserted = await pool.query(
     `INSERT INTO messages (room, user_id, message, cid, key_version)
-     SELECT $1, $2, $3, $4, $5
-     WHERE EXISTS (SELECT 1 FROM rooms_users WHERE room = $1 AND user_id = $2)
-       AND (SELECT key_version FROM rooms WHERE id = $1) = $5
+     SELECT r.id, $2, $3, $4, $5 FROM rooms r
+     WHERE r.id = $1 AND r.key_version = $5 AND NOT r.rotation_required
+       AND EXISTS (SELECT 1 FROM rooms_users WHERE room = $1 AND user_id = $2)
+     FOR SHARE OF r
      ON CONFLICT (user_id, cid) DO NOTHING
      RETURNING id, dt_message`,
     [room, userId, body, cid, kv]
   );
   if (inserted.rowCount > 0) return { saved: inserted.rows[0] };
-  // Nada gravado: ou não é membro, ou o cid já existe. Autorização primeiro:
-  // quem não é membro da sala pedida recebe NOT_MEMBER, haja ou não cid.
+  // Nada gravado. Autorização primeiro: quem não é membro da sala pedida
+  // recebe NOT_MEMBER, haja ou não cid (e não descobre o estado da sala).
   if (!(await isMember(userId, room))) return {};
-  // Reenvio: o body não é comparado (é opaco; na Etapa 4 um reenvio cifrado
-  // de novo terá outro texto cifrado): vale o primeiro.
+  // Reenvio: o body não é comparado (é opaco; um reenvio cifrado de novo tem
+  // outro texto cifrado): vale o primeiro.
   const { rows } = await pool.query(
     "SELECT id, dt_message, room FROM messages WHERE user_id = $1 AND cid = $2",
     [userId, cid]
   );
   const original = rows[0];
-  // Membro, cid novo: só pode ter faltado a versão da chave.
-  if (!original) return { staleKey: true };
-  return original.room === room ? { duplicate: original } : { reused: true };
+  if (original) return original.room === room ? { duplicate: original } : { reused: true };
+  // Membro, cid novo: faltou a rotação ou a versão da chave.
+  const state = await pool.query("SELECT rotation_required FROM rooms WHERE id = $1", [room]);
+  return state.rows[0]?.rotation_required ? { rotation: true } : { staleKey: true };
 };
 
 // Usuários com o wrap da versão ATUAL da chave da sala (podem distribuí-la).
@@ -112,6 +118,11 @@ const createHandlers = (registry) => {
     for (const conn of registry.subscribers(room)) conn.send({ type: "ROOM_EVENT", room, kind: "ROTATION_PENDING" });
   };
 
+  // A chave foi trocada (nova versão): os inscritos buscam os próprios wraps.
+  const notifyKeyRotated = (room) => {
+    for (const conn of registry.subscribers(room)) conn.send({ type: "ROOM_EVENT", room, kind: "KEY_ROTATED" });
+  };
+
   const handlers = {
     // Sala inexistente e sala alheia recebem o mesmo NOT_MEMBER.
     async SUBSCRIBE(conn, { room, id }) {
@@ -148,8 +159,9 @@ const createHandlers = (registry) => {
       // servidor não decifra (não tem a chave da sala).
       const envelope = parseEnvelope(body);
       if (!envelope) return conn.error("E2EE_REQUIRED", id);
-      const { saved, duplicate, reused, staleKey } = await insertIfMember(conn.userId, room, cid, body, envelope.kv);
+      const { saved, duplicate, reused, rotation, staleKey } = await insertIfMember(conn.userId, room, cid, body, envelope.kv);
       if (reused) return conn.error("CID_REUSED", id);
+      if (rotation) return conn.error("ROTATION_PENDING", id);
       if (staleKey) return conn.error("KEY_VERSION_MISMATCH", id);
       const message = saved ?? duplicate;
       if (!message) return conn.error("NOT_MEMBER", id);
@@ -170,7 +182,7 @@ const createHandlers = (registry) => {
     },
   };
 
-  return { handlers, notifyKeyPending, notifyKeyReady, notifyRemoved, notifyRotationPending };
+  return { handlers, notifyKeyPending, notifyKeyReady, notifyRemoved, notifyRotationPending, notifyKeyRotated };
 };
 
 module.exports = { createHandlers };

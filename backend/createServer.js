@@ -15,6 +15,7 @@ const createServer = ({ appOptions = {}, realtimeOptions = {} } = {}) => {
     keyReady: (userId, room) => realtime.notify.keyReady(userId, room),
     removed: (userId, room) => realtime.notify.removed(userId, room),
     rotationPending: (room) => realtime.notify.rotationPending(room),
+    keyRotated: (room) => realtime.notify.keyRotated(room),
   };
   const app = createApp({ ...appOptions, session, onSessionEnd, notify });
   const server = http.createServer(app);
