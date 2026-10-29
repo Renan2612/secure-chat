@@ -127,7 +127,10 @@ describe("GET /keys/:userId (nada de diretório público)", () => {
   test("compartilha sala mas o outro não tem chave → 404", async () => {
     const carol = await createUser("carol");
     await createRoomInDb("Sala", [alice.id, carol.id]);
-    expect((await alice.agent.get(`/keys/${carol.id}`)).status).toBe(404);
+    const res = await alice.agent.get(`/keys/${carol.id}`);
+    expect(res.status).toBe(404);
+    // O mesmo corpo de "não compartilha sala" e "não existe".
+    expect(res.body).toEqual({ message: "Não encontrado" });
   });
 
   test.each(["abc", "0", "-1"])("id inválido %j → 400", async (id) => {

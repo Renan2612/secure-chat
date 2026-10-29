@@ -37,6 +37,7 @@ const cases = () => [
   ["v = 2", JSON.stringify({ ...base.small, v: 2 }), false],
   ["kv = 0", JSON.stringify({ ...base.small, kv: 0 }), false],
   ["kv fracionário", JSON.stringify({ ...base.small, kv: 1.5 }), false],
+  ["kv acima do INTEGER do Postgres", JSON.stringify({ ...base.small, kv: 2147483648 }), false],
   ["kv como texto", JSON.stringify({ ...base.small, kv: "3" }), false],
   ["iv de 11 bytes", JSON.stringify({ ...base.small, iv: e2ee.encoding.toB64url(new Uint8Array(11)) }), false],
   ["sig de 63 bytes", JSON.stringify({ ...base.small, sig: e2ee.encoding.toB64url(new Uint8Array(63)) }), false],

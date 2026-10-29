@@ -25,6 +25,7 @@ const LENGTH_PREFIX = 2;
 const MAX_PADDED_BYTES = 46 * PAD_BLOCK;
 const MAX_TEXT_BYTES = MAX_PADDED_BYTES - LENGTH_PREFIX;
 const ENVELOPE_KEYS = ["v", "kv", "iv", "ct", "sig"];
+const MAX_KEY_VERSION = 2147483647;
 
 const pad = (text) => {
   const data = utf8(text);
@@ -70,7 +71,8 @@ const parseEnvelope = (body) => {
   }
   if (!env || typeof env !== "object" || Array.isArray(env)) throw invalid();
   if (Object.keys(env).join() !== ENVELOPE_KEYS.join()) throw invalid();
-  if (env.v !== ENVELOPE_VERSION || !Number.isSafeInteger(env.kv) || env.kv < 1) throw invalid();
+  // kv até 2^31 - 1: o mesmo teto do servidor (INTEGER do Postgres).
+  if (env.v !== ENVELOPE_VERSION || !Number.isSafeInteger(env.kv) || env.kv < 1 || env.kv > MAX_KEY_VERSION) throw invalid();
   let iv;
   let ct;
   let sig;

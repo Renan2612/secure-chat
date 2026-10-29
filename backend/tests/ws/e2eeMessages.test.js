@@ -72,6 +72,31 @@ describe("servidor: falha fechada sem decifrar", () => {
     ws.close();
   });
 
+  test("ordem: não-membro com kv errado recebe NOT_MEMBER (a versão da chave da sala não vaza para quem é de fora)", async () => {
+    const carol = await registerKeys(asCookie(srv, await loginUser(srv, "carol")));
+    const { ws, inbox } = await connect(srv, carol.cookie);
+    send(ws, { type: "MSG_SEND", room: room.roomId, cid: "c1", body: await encryptAs(carol, "oi", "c1", { kv: 2 }) });
+    expect(await nextPacket(inbox, "ERROR")).toMatchObject({ code: "NOT_MEMBER" });
+    ws.close();
+  });
+
+  test("ordem: texto puro de não-membro recebe E2EE_REQUIRED (checagem sem banco vem primeiro)", async () => {
+    const carol = await registerKeys(asCookie(srv, await loginUser(srv, "carol")));
+    const { ws, inbox } = await connect(srv, carol.cookie);
+    send(ws, { type: "MSG_SEND", room: room.roomId, cid: "c1", body: "texto puro" });
+    expect(await nextPacket(inbox, "ERROR")).toMatchObject({ code: "E2EE_REQUIRED" });
+    ws.close();
+  });
+
+  test("ordem: reenvio de cid já gravado com kv desatualizado devolve o MSG_ACK original (cid antes da versão)", async () => {
+    const { ws, inbox } = await connect(srv, alice.cookie);
+    send(ws, { type: "MSG_SEND", room: room.roomId, cid: "r1", body: await encryptAs(alice, "oi", "r1") });
+    const first = await nextPacket(inbox, "MSG_ACK");
+    send(ws, { type: "MSG_SEND", room: room.roomId, cid: "r1", body: await encryptAs(alice, "oi", "r1", { kv: 2 }) });
+    expect(await nextPacket(inbox, "MSG_ACK")).toMatchObject({ cid: "r1", id: first.id });
+    ws.close();
+  });
+
   test("não-membro com envelope válido continua recebendo NOT_MEMBER", async () => {
     const carol = await registerKeys(asCookie(srv, await loginUser(srv, "carol")));
     const { ws, inbox } = await connect(srv, carol.cookie);
@@ -201,7 +226,7 @@ describe("servidor malicioso: o cliente percebe", () => {
 
   test("servidor reentrega a mensagem em OUTRA sala → inválida (sala está no AAD)", async () => {
     const r = await receiverForBob().accept({ ...deliver, room: room.roomId + 1 });
-    expect(r.status).not.toBe("ok");
+    expect(r.status).toBe("invalid");
   });
 
   test("ciphertext adulterado → descartado e sinalizado", async () => {
@@ -211,9 +236,12 @@ describe("servidor malicioso: o cliente percebe", () => {
     expect(r.status).toBe("invalid");
   });
 
-  test("uma mensagem inválida não 'envenena' o cid: a legítima com o mesmo cid ainda é aceita", async () => {
+  test("uma mensagem inválida não 'envenena' o cid: a legítima com o MESMO remetente e cid ainda é aceita", async () => {
     const receiver = receiverForBob();
-    expect((await receiver.accept({ ...deliver, from: carol.id, body: deliver.body })).status).toBe("invalid");
+    // Mesmo (from, cid) da legítima, mas com o texto cifrado adulterado.
+    const env = JSON.parse(deliver.body);
+    const forged = { ...deliver, body: JSON.stringify({ ...env, ct: env.ct.slice(0, 10) + (env.ct[10] === "A" ? "B" : "A") + env.ct.slice(11) }) };
+    expect((await receiver.accept(forged)).status).toBe("invalid");
     expect((await receiver.accept(deliver)).status).toBe("ok");
   });
 
