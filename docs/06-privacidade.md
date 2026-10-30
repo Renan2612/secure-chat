@@ -73,17 +73,39 @@ padding de tráfego) e está fora do escopo do projeto.
 5. **O removido retém o que recebeu**: quem saiu ou foi removido continua
    com as chaves antigas e com o que já baixou (a rotação só protege o que
    vem depois).
-6. **Nome da sala**: sem assinatura (qualquer um com a chave produziria um
-   nome válido; quem pode trocá-lo é regra do servidor) e o servidor pode
-   reapresentar um nome **antigo da mesma versão** da chave. Sem a chave, o
-   cliente mostra "Sala #id". **Achado da revisão automática do commit
-   ab4bf1b:** "só o dono troca o nome" vale no `PUT /rooms/:id/name`, mas
-   qualquer membro com a chave atual pode rotacionar (regra da 4b-2) e a
-   rotação traz o nome recifrado, que o servidor não consegue comparar com
-   o atual: um membro que não é o dono consegue mudar o nome **rotacionando**.
-   Correção possível (não feita; para o grupo decidir): o dono assina o
-   `name_env` (ECDSA) e os clientes recusam nome sem a assinatura do dono
-   atual.
+6. **Nome da sala** — brecha **FECHADA** (achado da revisão automática do
+   commit ab4bf1b: um membro que não era o dono mudava o nome **trocando a
+   chave**, porque a rotação traz o nome recifrado e o servidor não o lê).
+   Agora o nome é assinado pelo dono (`{name, seq, ownerId, sig}` dentro do
+   texto cifrado; [`05-e2ee.md`](05-e2ee.md) §12.2): quem rotaciona só
+   recifra o conteúdo assinado, e os clientes recusam o que não tem a
+   assinatura do dono atual. Testes que provam:
+   - `tests/e2ee/roomNameSigned.test.js`: não-dono assina com a própria
+     chave, forja o `ownerId` do dono, adultera a assinatura, faz rollback
+     de `seq`, repete o `seq` com outro nome; o servidor troca o `name_env`
+     pelo de outra sala (o AAD amarra a sala); troca de dono com
+     re-assinatura `seq + 1`; rotação sem nome cai no fallback;
+   - `tests/tools/wsClientPrivacy.test.js`: no `ws-client`, não-dono
+     rotaciona com outro nome → rejeitado, com o aviso "alterado por quem
+     não é o dono"; o novo dono re-assina ao receber `OWNER_CHANGED`;
+     rotação sem conteúdo válido → `name_env` vazio e "Sala #id (nome não
+     verificado)";
+   - com a verificação da assinatura desligada de propósito, 5 desses
+     testes de ataque falham (mutação conferida à mão).
+
+   Limites que continuam:
+   - **o servidor afirma quem é o dono** (`ownerId` no `GET /rooms`): um
+     servidor malicioso pode dizer que um cúmplice é o dono, e então o nome
+     assinado por ele vale. Cobertura real só com a lista de membros (e o
+     cargo) assinada, já pendente desde a 4b-2;
+   - **o dono malicioso renomeia** à vontade (é o cargo dele);
+   - um cliente que **nunca viu** um `seq` maior aceita um nome antigo
+     válido do mesmo dono (o rollback só é detectado em relação ao que o
+     cliente já viu);
+   - **o nome é metadado cifrado, não anônimo**: o servidor não o lê, mas
+     sabe que a sala tem um nome, quando ele muda e o tamanho em blocos
+     de 128 bytes;
+   - quem saiu continua com os nomes que já leu.
 7. **Retenção não é retroativa**: mudar a retenção não apaga nem encurta o
    que já está gravado (o `exp` de cada mensagem foi assinado pelo remetente).
 8. **Precisão de tempo**: o minuto ainda permite correlacionar conversas
