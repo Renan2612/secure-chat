@@ -201,7 +201,7 @@ Direção: **C→S** (cliente para servidor), **S→C** (servidor para cliente).
 | `MSG_SEND` | C→S | `room`: inteiro; `cid`: `[A-Za-z0-9_-]{1,64}`; `body`: string, 1 a **8192 bytes UTF-8**, sem o caractere NUL, e (Etapa 4b-1) um **envelope E2EE v1** bem formado com o `kv` da versão atual da chave da sala (§4.3) | Envia uma mensagem. **Não tem campo `from`**. |
 | `MSG_ACK` | S→C | `cid`; `id`: inteiro (id da mensagem no banco); `ts`: ISO 8601 | A mensagem foi **gravada**. Correlação pelo `cid`. Reenvio do mesmo `cid` → o mesmo ACK. |
 | `MSG_DELIVER` | S→C | `room`; `id`; `from`: inteiro (usuário **da sessão** do remetente, preenchido pelo servidor); `cid` (Etapa 4b-1: o do `MSG_SEND`); `ts`; `body` (como veio) | Mensagem nova na sala. Vai a toda conexão inscrita cujo usuário é membro, **inclusive as do próprio remetente**. O cliente deduplica por (`from`, `cid`), que também entram no AAD da E2EE. |
-| `ROOM_EVENT` | S→C | `room`; `kind`: `"KEY_PENDING"` ou `"KEY_READY"` | **Extensão do v1 (Etapa 4b-1).** `KEY_PENDING`: vai às conexões inscritas na sala cujo usuário **tem a chave atual**, quando há membro sem ela (alguém entrou, registrou chaves, trocou de chave, ou um portador se inscreveu com pendentes). `KEY_READY`: vai a **todas** as conexões do destinatário (inscritas ou não) quando chega um wrap para ele. Não carrega dado de chave: o cliente busca pela API ([`05-e2ee.md`](05-e2ee.md) §5). Clientes que não conhecem o tipo podem ignorá-lo. |
+| `ROOM_EVENT` | S→C | `room`; `kind`: `"KEY_PENDING"`, `"KEY_READY"`, `"REMOVED"`, `"ROTATION_PENDING"` ou `"KEY_ROTATED"` | **Extensão do v1 (Etapas 4b-1 e 4b-2).** `KEY_PENDING`: vai às conexões inscritas na sala cujo usuário **tem a chave atual**, quando há membro sem ela (alguém entrou, registrou chaves, trocou de chave, ou um portador se inscreveu com pendentes, inclusive depois de uma rotação que o deixou de fora). `KEY_READY`: vai a **todas** as conexões do destinatário (inscritas ou não) quando chega um wrap para ele, inclusive o de uma rotação. **4b-2:** `REMOVED` vai a todas as conexões de quem saiu ou foi removido, que é desinscrito da sala sem fechar a conexão; `ROTATION_PENDING` vai aos inscritos que ficaram, quando a sala passa a exigir a troca da chave; `KEY_ROTATED` vai aos inscritos depois de uma rotação. Não carrega dado de chave: o cliente busca pela API ([`05-e2ee.md`](05-e2ee.md) §5 e §11). Clientes que não conhecem um `kind` podem ignorá-lo. |
 | `ERROR` | S→C | `code` (§5.1); `message`: texto genérico; `ref?`: o `id` do pacote que causou o erro | Pacote recusado. Salvo os casos da §5.2, a conexão continua aberta. |
 
 Exemplo de troca:
@@ -258,7 +258,8 @@ Portanto:
 | `NOT_MEMBER` | Sem acesso a esta sala | SUBSCRIBE ou MSG_SEND para sala da qual o usuário não é membro **ou que não existe** (mesma resposta) | segue aberta |
 | `CID_REUSED` | cid já usado em outra sala | MSG_SEND com `cid` que o usuário já usou em outra sala | segue aberta |
 | `E2EE_REQUIRED` | O body precisa ser um envelope E2EE v1 | **Etapa 4b-1.** MSG_SEND cujo `body` não é um envelope E2EE v1 bem formado (texto puro, JSON qualquer, campo extra, fora da forma canônica, tamanhos errados de `iv`, `sig` ou `ct`) — nada é gravado | segue aberta |
-| `KEY_VERSION_MISMATCH` | Versão da chave diferente da atual da sala | **Etapa 4b-1.** MSG_SEND de um membro com envelope válido, mas `kv` ≠ versão atual da chave da sala — nada é gravado | segue aberta |
+| `KEY_VERSION_MISMATCH` | Versão da chave diferente da atual da sala | **Etapa 4b-1.** MSG_SEND de um membro com envelope válido, mas `kv` ≠ versão atual da chave da sala — nada é gravado (inclusive um kv antigo depois de uma rotação) | segue aberta |
+| `ROTATION_PENDING` | A chave da sala precisa ser trocada antes de enviar | **Etapa 4b-2.** MSG_SEND de um membro numa sala em que alguém saiu ou foi removido e a chave ainda não foi trocada (`rotation_required`) — nada é gravado; reenviar depois da rotação, com a chave nova | segue aberta |
 | `INTERNAL` | Erro interno | falha inesperada ao tratar o pacote (ex.: banco fora). Num `MSG_SEND`, significa sempre **"não gravado"** (reenviar com o mesmo `cid` é seguro). Uma falha só na **entrega**, depois de gravar e mandar o `MSG_ACK`, não gera ERROR: vai ao log como "falha na entrega" e os inscritos recuperam a mensagem pelo histórico. O log registra o tipo do pacote, o código (SQLSTATE) e a mensagem do erro, nunca o pacote | segue aberta |
 
 As mensagens são fixas e genéricas: nunca ecoam a entrada nem detalham
@@ -267,9 +268,13 @@ qual regra falhou.
 Ordem das checagens do `MSG_SEND` (Etapa 4b-1): schema do pacote
 (`BAD_REQUEST`) → estrutura do envelope, sem consultar o banco
 (`E2EE_REQUIRED`) → pertinência à sala (`NOT_MEMBER`) → `cid` já gravado
-(mesmo `MSG_ACK`) ou de outra sala (`CID_REUSED`) → versão da chave
-(`KEY_VERSION_MISMATCH`). A gravação é condicional na mesma consulta
-(membro **e** `kv` = versão atual), sem janela entre checar e gravar.
+(mesmo `MSG_ACK`) ou de outra sala (`CID_REUSED`) → rotação exigida
+(`ROTATION_PENDING`, Etapa 4b-2) → versão da chave (`KEY_VERSION_MISMATCH`).
+A gravação é condicional na mesma consulta (membro, sala sem rotação exigida
+**e** `kv` = versão atual), sem janela entre checar e gravar. A linha da sala
+é lida com `FOR SHARE`: uma saída, remoção ou rotação em andamento termina
+antes, e a condição é reavaliada sobre a linha nova. Quem não é membro recebe
+`NOT_MEMBER`, nunca `ROTATION_PENDING` (não descobre o estado da sala).
 
 ### 5.2 Códigos de fechamento
 
@@ -476,6 +481,7 @@ Etapa 4b-1 (E2EE; detalhes em [`05-e2ee.md`](05-e2ee.md) §7):
 | — | `ROOM_EVENT {room, kind}`: `KEY_PENDING` (entregar a chave a quem está pendente, depois de conferir as chaves dele) e `KEY_READY` (buscar o próprio wrap) |
 | `GET /messages/:id` com `message` em claro | `message` é o envelope; cada item traz também `cid` e `keyversion` |
 | — | Rotas de chaves: `PUT /keys`, `POST /keys/reset`, `GET /keys/:userId`, `POST`/`GET /rooms/:id/keys`, `GET /rooms/:id/keys/pending`, `POST /rooms/:id/keys/wraps`, `DELETE /rooms/:id/keys/wraps/mine` |
+| — | **4b-2:** `POST /rooms/:id/leave`, `DELETE /rooms/:id/members/:userId`, `POST /rooms/:id/owner`, `POST /rooms/:id/invite/rotate`, `POST /rooms/:id/keys/rotate` ([`05-e2ee.md`](05-e2ee.md) §11.3); `ROOM_EVENT` `REMOVED`, `ROTATION_PENDING`, `KEY_ROTATED`; `ERROR ROTATION_PENDING`. O frontend precisa tratar `REMOVED` (sair da tela da sala) e `ROTATION_PENDING` (bloquear o envio e, se tiver a chave, rotacionar) |
 
 Roteiro mínimo do cliente:
 
