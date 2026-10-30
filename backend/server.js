@@ -10,4 +10,7 @@ const { createServer } = require("./createServer");
 const { server } = createServer();
 
 const PORT = process.env.SERVER_PORT || 8000;
+if (process.env.E2EE_TEST_SKIP_ROTATION) {
+  console.error("[PERIGO] E2EE_TEST_SKIP_ROTATION definido: com o valor de teste, o servidor NÃO exige a troca da chave depois de uma saída (só para a mutação do verify-e2ee.sh)");
+}
 server.listen(PORT, () => console.log(`Server is running on port ${PORT}`));

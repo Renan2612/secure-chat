@@ -12,7 +12,7 @@ este conteúdo vai para o `docs/05-e2ee.md` e este arquivo é removido.
 | 5. P1: trust store ausente com keystore existente → aviso e TOFU reiniciado (id do trust store no keystore) | feito |
 | 5. P2: gravação atômica (temporário no mesmo diretório, fsync do arquivo e do diretório, rename, 0600) + teste de falha | feito |
 | 5. P3: vetores fixos de fingerprint e número de segurança por ferramenta independente | feito (suíte completa: 632 passaram, 1 pulado) |
-| 6. `verify-e2ee.sh` com três usuários (remover, rotacionar, provas a/b/c, mutações sem rotação exigida e com chave antiga reutilizada) | pendente |
+| 6. `verify-e2ee.sh` com três usuários (remover, rotacionar, provas a/b/c, mutações sem rotação exigida e com chave antiga reutilizada) | feito (roda no final) |
 | 7. Documentação: docs/05, docs/03, docs/01, README; incorporar este arquivo ao docs/05 e removê-lo | pendente |
 
 ## Notas para a documentação (item 7)
@@ -127,3 +127,19 @@ este conteúdo vai para o `docs/05-e2ee.md` e este arquivo é removido.
   atraso e o envio.
 - Avisos da revisão automática: a do commit `4b048b3` não terminou (HTTP 429;
   ver `~/.claude/security/log.txt`).
+- Item 6: `verify-e2ee.sh` com Alice, Bob e Carol. A remoção é feita pela
+  API (curl com uma sessão própria da Alice), e a v2 nasce da rotação
+  AUTOMÁTICA (prova o caminho servidor → `ROTATION_PENDING` → cliente). Alice e
+  Carol fazem `/safety` + `/trust` uma da outra, porque a v2 só é aceita de
+  autor verificado. Provas novas: aviso de rotação, `REMOVED`, wraps da v2 só
+  para quem ficou, marcador novo ausente do banco e da captura, e
+  `scripts/lib/try-decrypt.js` com o keystore inteiro do Bob contra tudo o que
+  veio depois (falha) e contra a v1 (controle positivo). Carol lê a v1 e a nova.
+- Mutações: `reuse-old-key` (cliente reaproveita a chave atual na rotação,
+  qualquer que seja o membro que rotaciona) e `server-no-rotation` (sobe o
+  backend com `scripts/mutations/server-no-rotation.compose.yml`, que define
+  `E2EE_TEST_SKIP_ROTATION=inseguro-so-para-teste`; a limpeza recria o backend
+  sem ela e confere). Só esse valor exato liga a flag, que nunca vem ligada; o
+  backend avisa `[PERIGO]` no log (teste em `ws/members.test.js`).
+- Custo: 7 tentativas de /register e /login por execução. Entre execuções,
+  reiniciar o backend zera o limite.

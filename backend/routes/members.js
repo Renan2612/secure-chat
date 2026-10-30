@@ -16,6 +16,13 @@ const { withTransaction } = require("../helpers/transaction");
 const { inviteHash } = require("./rooms");
 
 const NOT_FOUND = { message: "Sala ou membro inexistente" };
+
+// SÓ PARA A MUTAÇÃO DO scripts/verify-e2ee.sh (MUTATION=server-no-rotation):
+// com este valor exato, o servidor deixa de exigir a rotação depois de uma
+// saída ou remoção (quebra a E2EE de propósito, para provar que o script
+// percebe). Nunca está ativa por padrão; o backend avisa no log ao subir.
+const SKIP_ROTATION_VALUE = "inseguro-so-para-teste";
+const skipRotationForTest = () => process.env.E2EE_TEST_SKIP_ROTATION === SKIP_ROTATION_VALUE;
 const FORBIDDEN = { message: "Acesso negado" };
 
 // Linha da sala travada, com o papel de quem pede. undefined se a sala não
@@ -41,7 +48,7 @@ const detach = async (client, roomId, userId) => {
     await client.query("DELETE FROM rooms WHERE id = $1", [roomId]);
     return true;
   }
-  await client.query("UPDATE rooms SET rotation_required = TRUE WHERE id = $1", [roomId]);
+  if (!skipRotationForTest()) await client.query("UPDATE rooms SET rotation_required = TRUE WHERE id = $1", [roomId]);
   return false;
 };
 
@@ -50,7 +57,7 @@ const detach = async (client, roomId, userId) => {
 // ROTATION_PENDING.
 const announce = (req, roomId, userId, roomDeleted) => {
   req.app.locals.notify.removed(userId, roomId);
-  if (!roomDeleted) req.app.locals.notify.rotationPending(roomId);
+  if (!roomDeleted && !skipRotationForTest()) req.app.locals.notify.rotationPending(roomId);
 };
 
 const leaveRoom = async (req, res, next) => {
@@ -161,4 +168,4 @@ const rotateInvite = async (req, res, next) => {
   }
 };
 
-module.exports = { leaveRoom, removeMember, transferOwner, rotateInvite };
+module.exports = { SKIP_ROTATION_VALUE, leaveRoom, removeMember, transferOwner, rotateInvite };

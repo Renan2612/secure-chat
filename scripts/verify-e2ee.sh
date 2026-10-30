@@ -1,25 +1,38 @@
 #!/usr/bin/env bash
-# Provas da Etapa 4b-1 (E2EE) contra a stack NO AR (docker compose --env-file
-# backend/.env up --build). Termina com código != 0 se qualquer prova falhar.
+# Provas das Etapas 4b-1 (E2EE) e 4b-2 (remoção e troca da chave) contra a
+# stack NO AR (docker compose --env-file backend/.env up --build). Termina
+# com código != 0 se qualquer prova falhar.
 #
 # Uso: scripts/verify-e2ee.sh
-#      MUTATION=plain-envelope scripts/verify-e2ee.sh   (deve FALHAR)
-#      MUTATION=no-encrypt scripts/verify-e2ee.sh       (deve FALHAR)
-#      KEEP_CAPTURE=capturas scripts/verify-e2ee.sh     (guarda a captura)
+#      MUTATION=plain-envelope scripts/verify-e2ee.sh      (deve FALHAR)
+#      MUTATION=no-encrypt scripts/verify-e2ee.sh          (deve FALHAR)
+#      MUTATION=reuse-old-key scripts/verify-e2ee.sh       (deve FALHAR: cliente reaproveita a chave na rotação)
+#      MUTATION=server-no-rotation scripts/verify-e2ee.sh  (deve FALHAR: servidor não exige a rotação;
+#                                                          recria o backend com a flag de teste e o devolve ao normal na saída)
+#      KEEP_CAPTURE=capturas scripts/verify-e2ee.sh        (guarda a captura)
 #
 # Sem sudo: a captura usa o dumpcap como usuário do grupo wireshark.
-# Cria dois usuários (@example.invalid, senhas aleatórias só em variáveis) e
-# uma sala temporários; Alice e Bob (dois ws-client) trocam mensagens com
-# marcadores únicos enquanto o tráfego proxy → backend (rede interna do
-# Docker, porta 8000, em HTTP puro de propósito) é capturado. Prova:
+# Cria três usuários (@example.invalid, senhas aleatórias só em variáveis) e
+# uma sala temporários; Alice, Bob e Carol (três ws-client) trocam mensagens
+# com marcadores únicos enquanto o tráfego proxy → backend (rede interna do
+# Docker, porta 8000, em HTTP puro de propósito) é capturado. Depois a Alice
+# (dona) remove o Bob pela API; o servidor exige a troca da chave e os
+# clientes que ficaram rotacionam sozinhos (v2); a Alice manda um marcador
+# novo, já na v2. Prova:
 #   (a) os marcadores NÃO aparecem em nenhuma coluna do banco nem na captura
 #       da rede interna — nem em claro, nem dentro de base64 decodificado —
 #       com controles positivos (a captura tem tráfego, o upgrade e o JSON do
 #       protocolo aparecem em claro; o detector acha o marcador codificado);
 #   (b) cada cliente decifrou a mensagem do outro;
-#   (c) o banco só tem o envelope (estrutura E2EE v1, key_version 1).
+#   (c) o banco só tem o envelope (estrutura E2EE v1, key_version 1 e 2);
+#   (4b-2) o servidor exigiu a rotação; a v2 não tem wrap para o Bob; o
+#       marcador da v2 não aparece no banco nem na captura; o Bob, com o
+#       keystore inteiro (todas as chaves antigas) e todos os pacotes da v2,
+#       não decifra nada novo (controle positivo: ele ainda lê a v1, que já
+#       tinha); a Carol, que ficou, ainda lê o texto antigo (v1) e o novo.
 # Tudo o que foi criado é APAGADO na saída (trap), inclusive em falha.
-# Gasta 4 tentativas do limite de /register e /login por IP (20 / 15 min).
+# Gasta 7 tentativas do limite de /register e /login por IP (20 / 15 min):
+# entre várias execuções seguidas, reinicie o backend (o limite é em memória).
 set -uo pipefail
 umask 077
 cd "$(dirname "$0")/.."
@@ -41,7 +54,7 @@ section() { printf '\n== %s\n' "$*"; }
 for tool in curl openssl node docker dumpcap tshark timeout grep sed mkfifo; do
   command -v "$tool" >/dev/null || { echo "erro: '$tool' não encontrado" >&2; exit 2; }
 done
-case "$MUTATION" in "" | plain-envelope | no-encrypt) ;; *) echo "erro: MUTATION inválida: $MUTATION" >&2; exit 2 ;; esac
+case "$MUTATION" in "" | plain-envelope | no-encrypt | reuse-old-key | server-no-rotation) ;; *) echo "erro: MUTATION inválida: $MUTATION" >&2; exit 2 ;; esac
 if [ -z "$("${COMPOSE[@]}" ps -q --status running proxy 2>/dev/null)" ]; then
   echo "erro: a stack não está no ar (docker compose --env-file backend/.env up --build -d)" >&2
   exit 2
@@ -57,10 +70,12 @@ STAMP="$(date +%s)-$RANDOM"
 ROOM_NAME="verify-e2ee-$STAMP"
 A_EMAIL="verify-e2ee-$STAMP-a@example.invalid"
 B_EMAIL="verify-e2ee-$STAMP-b@example.invalid"
-A_PASSWORD="$(openssl rand -hex 16)"; B_PASSWORD="$(openssl rand -hex 16)"
-A_KEYPASS="$(openssl rand -hex 16)"; B_KEYPASS="$(openssl rand -hex 16)"
+C_EMAIL="verify-e2ee-$STAMP-c@example.invalid"
+A_PASSWORD="$(openssl rand -hex 16)"; B_PASSWORD="$(openssl rand -hex 16)"; C_PASSWORD="$(openssl rand -hex 16)"
+A_KEYPASS="$(openssl rand -hex 16)"; B_KEYPASS="$(openssl rand -hex 16)"; C_KEYPASS="$(openssl rand -hex 16)"
 MARK_A="MARCADOR-ALICE-$(openssl rand -hex 8)"
 MARK_B="MARCADOR-BOB-$(openssl rand -hex 8)"
+MARK_C="MARCADOR-V2-$(openssl rand -hex 8)"
 CAPTURE="$TMP/interna.pcapng"
 PIDS=()
 
@@ -71,8 +86,8 @@ cleanup() {
   trap - EXIT INT TERM HUP PIPE
   for pid in "${PIDS[@]}"; do kill "$pid" 2>/dev/null; done
   wait 2>/dev/null
-  if ! psql_dev -v a="$A_EMAIL" -v b="$B_EMAIL" >/dev/null 2>"$TMP/cleanup.err" <<'SQL'
-WITH u AS (SELECT id FROM users WHERE email IN (:'a', :'b')),
+  if ! psql_dev -v a="$A_EMAIL" -v b="$B_EMAIL" -v c="$C_EMAIL" >/dev/null 2>"$TMP/cleanup.err" <<'SQL'
+WITH u AS (SELECT id FROM users WHERE email IN (:'a', :'b', :'c')),
      r AS (SELECT id AS room FROM rooms WHERE created_by IN (SELECT id FROM u)
            UNION SELECT room FROM rooms_users WHERE user_id IN (SELECT id FROM u)),
      w AS (DELETE FROM room_key_wraps WHERE room IN (SELECT room FROM r)
@@ -80,11 +95,14 @@ WITH u AS (SELECT id FROM users WHERE email IN (:'a', :'b')),
      m AS (DELETE FROM messages WHERE user_id IN (SELECT id FROM u) OR room IN (SELECT room FROM r)),
      ru AS (DELETE FROM rooms_users WHERE room IN (SELECT room FROM r) OR user_id IN (SELECT id FROM u)),
      s AS (DELETE FROM user_sessions WHERE (sess->>'userId')::int IN (SELECT id FROM u)),
-     k AS (DELETE FROM user_keys WHERE user_id IN (SELECT id FROM u))
+     k AS (DELETE FROM user_keys WHERE user_id IN (SELECT id FROM u)),
+     bn AS (DELETE FROM room_bans WHERE user_id IN (SELECT id FROM u))
 SELECT 1;
-DELETE FROM room_key_versions WHERE room IN (SELECT id FROM rooms WHERE created_by IN (SELECT id FROM users WHERE email IN (:'a', :'b')));
-DELETE FROM rooms WHERE created_by IN (SELECT id FROM users WHERE email IN (:'a', :'b'));
-DELETE FROM users WHERE email IN (:'a', :'b');
+DELETE FROM room_key_versions WHERE room IN (SELECT id FROM rooms WHERE created_by IN (SELECT id FROM users WHERE email IN (:'a', :'b', :'c')));
+DELETE FROM room_key_versions WHERE created_by IN (SELECT id FROM users WHERE email IN (:'a', :'b', :'c'));
+DELETE FROM rooms WHERE created_by IN (SELECT id FROM users WHERE email IN (:'a', :'b', :'c'))
+   OR owner_id IN (SELECT id FROM users WHERE email IN (:'a', :'b', :'c'));
+DELETE FROM users WHERE email IN (:'a', :'b', :'c');
 SQL
   then
     echo "ERRO: a limpeza do banco falhou:" >&2
@@ -92,16 +110,26 @@ SQL
     rc=3
   fi
   local left
-  left="$(psql_dev -v a="$A_EMAIL" -v b="$B_EMAIL" 2>/dev/null <<<"SELECT COUNT(*) FROM users WHERE email IN (:'a', :'b');" || echo "?")"
+  left="$(psql_dev -v a="$A_EMAIL" -v b="$B_EMAIL" -v c="$C_EMAIL" 2>/dev/null <<<"SELECT COUNT(*) FROM users WHERE email IN (:'a', :'b', :'c');" || echo "?")"
   if [ "$left" = "0" ]; then
     echo "(usuários, sala e mensagens temporários removidos do banco)"
   else
-    echo "ERRO: usuários temporários ainda no banco ($A_EMAIL, $B_EMAIL)" >&2
+    echo "ERRO: usuários temporários ainda no banco ($A_EMAIL, $B_EMAIL, $C_EMAIL)" >&2
     rc=3
   fi
   if [ -n "${KEEP_CAPTURE:-}" ] && [ -s "$CAPTURE" ]; then
     local kept="$KEEP_CAPTURE/verify-e2ee-$STAMP${MUTATION:+-$MUTATION}.pcapng"
     if mkdir -p "$KEEP_CAPTURE" && cp "$CAPTURE" "$kept"; then echo "(captura guardada em $kept)"; else echo "aviso: não foi possível guardar a captura em $KEEP_CAPTURE" >&2; fi
+  fi
+  if [ "$MUTATION" = server-no-rotation ] && [ -n "${BACKEND_MUTATED:-}" ]; then
+    # Devolve o backend ao normal (sem a flag de teste) e confere.
+    if "${COMPOSE[@]}" up -d --no-deps --wait backend >/dev/null 2>"$TMP/restore.err" &&
+      ! "${COMPOSE[@]}" exec -T backend printenv E2EE_TEST_SKIP_ROTATION >/dev/null 2>&1; then
+      echo "(backend recriado sem a flag de teste)"
+    else
+      echo "ERRO: não foi possível devolver o backend ao normal; rode: docker compose --env-file backend/.env up -d --no-deps backend" >&2
+      rc=3
+    fi
   fi
   rm -rf "$TMP" # keystores, trust stores, cookies e a captura
   exit "$rc"   # limpeza que falhou nunca termina com 0
@@ -140,6 +168,14 @@ expect_text() { # expect_text esperar-claro|esperar-cifrado "descrição" TEXTO 
 
 section "Preparação"
 [ -n "$MUTATION" ] && echo "  (MUTAÇÃO ATIVA: $MUTATION — esperado: provas falharem)"
+if [ "$MUTATION" = server-no-rotation ]; then
+  BACKEND_MUTATED=1 # a limpeza recria o backend sem a flag, mesmo se o passo abaixo falhar no meio
+  if "${COMPOSE[@]}" -f docker-compose.yml -f scripts/mutations/server-no-rotation.compose.yml up -d --no-deps --wait backend >/dev/null 2>"$TMP/mutate.err"; then
+    ok "backend recriado com a flag de teste E2EE_TEST_SKIP_ROTATION"
+  else
+    ko "recriar o backend com a flag de teste"; sed 's/^/         | /' "$TMP/mutate.err"; exit 1
+  fi
+fi
 CA="$TMP/ca.crt"
 if scripts/export-ca.sh "$CA" >/dev/null; then ok "CA raiz exportada"; else ko "exportar a CA"; exit 1; fi
 register() { # register EMAIL SENHA NOME → HTTP status
@@ -149,10 +185,11 @@ register() { # register EMAIL SENHA NOME → HTTP status
 }
 check "usuária temporária Alice cadastrada" test "$(register "$A_EMAIL" "$A_PASSWORD" "Alice e2ee")" = "201"
 check "usuário temporário Bob cadastrado" test "$(register "$B_EMAIL" "$B_PASSWORD" "Bob e2ee")" = "201"
+check "usuária temporária Carol cadastrada" test "$(register "$C_EMAIL" "$C_PASSWORD" "Carol e2ee")" = "201"
 rm -f "$TMP/register.json"
 
 section "Captura da rede interna proxy → backend ($BRIDGE, tcp port 8000)"
-dumpcap -q -i "$BRIDGE" -f "tcp port 8000" -a duration:120 -w "$CAPTURE" 2>"$TMP/dumpcap.err" &
+dumpcap -q -i "$BRIDGE" -f "tcp port 8000" -a duration:240 -w "$CAPTURE" 2>"$TMP/dumpcap.err" &
 DUMPCAP=$!
 PIDS+=("$DUMPCAP")
 wait_for "$TMP/dumpcap.err" "Capturing on" 10 || sleep 1
@@ -163,15 +200,15 @@ start_client() { # start_client NOME EMAIL SENHA SENHA-CIFRAGEM ARGS...
   shift 4
   mkfifo "$TMP/$name.in"
   local preload=()
-  [ -n "$MUTATION" ] && preload=(--require "./scripts/mutations/$MUTATION.js")
-  CHAT_PASSWORD="$password" CHAT_KEY_PASSPHRASE="$keypass" HOME="$TMP/home-$name" timeout 90 node "${preload[@]}" \
+  [ -f "scripts/mutations/$MUTATION.js" ] && preload=(--require "./scripts/mutations/$MUTATION.js")
+  CHAT_PASSWORD="$password" CHAT_KEY_PASSPHRASE="$keypass" HOME="$TMP/home-$name" timeout 200 node "${preload[@]}" \
     backend/tools/ws-client.js --server "$BASE/api" --ca "$CA" --origin "$BASE" --email "$email" \
     --keystore "$TMP/home-$name/keystore.json" "$@" <"$TMP/$name.in" >"$TMP/$name.out" 2>&1 &
   PIDS+=($!)
   eval "${name}_PID=$!"
 }
 
-mkdir -p "$TMP/home-alice" "$TMP/home-bob"
+mkdir -p "$TMP/home-alice" "$TMP/home-bob" "$TMP/home-carol"
 start_client alice "$A_EMAIL" "$A_PASSWORD" "$A_KEYPASS" --create-room "$ROOM_NAME"
 exec {ALICE_IN}>"$TMP/alice.in"
 wait_for "$TMP/alice.out" "sala criada: id [0-9]+; convite" 30
@@ -194,14 +231,51 @@ echo "/approve ${B_ID:-x}" >&"$ALICE_IN"
 wait_for "$TMP/bob.out" "chave da sala [0-9]+ disponível" 30
 check "Bob recebeu a chave da sala após o /approve da Alice" grep -q "chave da sala ${ROOM_ID:-x} disponível" "$TMP/bob.out"
 
+# Carol entra; a Alice a aprova. Alice e Carol conferem e confirmam a chave
+# uma da outra (/safety + /trust): a partir da v2 só se aceita a chave
+# trocada por alguém VERIFICADO, e qualquer uma das duas pode rotacionar.
+start_client carol "$C_EMAIL" "$C_PASSWORD" "$C_KEYPASS" --room "${ROOM_ID:-0}" --join "${INVITE:-x}"
+exec {CAROL_IN}>"$TMP/carol.in"
+wait_for "$TMP/carol.out" "logado como" 30
+C_ID="$(sed -nE 's/.*logado como .* \(usuário ([0-9]+)\).*/\1/p' "$TMP/carol.out")"
+wait_for "$TMP/alice.out" "/approve ${C_ID:-x}" 30
+echo "/approve ${C_ID:-x}" >&"$ALICE_IN"
+wait_for "$TMP/carol.out" "chave da sala [0-9]+ disponível" 30
+check "Carol (usuária ${C_ID:-?}) recebeu a chave v1 após o /approve" grep -q "chave da sala ${ROOM_ID:-x} disponível (v1" "$TMP/carol.out"
+printf '/safety %s\n/trust %s\n' "${C_ID:-x}" "${C_ID:-x}" >&"$ALICE_IN"
+printf '/safety %s\n/trust %s\n' "${A_ID:-x}" "${A_ID:-x}" >&"$CAROL_IN"
+wait_for "$TMP/alice.out" "usuário ${C_ID:-x} marcado como verificado" 15
+wait_for "$TMP/carol.out" "usuário ${A_ID:-x} marcado como verificado" 15
+check "Alice e Carol conferiram e confirmaram a chave uma da outra" grep -q "usuário ${A_ID:-x} marcado como verificado" "$TMP/carol.out"
+
 echo "$MARK_A" >&"$ALICE_IN"
 wait_for "$TMP/bob.out" "$MARK_A" 15
+wait_for "$TMP/carol.out" "$MARK_A" 15
 echo "$MARK_B" >&"$BOB_IN"
 wait_for "$TMP/alice.out" "$MARK_B" 15
+wait_for "$TMP/carol.out" "$MARK_B" 15
+
+# A Alice (dona) remove o Bob pela API, com uma sessão própria: o servidor
+# exige a troca da chave (ROTATION_PENDING) e quem ficou rotaciona sozinho.
+api_alice() { # api_alice MÉTODO CAMINHO [CORPO] → HTTP status
+  curl -s -o "$TMP/api.out" -w '%{http_code}' --cacert "$CA" -b "$TMP/alice.cookies" -c "$TMP/alice.cookies" \
+    -H 'Content-Type: application/json' -H "Origin: $BASE" -X "$1" ${3:+--data-binary "$3"} "$BASE/api$2"
+}
+printf '{"email":"%s","password":"%s"}' "$A_EMAIL" "$A_PASSWORD" >"$TMP/login.json"
+check "a Alice abriu uma sessão para a remoção" test "$(api_alice POST /login "@$TMP/login.json")" = "200"
+rm -f "$TMP/login.json"
+check "a Alice removeu o Bob (DELETE /rooms/${ROOM_ID:-?}/members/${B_ID:-?})" test "$(api_alice DELETE "/rooms/${ROOM_ID:-0}/members/${B_ID:-0}")" = "200"
+api_alice POST /logout >/dev/null
+wait_for "$TMP/bob.out" "não é mais membro" 15
+wait_for "$TMP/alice.out" "chave da sala ${ROOM_ID:-x} disponível \(v2" 20
+wait_for "$TMP/carol.out" "chave da sala ${ROOM_ID:-x} disponível \(v2" 20
+echo "$MARK_C" >&"$ALICE_IN"
+wait_for "$TMP/carol.out" "$MARK_C" 15
 sleep 1
-exec {ALICE_IN}>&- {BOB_IN}>&-   # fim da entrada: os clientes saem e fazem logout
+exec {ALICE_IN}>&- {BOB_IN}>&- {CAROL_IN}>&-   # fim da entrada: os clientes saem e fazem logout
 wait "$alice_PID"; A_STATUS=$?
 wait "$bob_PID"; B_STATUS=$?
+wait "$carol_PID"; C_STATUS=$?
 kill -INT "$DUMPCAP" 2>/dev/null; wait "$DUMPCAP" 2>/dev/null
 PACKETS="$(tshark -r "$CAPTURE" 2>/dev/null | wc -l)"
 DROPPED="$(sed -nE 's#.*received/dropped on interface.*: [0-9]+/([0-9]+).*#\1#p' "$TMP/dumpcap.err" | head -n 1)"
@@ -210,7 +284,8 @@ tshark -r "$CAPTURE" -d tcp.port==8000,http -T fields -e text 2>/dev/null >"$TMP
 section "(b) cada cliente decifrou a mensagem do outro"
 check "Bob mostra a mensagem da Alice decifrada e assinada por ela" grep -qF "usuário ${A_ID:-?} [não verificado]: $MARK_A" "$TMP/bob.out"
 check "Alice mostra a mensagem do Bob decifrada e assinada por ele" grep -qF "usuário ${B_ID:-?} [não verificado]: $MARK_B" "$TMP/alice.out"
-check "os dois clientes terminaram sem erro (saídas $A_STATUS e $B_STATUS)" test "$A_STATUS:$B_STATUS" = "0:0"
+check "Carol mostra as mensagens da Alice e do Bob (v1)" grep -qF "usuário ${B_ID:-?} [não verificado]: $MARK_B" "$TMP/carol.out"
+check "os três clientes terminaram sem erro (saídas $A_STATUS, $B_STATUS e $C_STATUS)" test "$A_STATUS:$B_STATUS:$C_STATUS" = "0:0:0"
 
 section "(a) captura da rede interna (onde o TLS já terminou)"
 check "controle positivo: a captura tem tráfego ($PACKETS pacotes)" test "$PACKETS" -gt 0
@@ -221,6 +296,7 @@ printf '%s' "$MARK_A" | node -e 'process.stdout.write(Buffer.from(require("fs").
 expect_text esperar-claro "controle positivo do detector: acha o marcador codificado em base64url" "$MARK_A" "$TMP/selftest.txt"
 expect_text esperar-cifrado "marcador da Alice não aparece na captura" "$MARK_A" "$CAPTURE" "$TMP/capture.txt"
 expect_text esperar-cifrado "marcador do Bob não aparece na captura" "$MARK_B" "$CAPTURE" "$TMP/capture.txt"
+expect_text esperar-cifrado "marcador da v2 (depois da remoção) não aparece na captura" "$MARK_C" "$CAPTURE" "$TMP/capture.txt"
 
 section "(a) e (c) banco de dados"
 : >"$TMP/db.txt"
@@ -234,6 +310,7 @@ check "todas as tabelas foram despejadas para a varredura" test "$DUMP_FAILS" = 
 expect_text esperar-claro "controle positivo: o nome da sala (metadado) aparece em claro no banco" "$ROOM_NAME" "$TMP/db.txt"
 expect_text esperar-cifrado "marcador da Alice não aparece em nenhuma coluna" "$MARK_A" "$TMP/db.txt"
 expect_text esperar-cifrado "marcador do Bob não aparece em nenhuma coluna" "$MARK_B" "$TMP/db.txt"
+expect_text esperar-cifrado "marcador da v2 não aparece em nenhuma coluna" "$MARK_C" "$TMP/db.txt"
 psql_dev -c "SELECT message FROM messages WHERE room = ${ROOM_ID:-0} ORDER BY id" >"$TMP/bodies.txt"
 # Controle positivo amarrado a ESTA execução: o texto cifrado exato que o
 # banco guardou precisa aparecer no despejo e na captura (prova que as
@@ -241,8 +318,8 @@ psql_dev -c "SELECT message FROM messages WHERE room = ${ROOM_ID:-0} ORDER BY id
 CT_A="$(head -n 1 "$TMP/bodies.txt" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{process.stdout.write(JSON.parse(d).ct.slice(0,40))}catch{}})')"
 expect_text esperar-claro "controle positivo: o ct da 1ª mensagem desta execução está no despejo do banco" "$CT_A" "$TMP/db.txt"
 expect_text esperar-claro "controle positivo: o mesmo ct está na captura (as mensagens desta execução foram capturadas)" "$CT_A" "$TMP/capture.txt"
-psql_dev -c "SELECT DISTINCT key_version FROM messages WHERE room = ${ROOM_ID:-0}" >"$TMP/kv.txt"
-check "o banco tem as 2 mensagens da sala" test "$(grep -c . "$TMP/bodies.txt")" = "2"
+psql_dev -c "SELECT DISTINCT key_version FROM messages WHERE room = ${ROOM_ID:-0} ORDER BY 1" | paste -sd, >"$TMP/kv.txt"
+check "o banco tem as 3 mensagens da sala (2 na v1, 1 na v2)" test "$(grep -c . "$TMP/bodies.txt")" = "3"
 envelopes_ok() {
   node -e '
     const { parseEnvelope } = require("./shared/e2ee");
@@ -252,8 +329,46 @@ envelopes_ok() {
   ' "$TMP/bodies.txt" 2>"$TMP/envelopes.err" || { sed 's/^/         | /' "$TMP/envelopes.err"; return 1; }
 }
 check "cada mensagem no banco é só o envelope E2EE v1 {v,kv,iv,ct,sig}" envelopes_ok
-check "versão da chave gravada = 1" test "$(cat "$TMP/kv.txt")" = "1"
+check "versões da chave gravadas = 1 e 2 (a v2 nasceu da rotação)" test "$(cat "$TMP/kv.txt")" = "1,2"
 echo "         exemplo do que o banco guarda: $(head -c 120 "$TMP/bodies.txt")…"
+
+section "(4b-2) remoção do Bob e troca da chave"
+check "o servidor exigiu a troca da chave: a Carol recebeu o aviso (ROTATION_PENDING)" grep -q "evento: alguém saiu da sala ${ROOM_ID:-x}" "$TMP/carol.out"
+check "o Bob foi avisado da remoção e desinscrito" grep -q "não é mais membro da sala ${ROOM_ID:-x}" "$TMP/bob.out"
+check "Alice e Carol passaram à chave v2 (rotação automática)" grep -q "disponível (v2" "$TMP/carol.out"
+V2_TO_BOB="$(psql_dev -c "SELECT COUNT(*) FROM room_key_wraps WHERE room = ${ROOM_ID:-0} AND version = 2 AND recipient_id = ${B_ID:-0}")"
+V2_WRAPS="$(psql_dev -c "SELECT COUNT(*) FROM room_key_wraps WHERE room = ${ROOM_ID:-0} AND version = 2")"
+check "a v2 tem wraps só para quem ficou (${V2_WRAPS:-?} wraps, ${V2_TO_BOB:-?} para o Bob)" test "${V2_WRAPS:-0}:${V2_TO_BOB:-x}" = "2:0"
+check "Carol mostra o marcador da v2, decifrado e verificado" grep -qF "usuário ${A_ID:-?} [verificado]: $MARK_C" "$TMP/carol.out"
+# Tudo o que veio DEPOIS da remoção e que um removido com acesso ao banco ou
+# à rede teria: a mensagem nova (qualquer que seja o kv dela: numa mutação
+# sem rotação, ela sai na v1) e TODOS os wraps da v2 (de qualquer
+# destinatário), com as chaves públicas dos remetentes. "Antes" = as duas
+# primeiras mensagens (v1).
+psql_dev >"$TMP/v2.jsonl" <<SQL
+SELECT json_build_object('kind','message','room',m.room,'from',m.user_id,'cid',m.cid,'body',m.message,'senderEcdsaPub',k.ecdsa_pub)::text
+  FROM messages m JOIN user_keys k ON k.user_id = m.user_id WHERE m.room = ${ROOM_ID:-0} ORDER BY m.id OFFSET 2;
+SELECT json_build_object('kind','wrap','room',w.room,'version',w.version,'recipientId',w.recipient_id,'senderId',w.sender_id,
+       'ephPub',w.eph_pub,'iv',w.iv,'wrapped',w.wrapped,'sig',w.sig,'senderEcdsaPub',k.ecdsa_pub)::text
+  FROM room_key_wraps w JOIN user_keys k ON k.user_id = w.sender_id WHERE w.room = ${ROOM_ID:-0} AND w.version = 2;
+SQL
+psql_dev >"$TMP/v1.jsonl" <<SQL
+SELECT json_build_object('kind','message','room',m.room,'from',m.user_id,'cid',m.cid,'body',m.message,'senderEcdsaPub',k.ecdsa_pub)::text
+  FROM messages m JOIN user_keys k ON k.user_id = m.user_id WHERE m.room = ${ROOM_ID:-0} ORDER BY m.id LIMIT 2;
+SQL
+check "pacotes de depois da remoção capturados do banco ($(grep -c . "$TMP/v2.jsonl") = 1 mensagem + os wraps da v2)" test "$(grep -c '"kind" : "message"\|"kind":"message"' "$TMP/v2.jsonl")" -ge 1
+try_decrypt() { # try_decrypt KEYSTORE SENHA < candidatos → linhas ok/fail
+  TRY_KEYPASS="$2" node scripts/lib/try-decrypt.js "$1"
+}
+BOB_V2="$(try_decrypt "$TMP/home-bob/keystore.json" "$B_KEYPASS" <"$TMP/v2.jsonl")"; BOB_V2_RC=$?
+BOB_V1="$(try_decrypt "$TMP/home-bob/keystore.json" "$B_KEYPASS" <"$TMP/v1.jsonl")"
+CAROL_V1="$(try_decrypt "$TMP/home-carol/keystore.json" "$C_KEYPASS" <"$TMP/v1.jsonl")"
+CAROL_V2="$(try_decrypt "$TMP/home-carol/keystore.json" "$C_KEYPASS" <"$TMP/v2.jsonl")"
+removed_blind() { [ "$BOB_V2_RC" = 0 ] && [ -n "$BOB_V2" ] && ! grep -q '^ok' <<<"$BOB_V2"; }
+check "(b) o removido, com o keystore inteiro e todos os pacotes de depois da remoção, não decifra nada novo" removed_blind
+check "controle positivo: com o mesmo keystore o Bob ainda lê a v1 (o removido retém o que já recebeu)" grep -qxF "ok $MARK_A" <<<"$BOB_V1"
+check "(c) quem ficou (Carol) ainda lê o texto antigo da v1 depois da rotação" grep -qxF "ok $MARK_B" <<<"$CAROL_V1"
+check "Carol lê o marcador novo com o próprio keystore" grep -qxF "ok $MARK_C" <<<"$CAROL_V2"
 
 echo
 if [ "$FAILS" -eq 0 ]; then echo "RESULTADO: todas as provas passaram"; else echo "RESULTADO: $FAILS prova(s) falharam"; fi

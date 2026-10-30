@@ -268,3 +268,31 @@ describe("concorrência: sair, remover e transferir são serializados pela sala 
     expect(await ownerIsMember()).toBe(true);
   });
 });
+
+describe("flag de teste E2EE_TEST_SKIP_ROTATION (só para a mutação do verify-e2ee.sh)", () => {
+  const { SKIP_ROTATION_VALUE } = require("../../routes/members");
+  afterEach(() => {
+    delete process.env.E2EE_TEST_SKIP_ROTATION;
+  });
+
+  test("desligada por padrão: a remoção exige a rotação", async () => {
+    expect(process.env.E2EE_TEST_SKIP_ROTATION).toBeUndefined();
+    await remove(alice, bob);
+    expect((await roomRow()).rotation_required).toBe(true);
+  });
+
+  test("qualquer valor que não seja o exato de teste não desliga nada", async () => {
+    process.env.E2EE_TEST_SKIP_ROTATION = "1";
+    await remove(alice, bob);
+    expect((await roomRow()).rotation_required).toBe(true);
+  });
+
+  test("com o valor exato, a remoção não exige rotação nem avisa ROTATION_PENDING (a mutação que o script tem de pegar)", async () => {
+    process.env.E2EE_TEST_SKIP_ROTATION = SKIP_ROTATION_VALUE;
+    const a = await subscribed(alice, room.roomId);
+    await remove(alice, bob);
+    expect((await roomRow()).rotation_required).toBe(false);
+    await expectNoPacket(a.inbox, "ROOM_EVENT");
+    a.ws.close();
+  });
+});

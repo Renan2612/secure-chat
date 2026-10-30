@@ -1,0 +1,10 @@
+# MUTAÇÃO para validar o scripts/verify-e2ee.sh (MUTATION=server-no-rotation):
+# sobe o backend com a flag SÓ DE TESTE que faz o servidor NÃO exigir a troca
+# da chave depois de uma saída ou remoção (backend/routes/members.js). O
+# script aplica este arquivo por cima do docker-compose.yml e, na saída,
+# recria o backend sem ele. Esperado: ninguém rotaciona, o removido decifra o
+# que vem depois e o script sai com código != 0. Nunca use fora disso.
+services:
+  backend:
+    environment:
+      E2EE_TEST_SKIP_ROTATION: inseguro-so-para-teste
