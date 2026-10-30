@@ -76,7 +76,14 @@ padding de tráfego) e está fora do escopo do projeto.
 6. **Nome da sala**: sem assinatura (qualquer um com a chave produziria um
    nome válido; quem pode trocá-lo é regra do servidor) e o servidor pode
    reapresentar um nome **antigo da mesma versão** da chave. Sem a chave, o
-   cliente mostra "Sala #id".
+   cliente mostra "Sala #id". **Achado da revisão automática do commit
+   ab4bf1b:** "só o dono troca o nome" vale no `PUT /rooms/:id/name`, mas
+   qualquer membro com a chave atual pode rotacionar (regra da 4b-2) e a
+   rotação traz o nome recifrado, que o servidor não consegue comparar com
+   o atual: um membro que não é o dono consegue mudar o nome **rotacionando**.
+   Correção possível (não feita; para o grupo decidir): o dono assina o
+   `name_env` (ECDSA) e os clientes recusam nome sem a assinatura do dono
+   atual.
 7. **Retenção não é retroativa**: mudar a retenção não apaga nem encurta o
    que já está gravado (o `exp` de cada mensagem foi assinado pelo remetente).
 8. **Precisão de tempo**: o minuto ainda permite correlacionar conversas

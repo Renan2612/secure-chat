@@ -20,5 +20,6 @@ Feito:
 
 Pendente:
 - [ ] Rodar `scripts/verify-e2ee.sh` (normal e `MUTATION=server-no-purge`) contra a stack: **bloqueado** — o banco de desenvolvimento precisa ser recriado com o esquema novo e a remoção do volume foi barrada pela permissão (ação irreversível); aguarda decisão do usuário
+- [ ] Decidir: nome da sala assinado pelo dono (hoje um membro não-dono muda o nome rotacionando a chave; `docs/06-privacidade.md` §4.6)
 - [ ] Parte B (frontend núcleo)
 - [ ] Parte C (frontend completo, revisão, code-simplifier, verificação final)
