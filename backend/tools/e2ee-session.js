@@ -38,9 +38,6 @@ class E2eeSession {
     // aprovação explícita (/approve), senão um admin malicioso inseriria um
     // "membro fantasma" e receberia a chave dos clientes honestos.
     this.approved = new Set(); // `${sala}:${userId}`
-    // Quem este usuário removeu (/kick) nunca entra numa rotação desta
-    // sessão, mesmo que o servidor volte a listá-lo como membro.
-    this.kicked = new Set(); // `${sala}:${userId}`
     this.announced = new Set();
     this.receiver = e2ee.createReceiver({
       roomKeysFor: (room) => this.roomKeysFor(room),
@@ -265,8 +262,11 @@ class E2eeSession {
     return this.hasCurrentKey(room) ? { ok: true, sender } : { ok: false };
   }
 
-  mayAuthor(room, userId, key) {
-    return userId === this.me.id || key.trust === "verified" || this.approved.has(`${room}:${userId}`);
+  // Quem este usuário removeu (/kick) de cada sala, guardado no keystore
+  // cifrado: nunca volta a receber a chave (rotação ou entrega), nem depois
+  // de reiniciar o cliente, mesmo que o servidor volte a listá-lo.
+  isKicked(room, userId) {
+    return (this.data.kicked?.[room] ?? []).includes(userId);
   }
 
   // Abre e guarda UM wrap. false (com aviso) se não conferir; um wrap da
@@ -289,9 +289,10 @@ class E2eeSession {
     // Achado da revisão: a partir da v2, quem escolheu a chave é quem
     // rotacionou. Aceitar um autor só fixado por TOFU deixaria o servidor
     // inserir uma conta, "rotacionar" com uma chave dele e ler o que viesse
-    // depois. Vale só o próprio usuário, alguém VERIFICADO ou alguém a quem
-    // ele já entregou a chave desta sala (/approve), que a teria de qualquer jeito.
-    if (wrap.version > 1 && !this.mayAuthor(room, info.createdBy, author)) {
+    // depois. Vale só o próprio usuário ou alguém VERIFICADO (/safety +
+    // /trust). Um /approve não basta: ele vive só na memória e não acompanha
+    // a saída da pessoa (ela poderia "rotacionar" depois de sair).
+    if (wrap.version > 1 && info.createdBy !== this.me.id && author.trust !== "verified") {
       this.print(
         `! a chave v${wrap.version} da sala ${room} foi trocada por usuário ${clean(info.createdBy)}, que você não verificou: não aceita. ` +
           `Confira /safety ${clean(info.createdBy)} e confirme com /trust ${clean(info.createdBy)}`
@@ -359,6 +360,7 @@ class E2eeSession {
     if (!roomKey) return;
     for (const pending of res.pending) {
       if (!pending.keys) continue; // ainda não registrou chaves públicas
+      if (this.isKicked(room, pending.userId)) continue;
       await this.observe(pending.userId, pending.keys);
       const state = e2ee.trustState(this.trust, pending.userId, pending.keys);
       if (state === "changed") continue;
@@ -383,6 +385,7 @@ class E2eeSession {
     const pending = res.pending.find((p) => p.userId === userId);
     if (!pending) throw new Error(`usuário ${userId} não está aguardando a chave da sala ${room}`);
     if (!pending.keys) throw new Error(`usuário ${userId} ainda não registrou chaves públicas`);
+    if (this.isKicked(room, userId)) throw new Error(`você removeu o usuário ${userId} desta sala: a chave não lhe é entregue`);
     await this.observe(userId, pending.keys);
     if (e2ee.trustState(this.trust, userId, pending.keys) === "changed") {
       throw new Error(`usuário ${userId} está com CHAVE ALTERADA: confira /safety ${userId} e /trust ${userId} antes`);
@@ -400,11 +403,18 @@ class E2eeSession {
   // membro e poderia inserir uma conta para receber a chave nova.
   async rotationRecipients(room) {
     const members = ok(await this.api("get", `/roomUsers/${room}`), 200);
+    // Aprovação de quem já não é membro deixa de valer: se voltar, precisa
+    // de um /approve novo.
+    const ids = new Set(members.map((m) => m.id));
+    for (const key of [...this.approved]) {
+      const [r, u] = key.split(":").map(Number);
+      if (r === room && !ids.has(u)) this.approved.delete(key);
+    }
     const recipients = [{ userId: this.me.id, keyEpoch: this.keyEpoch, ecdhPub: this.pub.ecdhPub }];
     const left = [];
     for (const member of members) {
       if (member.id === this.me.id) continue;
-      if (this.kicked.has(`${room}:${member.id}`)) {
+      if (this.isKicked(room, member.id)) {
         left.push(member.id);
         continue;
       }
@@ -431,8 +441,11 @@ class E2eeSession {
   // chave no meio) → monta de novo, até `attempts` vezes. 409 de versão =
   // outro membro rotacionou antes: busca a chave dele e para.
   // Devolve { rotated, version, left } ou { rotated: false, reason }.
-  async rotate(room, { attempts = 3 } = {}) {
+  // `expectVersion` (rotação automática): se a versão já não é a que motivou
+  // a rotação, outro membro rotacionou e não há o que fazer.
+  async rotate(room, { attempts = 3, expectVersion } = {}) {
     const got = await this.ensureRoomKey(room);
+    if (expectVersion !== undefined && this.currentVersion.get(room) !== expectVersion) return { rotated: false, reason: "concurrent" };
     if (!got.ok) throw new Error(`você não tem a chave atual da sala ${room}: não dá para trocá-la`);
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       const version = this.currentVersion.get(room) + 1;
@@ -471,9 +484,7 @@ class E2eeSession {
     const [hi, lo] = e2ee.primitives.randomBytes(2);
     const delay = Math.floor((((hi << 8) | lo) / 65536) * maxDelayMs);
     await new Promise((resolve) => setTimeout(resolve, delay));
-    await this.ensureRoomKey(room);
-    if (this.currentVersion.get(room) !== seen) return { rotated: false, reason: "concurrent" };
-    return this.rotate(room);
+    return this.rotate(room, { expectVersion: seen });
   }
 
   async leave(room) {
@@ -490,7 +501,8 @@ class E2eeSession {
   async kick(room, userId) {
     const removed = ok(await this.api("delete", `/rooms/${room}/members/${userId}`), 200);
     this.approved.delete(`${room}:${userId}`);
-    this.kicked.add(`${room}:${userId}`);
+    const kicked = { ...this.data.kicked, [room]: [...new Set([...(this.data.kicked?.[room] ?? []), userId])] };
+    await this.save({ ...this.data, kicked });
     return { invite: removed.invite, rotation: await this.rotate(room) };
   }
 

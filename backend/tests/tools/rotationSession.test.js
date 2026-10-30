@@ -253,15 +253,15 @@ describe("achados da revisão de segurança", () => {
     expect((await carol.ensureRoomKey(room)).ok).toBe(true);
   });
 
-  test("autor aprovado com /approve nesta sala é aceito (já tinha a chave)", async () => {
+  test("ataque: autor só APROVADO (/approve), não verificado, não basta para uma rotação ser aceita", async () => {
     const dave = await sessionFor("dave");
     await joinWith(dave, room, invite);
-    await carol.approve(room, dave.id); // Carol entregou a chave ao Dave
+    await carol.approve(room, dave.id); // Carol entregou a chave ao Dave, sem verificá-lo
     expect((await dave.ensureRoomKey(room)).ok).toBe(true);
-    await dave.observe(carol.id);
-    await dave.safety(carol.id);
-    await dave.confirm(carol.id);
+    await verify(dave, carol);
     expect((await dave.rotate(room)).rotated).toBe(true);
+    expect(await carol.ensureRoomKey(room)).toEqual({ ok: false });
+    await verify(carol, dave);
     expect((await carol.ensureRoomKey(room)).ok).toBe(true);
   });
 
@@ -276,5 +276,30 @@ describe("achados da revisão de segurança", () => {
     expect(rotated).toBe(true);
     expect(left).toContain(dave.id);
     expect((await pool.query("SELECT 1 FROM room_key_wraps WHERE room = $1 AND version = 3 AND recipient_id = $2", [room, dave.id])).rowCount).toBe(0);
+  });
+
+  test("ataque: a lista de removidos sobrevive ao reinício; um VERIFICADO removido e relistado não recebe a chave (rotação, entrega ou /approve)", async () => {
+    await alice.kick(room, bob.id); // Bob é verificado pela Alice
+    await pool.query("DELETE FROM room_bans WHERE user_id = $1", [bob.id]);
+    await pool.query("INSERT INTO rooms_users (room, user_id, last_msg_viewed) VALUES ($1, $2, 0)", [room, bob.id]);
+    const again = new E2eeSession({ api: alice.api, me: { id: alice.id }, email: alice.email, keystorePath: alice.keystorePath, passphrase: PASS, print: () => {} });
+    await again.open();
+    await again.registerKeys();
+    const { left } = await again.rotate(room);
+    expect(left).toContain(bob.id);
+    await again.distribute(room);
+    await expect(again.approve(room, bob.id)).rejects.toThrow(/você removeu/);
+    expect((await pool.query("SELECT 1 FROM room_key_wraps WHERE room = $1 AND version > 1 AND recipient_id = $2", [room, bob.id])).rowCount).toBe(0);
+  });
+
+  test("aprovação de quem saiu da sala deixa de valer: se o servidor o relistar, fica de fora", async () => {
+    const dave = await sessionFor("dave");
+    await joinWith(dave, room, invite);
+    await alice.approve(room, dave.id);
+    await dave.leave(room);
+    await alice.rotate(room); // a rotação exigida pela saída; a aprovação do Dave cai
+    await pool.query("INSERT INTO rooms_users (room, user_id, last_msg_viewed) VALUES ($1, $2, 0)", [room, dave.id]);
+    const { left } = await alice.rotate(room);
+    expect(left).toContain(dave.id);
   });
 });

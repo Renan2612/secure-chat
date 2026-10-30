@@ -116,3 +116,14 @@ este conteúdo vai para o `docs/05-e2ee.md` e este arquivo é removido.
   no `fsync` do diretório é informada (o arquivo novo já está no lugar).
 - P3: `tests/e2ee/vectors.test.js`, com chaves do OpenSSL, valores calculados
   em Python (`hashlib`) e a receita de reprodução no próprio teste.
+- Segunda rodada da revisão automática de segurança (corrigida depois do
+  item 5): (1) o autor de uma rotação v≥2 precisa ser o próprio usuário ou
+  alguém VERIFICADO. O `/approve` não basta, porque vive só na memória e não
+  acompanha a saída da pessoa. Aprovações de quem deixou de ser membro caem a
+  cada rotação. (2) a lista de removidos com `/kick` fica no keystore cifrado
+  (`data.kicked[sala]`) e vale para rotação, entrega automática e `/approve`,
+  mesmo depois de reiniciar. Também corrigida uma corrida: a rotação
+  automática não rotaciona de novo se outro membro já subiu a versão entre o
+  atraso e o envio.
+- Avisos da revisão automática: a do commit `4b048b3` não terminou (HTTP 429;
+  ver `~/.claude/security/log.txt`).
