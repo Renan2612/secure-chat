@@ -84,7 +84,9 @@ padding de tráfego) e está fora do escopo do projeto.
      chave, forja o `ownerId` do dono, adultera a assinatura, faz rollback
      de `seq`, repete o `seq` com outro nome; o servidor troca o `name_env`
      pelo de outra sala (o AAD amarra a sala); troca de dono com
-     re-assinatura `seq + 1`; rotação sem nome cai no fallback;
+     re-assinatura `seq + 1`; rotação sem nome cai no fallback; não-dono
+     publica `seq` = 2³¹ − 1 para o dono nunca mais renomear (o `seq` visto
+     e não verificado é ignorado no estouro; achado da revisão automática);
    - `tests/tools/wsClientPrivacy.test.js`: no `ws-client`, não-dono
      rotaciona com outro nome → rejeitado, com o aviso "alterado por quem
      não é o dono"; o novo dono re-assina ao receber `OWNER_CHANGED`;
