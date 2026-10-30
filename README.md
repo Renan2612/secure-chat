@@ -15,7 +15,8 @@ saneado de [asafebxd/MessageWebApp](https://github.com/asafebxd/MessageWebApp)
 - [x] **Etapa 3** — Camada de comunicação: protocolo próprio sobre WebSocket ([`docs/03-protocolo.md`](docs/03-protocolo.md))
 - [x] **Etapa 4a** — TLS, proxy reverso (Caddy) e origem única ([`docs/04-tls-e-proxy.md`](docs/04-tls-e-proxy.md))
 - [x] **Etapa 4b-1** — Criptografia ponta a ponta, núcleo ([`docs/05-e2ee.md`](docs/05-e2ee.md))
-- [ ] Etapa 4b-2 — E2EE: composição da sala (sair, remover, trocar a chave) e frontend
+- [x] **Etapa 4b-2** — E2EE: composição da sala (sair, remover, transferir o dono, trocar a chave) ([`docs/05-e2ee.md`](docs/05-e2ee.md) §11)
+- [ ] Frontend com E2EE (as regras do cliente de referência estão em `docs/05-e2ee.md` §7 e §11)
 - [ ] Etapa 5 — Privacidade adicional
 - [ ] Etapa 6 — Infraestrutura e validação
 - [ ] Etapa 7 — Entrega
@@ -39,14 +40,14 @@ secure-chat/
 │   ├── 02-autenticacao-autorizacao.md # Etapa 2
 │   ├── 03-protocolo.md           # Etapa 3 — especificação do protocolo
 │   ├── 04-tls-e-proxy.md         # Etapa 4a — TLS, proxy e origem única
-│   └── 05-e2ee.md                # Etapa 4b-1 — criptografia ponta a ponta
+│   └── 05-e2ee.md                # Etapas 4b-1 e 4b-2 — criptografia ponta a ponta e troca da chave
 ├── proxy/
 │   ├── Caddyfile                 # proxy reverso + política TLS
 │   └── site/index.html           # página estática provisória (/)
 ├── scripts/
 │   ├── export-ca.sh              # exporta a raiz da CA local do Caddy
 │   ├── verify-tls.sh             # provas da Etapa 4a contra a stack no ar
-│   └── verify-e2ee.sh            # provas da Etapa 4b-1 (E2EE) contra a stack no ar
+│   └── verify-e2ee.sh            # provas das Etapas 4b-1 e 4b-2 (E2EE, remoção e rotação) contra a stack no ar
 ├── backend/
 │   ├── server.js                  # ponto de entrada (sobe o createServer)
 │   ├── createServer.js            # HTTP (Express) + tempo real (/ws), mesma sessão
@@ -108,11 +109,19 @@ CHAT_PASSWORD='sua-senha' node backend/tools/ws-client.js --server https://local
   --ca certs/caddy-local-root.crt --origin https://localhost --email voce@example.com --room 1
 ```
 
+Comandos dentro do cliente: `/members`, `/safety <id>`, `/trust <id>`,
+`/approve <id>`, `/keys` e, desde a Etapa 4b-2, `/kick <id>` (remove e troca
+a chave), `/leave`, `/rotate`, `/owner <id>` e `/invite` (convite novo). Quando
+alguém sai, o envio fica bloqueado até a chave ser trocada, o que o cliente
+faz sozinho se tiver a chave atual ([`docs/05-e2ee.md`](docs/05-e2ee.md) §11.4).
+
 Para derrubar: `docker compose --env-file backend/.env down` (sem `-v`,
 preserva o banco e a CA local).
 
 > Vindo de uma etapa anterior? O schema mudou (Etapa 2: tabela de sessões,
-> e-mail único; Etapa 3: `messages.message` em TEXT e coluna `cid`) e o
+> e-mail único; Etapa 3: `messages.message` em TEXT e coluna `cid`; Etapa
+> 4b-1: chaves e envelopes; Etapa 4b-2: dono, convite só como hash,
+> banimentos e rotação) e o
 > script de init só roda num volume vazio: recrie com
 > `docker compose down -v && docker compose --env-file backend/.env up --build`
 > (apaga os dados de desenvolvimento). Se o volume foi criado sem o
@@ -157,7 +166,7 @@ conforme o modelo de ameaças e o roteiro de etapas da disciplina.
 
 - [Modelo de ameaças](docs/00-modelo-ameacas.md)
 - [Linha de base de segurança (antes/depois)](docs/01-baseline-seguranca.md)
-- [Criptografia ponta a ponta (Etapa 4b-1)](docs/05-e2ee.md) — o schema mudou: recrie o banco (`docker compose --env-file backend/.env down -v`, ou reaplique a migração com backup, §6)
+- [Criptografia ponta a ponta (Etapas 4b-1 e 4b-2)](docs/05-e2ee.md) — o schema mudou: recrie o banco (`docker compose --env-file backend/.env down -v`, que também apaga a CA local; depois `scripts/export-ca.sh`), ou reaplique a migração com backup (§6)
 - [Autenticação e autorização (Etapa 2)](docs/02-autenticacao-autorizacao.md)
 - [Protocolo de tempo real (Etapa 3)](docs/03-protocolo.md)
 - [TLS, proxy reverso e origem única (Etapa 4a)](docs/04-tls-e-proxy.md)
