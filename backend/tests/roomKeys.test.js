@@ -85,7 +85,7 @@ describe("GET /rooms/:id/keys (os próprios wraps)", () => {
     await join(bob, room);
     const res = await bob.call("get", `/rooms/${room.roomId}/keys`);
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ room: room.roomId, currentVersion: 1, versions: [expect.objectContaining({ version: 1, createdBy: alice.id })], wraps: [] });
+    expect(res.body).toEqual({ room: room.roomId, currentVersion: 1, rotationRequired: false, versions: [expect.objectContaining({ version: 1, createdBy: alice.id })], wraps: [] });
   });
 });
 
