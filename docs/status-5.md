@@ -16,10 +16,14 @@ Feito:
 - [x] A5 ws-client: `/ttl`, `/retention`, `/bans`, `/unban`, `/rename`; mensagem com `exp` mostrada com a expiração e esquecida ao vencer
 - [x] A5 `scripts/verify-e2ee.sh` estendido: efêmera some do histórico e do banco (relógio de teste), nome da sala invertido para "não aparece em claro", varredura dos logs dos contêineres, mutação `server-no-purge`
 - [x] Docs: 05 §12, 03, 06, 01, README
-- [x] Suíte completa: 742 passaram, 1 pulado (e2e opcional)
+- [x] Brecha do nome da sala FECHADA: nome assinado pelo dono `{name, seq, ownerId, sig}`, maior seq no keystore, rotação recifra o mesmo conteúdo (ou `null`), `ROOM_EVENT OWNER_CHANGED` e re-assinatura `seq + 1` pelo novo dono — `docs/05` §12.2, `docs/06` §4.6
+- [x] Achados da revisão automática no seq do nome (estouro e janela de 1000 para o seq não verificado), corrigidos com teste de ataque
+- [x] Suíte completa: 761 passaram, 1 pulado (e2e opcional)
+- [x] Banco de desenvolvimento recriado (só o volume `secure-chat_db_data`; CA do Caddy mantida)
+- [x] `scripts/verify-e2ee.sh`: normal → saída 0 (todas as provas); `MUTATION=server-no-purge` → saída 1 (a efêmera fica no banco). Antes, o script tinha 2 falsos positivos/negativos corrigidos (nome da sala era prefixo dos e-mails; janela dos logs começava tarde)
+- [x] Stack derrubada sem `-v`; banco sem dados de teste
 
 Pendente:
-- [ ] Rodar `scripts/verify-e2ee.sh` (normal e `MUTATION=server-no-purge`) contra a stack: **bloqueado** — o banco de desenvolvimento precisa ser recriado com o esquema novo e a remoção do volume foi barrada pela permissão (ação irreversível); aguarda decisão do usuário
-- [ ] Decidir: nome da sala assinado pelo dono (hoje um membro não-dono muda o nome rotacionando a chave; `docs/06-privacidade.md` §4.6)
+- [ ] Lista de membros (e cargo de dono) assinada: sem ela o servidor pode afirmar que um cúmplice é o dono (limite em `docs/06` §4.6)
 - [ ] Parte B (frontend núcleo)
 - [ ] Parte C (frontend completo, revisão, code-simplifier, verificação final)
