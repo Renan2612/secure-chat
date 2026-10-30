@@ -16,7 +16,7 @@ saneado de [asafebxd/MessageWebApp](https://github.com/asafebxd/MessageWebApp)
 - [x] **Etapa 4a** — TLS, proxy reverso (Caddy) e origem única ([`docs/04-tls-e-proxy.md`](docs/04-tls-e-proxy.md))
 - [x] **Etapa 4b-1** — Criptografia ponta a ponta, núcleo ([`docs/05-e2ee.md`](docs/05-e2ee.md))
 - [x] **Etapa 4b-2** — E2EE: composição da sala (sair, remover, transferir o dono, trocar a chave) ([`docs/05-e2ee.md`](docs/05-e2ee.md) §11)
-- [x] **Etapa 5, Parte A** — Privacidade: mensagens efêmeras e retenção, nome da sala cifrado, CSRF, banimentos, logs e metadados ([`docs/06-privacidade.md`](docs/06-privacidade.md), [`docs/05-e2ee.md`](docs/05-e2ee.md) §12)
+- [x] **Etapa 5, Parte A** — Privacidade: mensagens efêmeras e retenção, nome da sala cifrado e assinado pelo dono, CSRF, banimentos, logs e metadados ([`docs/06-privacidade.md`](docs/06-privacidade.md), [`docs/05-e2ee.md`](docs/05-e2ee.md) §12)
 - [ ] Etapa 5, Partes B e C — Frontend com E2EE (plano em [`docs/plano-etapa5.md`](docs/plano-etapa5.md); andamento em [`docs/status-5.md`](docs/status-5.md))
 - [ ] Etapa 6 — Infraestrutura e validação
 - [ ] Etapa 7 — Entrega
@@ -117,7 +117,9 @@ faz sozinho se tiver a chave atual ([`docs/05-e2ee.md`](docs/05-e2ee.md) §11.4)
 Desde a Etapa 5: `/ttl <1min|1h|24h|7d|off>` (as próximas mensagens
 expiram), `/retention <segundos|off>`, `/bans`, `/unban <id>` e
 `/rename <nome>` (os três últimos e a retenção, só o dono; o nome vai
-cifrado) — [`docs/06-privacidade.md`](docs/06-privacidade.md).
+cifrado e assinado pelo dono: o cliente só o mostra com a assinatura do
+dono atual, senão "Sala #id (nome não verificado)") —
+[`docs/06-privacidade.md`](docs/06-privacidade.md).
 
 Para derrubar: `docker compose --env-file backend/.env down` (sem `-v`,
 preserva o banco e a CA local).
