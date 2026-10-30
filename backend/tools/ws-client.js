@@ -601,10 +601,24 @@ const main = async () => {
     }
   };
 
+  // Nome só com a assinatura do dono atual (chave fixada); senão "Sala #id"
+  // com "nome não verificado". Quem é o dono e ainda não assinou o nome
+  // (acabou de assumir) re-assina antes de mostrar.
   const showRoomInfo = async () => {
+    // Uma falha aqui (ex.: rotação pendente, 409) não pode impedir o resto
+    // do announceKey (a rotação automática vem depois): só avisa.
+    try {
+      if (await session.ensureOwnerSignature(room)) print(`você é o dono da sala ${room}: nome re-assinado com a sua chave`);
+    } catch (err) {
+      print(`! não foi possível re-assinar o nome da sala ${room} agora (${err.message}); ele aparece como não verificado até lá`);
+    }
     const info = await session.roomInfo(room);
     retention = info.retentionSeconds;
-    print(`sala ${room}: ${info.name === null ? `Sala #${room} (nome indisponível)` : `«${clean(info.name)}»`}; retenção: ${describeTtl(retention)}`);
+    if (info.nameTampered) {
+      print(`! evento: nome da sala ${room} alterado por quem não é o dono; mantido o último nome verificado`);
+    }
+    const shown = info.name === null ? `Sala #${room} (nome não verificado)` : `«${clean(info.name)}»`;
+    print(`sala ${room}: ${shown}; retenção: ${describeTtl(retention)}`);
   };
 
   // Mensagem com exp: esquecida ao vencer (o texto não fica guardado em
@@ -686,7 +700,7 @@ const main = async () => {
         if (packet.kind === "KEY_READY") return enqueue(announceKey);
         if (packet.kind === "KEY_ROTATED") {
           print(`evento: a chave da sala ${room} foi trocada`);
-          return enqueue(announceKey);
+          return enqueue(announceKey); // mostra o nome de novo (detecta nome trocado na rotação)
         }
         if (packet.kind === "ROTATION_PENDING") {
           print(`evento: alguém saiu da sala ${room}; o envio fica bloqueado até a chave ser trocada`);
@@ -700,6 +714,10 @@ const main = async () => {
         }
         if (packet.kind === "RENAMED") {
           print(`evento: o nome da sala ${room} mudou`);
+          return enqueue(showRoomInfo);
+        }
+        if (packet.kind === "OWNER_CHANGED") {
+          print(`evento: o dono da sala ${room} agora é o usuário ${clean(packet.ownerId)}`);
           return enqueue(showRoomInfo);
         }
         if (packet.kind === "REMOVED") {

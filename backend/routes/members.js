@@ -150,6 +150,9 @@ const transferOwner = async (req, res, next) => {
       return { ok: true };
     });
     if (!outcome.ok) return res.status(outcome.status).json(outcome.body);
+    // Etapa 5: o novo dono re-assina o nome da sala (seq + 1); até lá os
+    // clientes o mostram como "não verificado".
+    req.app.locals.notify.ownerChanged(roomId, target);
     return res.status(200).json({ room: roomId, ownerId: target });
   } catch (err) {
     return next(err);

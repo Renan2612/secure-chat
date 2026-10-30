@@ -27,8 +27,15 @@ const wrapFor = (sender, { roomId, version = 1, roomKey, recipientId, recipientE
     senderEcdsaKey: sender.identity.ecdsa.privateKey,
   });
 
+// Nome da sala assinado pelo dono e cifrado com a chave da versão `kv`
+// (Etapa 5: o nome nunca vai em claro, e só o dono o assina).
+const sealName = async (owner, { roomKey, roomId, kv = 1, name, seq = 1 }) => {
+  const payload = await e2ee.signRoomName({ roomId, seq, ownerId: owner.id, name, ownerEcdsaKey: owner.identity.ecdsa.privateKey });
+  return { payload, nameEnv: await e2ee.encryptRoomName({ roomKey, roomId, kv, payload }) };
+};
+
 // Cria a sala, gera a chave da sala e publica a versão 1 com o próprio wrap
-// e o nome cifrado (Etapa 5: o nome nunca vai em claro).
+// e o nome assinado e cifrado.
 const createKeyedRoom = async (owner, name = "Sala cifrada") => {
   const created = await owner.call("post", "/createRoom").send({});
   if (created.status !== 201) throw new Error(`createRoom: ${created.status}`);
@@ -36,10 +43,10 @@ const createKeyedRoom = async (owner, name = "Sala cifrada") => {
   const roomKey = await e2ee.generateRoomKey();
   const wrap = await wrapFor(owner, { roomId, roomKey, recipientId: owner.id, recipientEcdhPub: owner.pub.ecdhPub });
   const commitment = await e2ee.commitRoomKey({ roomId, version: 1, roomKey, creatorEcdsaKey: owner.identity.ecdsa.privateKey });
-  const nameEnv = await e2ee.encryptRoomName({ roomKey, roomId, kv: 1, name });
+  const { payload: namePayload, nameEnv } = await sealName(owner, { roomKey, roomId, name });
   const published = await owner.call("post", `/rooms/${roomId}/keys`).send({ version: 1, wrap, ...commitment, nameEnv });
   if (published.status !== 201) throw new Error(`POST /rooms/${roomId}/keys: ${published.status} ${JSON.stringify(published.body)}`);
-  return { roomId, inviteKey: created.body.key, roomKey, name };
+  return { roomId, inviteKey: created.body.key, roomKey, name, namePayload };
 };
 
 const join = async (user, room) => {
@@ -90,4 +97,4 @@ const fetchRoomKey = async (user, roomId) => {
   return roomKey;
 };
 
-module.exports = { asAgent, asCookie, registerKeys, wrapFor, createKeyedRoom, join, grant, fetchRoomKey };
+module.exports = { asAgent, asCookie, registerKeys, wrapFor, sealName, createKeyedRoom, join, grant, fetchRoomKey };

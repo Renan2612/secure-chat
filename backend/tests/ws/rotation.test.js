@@ -33,7 +33,8 @@ const rotationBody = async (author, { version = 2, recipients, roomKey, signer =
     const wrap = await wrapFor({ ...author, identity: signer.identity }, { roomId: room.roomId, version, roomKey: key, recipientId: r.id, recipientEcdhPub: r.pub.ecdhPub });
     wraps.push({ recipientId: r.id, recipientKeyEpoch: r.keyEpoch, wrap });
   }
-  const nameEnv = await e2ee.encryptRoomName({ roomKey: key, roomId: room.roomId, kv: version, name: room.name });
+  // Quem rotaciona recifra o MESMO nome assinado pela dona (sem re-assinar).
+  const nameEnv = await e2ee.encryptRoomName({ roomKey: key, roomId: room.roomId, kv: version, payload: room.namePayload });
   return { key, body: { version, ...commitment, wraps, nameEnv } };
 };
 

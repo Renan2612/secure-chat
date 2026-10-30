@@ -116,44 +116,4 @@ describe("expiração no cliente", () => {
   });
 });
 
-describe("nome da sala cifrado (A3)", () => {
-  const nameCtx = { roomId: 7, kv: 1 };
-
-  test("ida e volta; o envelope não contém o nome e cabe em 512 bytes", async () => {
-    const nameEnv = await e2ee.encryptRoomName({ ...nameCtx, roomKey, name: "Grupo de Redes 🔐" });
-    expect(nameEnv).not.toContain("Grupo");
-    expect(new TextEncoder().encode(nameEnv).length).toBeLessThanOrEqual(512);
-    expect(e2ee.parseRoomNameEnvelope(nameEnv)).toEqual({ kv: 1 });
-    expect(await e2ee.decryptRoomName({ roomId: 7, nameEnv, roomKeys: { 1: roomKey } })).toBe("Grupo de Redes 🔐");
-  });
-
-  test("o maior nome aceito cabe em 512 bytes; acima, recusa", async () => {
-    const nameEnv = await e2ee.encryptRoomName({ ...nameCtx, roomKey, name: "a".repeat(e2ee.MAX_ROOM_NAME_BYTES) });
-    expect(new TextEncoder().encode(nameEnv).length).toBeLessThanOrEqual(512);
-    await expect(e2ee.encryptRoomName({ ...nameCtx, roomKey, name: "a".repeat(e2ee.MAX_ROOM_NAME_BYTES + 1) })).rejects.toThrow(e2ee.E2eeError);
-    await expect(e2ee.encryptRoomName({ ...nameCtx, roomKey, name: "" })).rejects.toThrow(e2ee.E2eeError);
-  });
-
-  test("ATAQUE: nome de outra sala ou de outra versão (servidor troca) não decifra", async () => {
-    const nameEnv = await e2ee.encryptRoomName({ ...nameCtx, roomKey, name: "Sala A" });
-    await expect(e2ee.decryptRoomName({ roomId: 8, nameEnv, roomKeys: { 1: roomKey } })).rejects.toMatchObject({ code: "INVALID_NAME" });
-    const env = JSON.parse(nameEnv);
-    await expect(e2ee.decryptRoomName({ roomId: 7, nameEnv: JSON.stringify({ ...env, kv: 2 }), roomKeys: { 2: roomKey } })).rejects.toMatchObject({ code: "INVALID_NAME" });
-  });
-
-  test("sem a chave da versão: MISSING_KEY", async () => {
-    const nameEnv = await e2ee.encryptRoomName({ ...nameCtx, roomKey, name: "Sala A" });
-    await expect(e2ee.decryptRoomName({ roomId: 7, nameEnv, roomKeys: {} })).rejects.toMatchObject({ code: "MISSING_KEY" });
-  });
-
-  test.each([
-    ["texto puro", "Sala A"],
-    ["campo extra", (env) => JSON.stringify({ ...env, name: "x" })],
-    ["ordem trocada", (env) => JSON.stringify({ kv: env.kv, v: env.v, iv: env.iv, ct: env.ct })],
-    ["ct sem padding", (env) => JSON.stringify({ ...env, ct: e2ee.encoding.toB64url(new Uint8Array(140)) })],
-  ])("parseRoomNameEnvelope recusa %s", async (_label, make) => {
-    const env = JSON.parse(await e2ee.encryptRoomName({ ...nameCtx, roomKey, name: "Sala A" }));
-    const body = typeof make === "function" ? make(env) : make;
-    expect(() => e2ee.parseRoomNameEnvelope(body)).toThrow(e2ee.E2eeError);
-  });
-});
+// O nome da sala cifrado e assinado pelo dono está em roomNameSigned.test.js.

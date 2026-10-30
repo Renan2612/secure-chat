@@ -35,16 +35,18 @@ CREATE TABLE IF NOT EXISTS users(
 -- key_version: versão atual da chave da sala (docs/05-e2ee.md).
 -- rotation_required: alguém saiu ou foi removido e a chave ainda não foi
 -- trocada; enquanto for true, MSG_SEND é recusado (falha fechada).
--- name_env (Etapa 5, A3): o NOME da sala, cifrado com a chave da sala
--- ({"v":1,"kv","iv","ct"}, shared/e2ee/roomName.js). O servidor nunca vê o
--- nome em claro; null só entre a criação e a publicação da v1.
+-- name_env (Etapa 5, A3): o NOME da sala, assinado pelo dono e cifrado com
+-- a chave da sala ({"v":2,"kv","iv","ct"}, shared/e2ee/roomName.js). O
+-- servidor nunca vê o nome em claro; null entre a criação e a publicação da
+-- v1, ou depois de uma rotação sem nome assinado válido (o cliente mostra
+-- "Sala #id").
 -- retention_seconds (Etapa 5, A1): retenção máxima das mensagens FUTURAS
 -- (null = sem limite); quando definida, toda mensagem precisa de exp.
 CREATE TABLE IF NOT EXISTS rooms(
    id SERIAL PRIMARY KEY,
    name_env TEXT NULL CHECK (
       octet_length(name_env) <= 512
-      AND name_env ~ '^\{"v":1,"kv":[1-9][0-9]{0,9},"iv":"[A-Za-z0-9_-]{16}","ct":"[A-Za-z0-9_-]+"\}$'),
+      AND name_env ~ '^\{"v":2,"kv":[1-9][0-9]{0,9},"iv":"[A-Za-z0-9_-]{16}","ct":"[A-Za-z0-9_-]+"\}$'),
    invite_hash CHAR(64) NOT NULL CHECK (invite_hash ~ '^[0-9a-f]{64}$'),
    created_by INTEGER NOT NULL REFERENCES users (id),
    owner_id INTEGER NOT NULL REFERENCES users (id),

@@ -208,6 +208,18 @@ describe("sair (POST /rooms/:id/leave)", () => {
 });
 
 describe("transferir (POST /rooms/:id/owner)", () => {
+  test("Etapa 5: ROOM_EVENT OWNER_CHANGED aos inscritos e a TODAS as conexões do novo dono (para ele re-assinar o nome)", async () => {
+    const a = await connect(srv, alice.cookie);
+    send(a.ws, { type: "SUBSCRIBE", room: room.roomId });
+    await nextPacket(a.inbox, "SUBSCRIBED");
+    const b = await connect(srv, bob.cookie); // novo dono, NÃO inscrito
+    expect((await transfer(alice, bob)).status).toBe(200);
+    const expected = { v: 1, type: "ROOM_EVENT", room: room.roomId, kind: "OWNER_CHANGED", ownerId: bob.id };
+    expect(await nextPacket(a.inbox, "ROOM_EVENT")).toEqual(expected);
+    expect(await nextPacket(b.inbox, "ROOM_EVENT")).toEqual(expected);
+  });
+
+
   test("a dona transfere para um membro com a chave atual; o novo dono passa a remover e a ex-dona pode sair", async () => {
     expect((await transfer(alice, bob)).status).toBe(200);
     expect((await roomRow()).owner_id).toBe(bob.id);

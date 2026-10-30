@@ -1,7 +1,8 @@
 // Validação ESTRUTURAL do nome da sala cifrado (Etapa 5, A3), sem decifrar:
-// o servidor não tem a chave da sala. Mesma regra do parseRoomNameEnvelope
+// o servidor não tem a chave da sala, e a assinatura do dono fica DENTRO do
+// texto cifrado (quem confere é o cliente; docs/05 §12.2). Mesma regra do parseRoomNameEnvelope
 // de shared/e2ee/roomName.js (tests/e2ee/roomNameParity.test.js confere).
-//   exatamente {"v":1,"kv":<inteiro ≥ 1>,"iv":…,"ct":…}, nessa ordem e na
+//   exatamente {"v":2,"kv":<inteiro ≥ 1>,"iv":…,"ct":…}, nessa ordem e na
 //   forma canônica; iv: 12 bytes; ct: 128 ou 256 bytes + 16 de tag; no
 //   total até 512 bytes.
 const MAX_NAME_ENV_BYTES = 512;
@@ -23,7 +24,7 @@ const parseRoomNameEnvelope = (nameEnv) => {
     return null;
   }
   if (!env || typeof env !== "object" || Array.isArray(env) || Object.keys(env).join() !== KEYS) return null;
-  if (env.v !== 1 || !Number.isSafeInteger(env.kv) || env.kv < 1 || env.kv > 2147483647) return null;
+  if (env.v !== 2 || !Number.isSafeInteger(env.kv) || env.kv < 1 || env.kv > 2147483647) return null;
   const padded = b64urlLength(env.ct) - 16;
   if (b64urlLength(env.iv) !== 12 || (padded !== 128 && padded !== 256)) return null;
   if (JSON.stringify(env) !== nameEnv) return null;

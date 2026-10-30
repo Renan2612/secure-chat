@@ -65,6 +65,7 @@ const attachRealtime = (server, { session, trustProxy = proxyaddr.compile([]), c
     notifyKeyRotated,
     notifyRetentionChanged,
     notifyRenamed,
+    notifyOwnerChanged,
   } = createHandlers(registry, { clock });
   // perMessageDeflate desligado: compressão de dados com segredos abre
   // ataques do tipo CRIME/BREACH, e o ganho aqui seria pequeno.
@@ -210,6 +211,7 @@ const attachRealtime = (server, { session, trustProxy = proxyaddr.compile([]), c
       keyRotated: (room) => fireAndLog("KEY_ROTATED", () => notifyKeyRotated(room)),
       retentionChanged: (room, seconds) => fireAndLog("RETENTION_CHANGED", () => notifyRetentionChanged(room, seconds)),
       renamed: (room) => fireAndLog("RENAMED", () => notifyRenamed(room)),
+      ownerChanged: (room, ownerId) => fireAndLog("OWNER_CHANGED", () => notifyOwnerChanged(room, ownerId)),
     },
     // Fim da sessão (logout): fecha todas as conexões do usuário.
     closeUser: (userId) => {

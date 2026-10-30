@@ -14,9 +14,12 @@
 //                          enquanto a sala exige rotação (quem entra depois
 //                          de uma saída recebe só a chave NOVA)
 //   rotacionar           → membro com o wrap da versão atual (Etapa 4b-2, D3)
-// Etapa 5 (A3): a publicação da v1 e cada rotação trazem o NOME da sala
-// cifrado com a chave daquela versão (nameEnv, kv = versão): só a estrutura
-// é conferida (helpers/roomName.js, no zod) e que o kv é o da versão.
+// Etapa 5 (A3): a publicação da v1 traz o NOME da sala (assinado pelo dono,
+// cifrado com a chave da v1); cada rotação traz o mesmo nome assinado,
+// recifrado com a chave nova, ou null se quem rotaciona não tem um válido.
+// Só a estrutura é conferida (helpers/roomName.js, no zod) e que o kv é o
+// da versão: a assinatura fica dentro do texto cifrado e quem a confere é
+// o cliente.
 const pool = require("../db");
 const { withTransaction } = require("../helpers/transaction");
 const { verifyWrapSig, verifyCommitmentSig } = require("../helpers/signatures");
@@ -241,7 +244,8 @@ const discardMyWrap = async (req, res, next) => {
 //   - o autor está entre os destinatários, sem repetição (senão 400);
 //   - o compromisso e cada wrap foram assinados pelo autor, com a chave
 //     pública registrada dele, para esta sala, versão e destinatário (400).
-//   - o nome da sala vem recifrado com a chave nova (kv = versão; 400);
+//   - o nome da sala vem recifrado com a chave nova (kv = versão; 400), ou
+//     null explícito;
 // Então grava a versão, os wraps e o nome, sobe key_version e zera
 // rotation_required.
 // Os wraps antigos de quem ficou continuam (relê o histórico).
@@ -251,7 +255,7 @@ const rotateRoomKey = async (req, res, next) => {
   const roomId = req.params.id;
   const me = req.session.userId;
   const { version, commitment, commitmentSig, wraps, nameEnv } = req.body;
-  if (parseRoomNameEnvelope(nameEnv).kv !== version) return res.status(400).json(NAME_VERSION_MISMATCH);
+  if (nameEnv !== null && parseRoomNameEnvelope(nameEnv).kv !== version) return res.status(400).json(NAME_VERSION_MISMATCH);
   const recipients = wraps.map((w) => w.recipientId);
   if (new Set(recipients).size !== recipients.length || !recipients.includes(me)) {
     return res.status(400).json({ message: "Um wrap por membro atual, incluindo o autor" });

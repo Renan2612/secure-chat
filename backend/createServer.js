@@ -21,6 +21,7 @@ const createServer = ({ appOptions = {}, realtimeOptions = {}, clock = systemClo
     keyRotated: (room) => realtime.notify.keyRotated(room),
     retentionChanged: (room, seconds) => realtime.notify.retentionChanged(room, seconds),
     renamed: (room) => realtime.notify.renamed(room),
+    ownerChanged: (room, ownerId) => realtime.notify.ownerChanged(room, ownerId),
   };
   const app = createApp({ ...appOptions, session, onSessionEnd, notify, clock });
   const server = http.createServer(app);

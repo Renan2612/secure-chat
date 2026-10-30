@@ -8,8 +8,13 @@ let max;
 
 beforeAll(async () => {
   const roomKey = await e2ee.generateRoomKey();
-  small = JSON.parse(await e2ee.encryptRoomName({ roomKey, roomId: 4, kv: 3, name: "Sala" }));
-  max = JSON.parse(await e2ee.encryptRoomName({ roomKey, roomId: 4, kv: 3, name: "é".repeat(e2ee.MAX_ROOM_NAME_BYTES / 2) }));
+  const owner = await e2ee.generateIdentity();
+  const sealed = async (name, seq) => {
+    const payload = await e2ee.signRoomName({ roomId: 4, seq, ownerId: 2147483647, name, ownerEcdsaKey: owner.ecdsa.privateKey });
+    return JSON.parse(await e2ee.encryptRoomName({ roomKey, roomId: 4, kv: 3, payload }));
+  };
+  small = await sealed("Sala", 1);
+  max = await sealed("é".repeat(e2ee.MAX_ROOM_NAME_BYTES / 2), 2147483647);
 });
 
 const clientAccepts = (s) => {
@@ -29,7 +34,8 @@ test("cliente e servidor concordam caso a caso", () => {
     ["texto puro", "Sala", false],
     ["campo extra", JSON.stringify({ ...small, name: "Sala" }), false],
     ["sem ct", JSON.stringify({ v: 1, kv: 3, iv: small.iv }), false],
-    ["v = 2", JSON.stringify({ ...small, v: 2 }), false],
+    ["v = 1 (nome sem assinatura, Parte A)", JSON.stringify({ ...small, v: 1 }), false],
+    ["v = 3", JSON.stringify({ ...small, v: 3 }), false],
     ["kv = 0", JSON.stringify({ ...small, kv: 0 }), false],
     ["iv de 11 bytes", JSON.stringify({ ...small, iv: b64(11) }), false],
     ["ct de 3 blocos (nome longo demais)", JSON.stringify({ ...small, ct: b64(3 * 128 + 16) }), false],

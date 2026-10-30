@@ -61,7 +61,7 @@ const fakeEnvelope = ({ kv = 1, paddedBytes = 128, exp = null } = {}) =>
   JSON.stringify({ v: 2, kv, iv: b64(12), ct: b64(paddedBytes + 16), sig: b64(64), exp });
 
 // Nome da sala cifrado, só na ESTRUTURA (o servidor não decifra).
-const fakeNameEnv = (kv = 1) => JSON.stringify({ v: 1, kv, iv: b64(12), ct: b64(128 + 16) });
+const fakeNameEnv = (kv = 1) => JSON.stringify({ v: 2, kv, iv: b64(12), ct: b64(128 + 16) });
 
 // Grava uma mensagem direto no banco. `label` vira o cid (os testes de
 // histórico conferem a ordem pelos cids, já que o body é cifrado). O

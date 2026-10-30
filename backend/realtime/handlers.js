@@ -138,6 +138,13 @@ const createHandlers = (registry, { clock = systemClock } = {}) => {
     for (const conn of registry.subscribers(room)) conn.send({ type: "ROOM_EVENT", room, kind: "RETENTION_CHANGED", retentionSeconds });
   };
 
+  // O dono mudou: aos inscritos e a TODAS as conexões do novo dono (ele
+  // precisa re-assinar o nome mesmo sem estar inscrito na sala).
+  const notifyOwnerChanged = (room, ownerId) => {
+    const targets = new Set([...registry.subscribers(room), ...registry.forUser(ownerId)]);
+    for (const conn of targets) conn.send({ type: "ROOM_EVENT", room, kind: "OWNER_CHANGED", ownerId });
+  };
+
   const notifyRenamed = (room) => {
     for (const conn of registry.subscribers(room)) conn.send({ type: "ROOM_EVENT", room, kind: "RENAMED" });
   };
@@ -218,6 +225,7 @@ const createHandlers = (registry, { clock = systemClock } = {}) => {
     notifyKeyRotated,
     notifyRetentionChanged,
     notifyRenamed,
+    notifyOwnerChanged,
   };
 };
 

@@ -62,7 +62,8 @@ const createApp = ({
   // → chegou um wrap para o usuário; removed(userId, room) → o usuário saiu
   // ou foi removido; rotationPending(room) → a chave precisa ser trocada;
   // keyRotated(room) → há uma versão nova da chave; retentionChanged(room,
-  // segundos) e renamed(room) → o dono mudou a retenção ou o nome (Etapa 5).
+  // segundos) e renamed(room) → o dono mudou a retenção ou o nome;
+  // ownerChanged(room, ownerId) → o cargo de dono mudou (Etapa 5).
   // Sem realtime (testes HTTP), não fazem nada.
   notify = {},
   // Relógio da expiração das mensagens (helpers/expiry.js); só os testes
@@ -123,6 +124,7 @@ const createApp = ({
     keyRotated: noop,
     retentionChanged: noop,
     renamed: noop,
+    ownerChanged: noop,
     ...notify,
   };
   app.locals.clock = clock;

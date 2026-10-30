@@ -5,7 +5,7 @@
 // em claro em qualquer coluna do banco.
 const e2ee = require("../../shared/e2ee");
 const { pool, resetDb, createUser, fakeNameEnv } = require("./helpers");
-const { asAgent, registerKeys, createKeyedRoom, join, grant, wrapFor } = require("./e2ee/flow");
+const { asAgent, registerKeys, createKeyedRoom, join, grant, wrapFor, sealName } = require("./e2ee/flow");
 
 let alice; // dona
 let bob; // membro com a chave
@@ -67,12 +67,12 @@ describe("nome cifrado (A3)", () => {
     const roomKey = await e2ee.generateRoomKey();
     const commitment = await e2ee.commitRoomKey({ roomId: r.roomId, version: 2, roomKey, creatorEcdsaKey: alice.identity.ecdsa.privateKey });
     const wrap = await wrapFor(alice, { roomId: r.roomId, version: 2, roomKey, recipientId: alice.id, recipientEcdhPub: alice.pub.ecdhPub });
-    const nameEnv = await e2ee.encryptRoomName({ roomKey, roomId: r.roomId, kv: 2, name: `${marker}-v2` });
+    const { nameEnv } = await sealName(alice, { roomKey, roomId: r.roomId, kv: 2, name: `${marker}-v2`, seq: 2 });
     const rotated = await alice.agent
       .post(`/rooms/${r.roomId}/keys/rotate`)
       .send({ version: 2, ...commitment, wraps: [{ recipientId: alice.id, recipientKeyEpoch: alice.keyEpoch, wrap }], nameEnv });
     expect(rotated.status).toBe(201);
-    const renamed = await e2ee.encryptRoomName({ roomKey, roomId: r.roomId, kv: 2, name: `${marker}-novo` });
+    const { nameEnv: renamed } = await sealName(alice, { roomKey, roomId: r.roomId, kv: 2, name: `${marker}-novo`, seq: 3 });
     expect((await alice.agent.put(`/rooms/${r.roomId}/name`).send({ nameEnv: renamed })).status).toBe(200);
 
     const { rows: tables } = await pool.query("SELECT tablename FROM pg_tables WHERE schemaname = 'public'");
@@ -87,13 +87,13 @@ describe("nome cifrado (A3)", () => {
     // E quem tem a chave lê o nome atual.
     const listed = (await alice.agent.get("/rooms")).body.find((x) => x.id === r.roomId);
     expect(listed).not.toHaveProperty("name");
-    expect(await e2ee.decryptRoomName({ roomId: r.roomId, nameEnv: listed.nameEnv, roomKeys: { 2: roomKey } })).toBe(`${marker}-novo`);
+    expect((await e2ee.decryptRoomName({ roomId: r.roomId, nameEnv: listed.nameEnv, roomKeys: { 2: roomKey } })).name).toBe(`${marker}-novo`);
   });
 
   test("GET /rooms devolve id e nameEnv (o membro decifra com a chave da sala)", async () => {
     const [listed] = (await bob.agent.get("/rooms")).body;
     expect(Object.keys(listed).sort()).toEqual(["id", "nameEnv", "nummessages", "ownerId", "retentionSeconds"]);
-    expect(await e2ee.decryptRoomName({ roomId: room.roomId, nameEnv: listed.nameEnv, roomKeys: { 1: room.roomKey } })).toBe("Sala do grupo");
+    expect((await e2ee.decryptRoomName({ roomId: room.roomId, nameEnv: listed.nameEnv, roomKeys: { 1: room.roomKey } })).name).toBe("Sala do grupo");
   });
 
   test("publicar a v1 SEM o nome → 400 (obrigatório); com o nome de outra versão → 400", async () => {
@@ -123,15 +123,28 @@ describe("nome cifrado (A3)", () => {
     expect((await roomRow()).key_version).toBe(1);
   });
 
+  test("rotação com nameEnv: null EXPLÍCITO (quem rotaciona não tem nome assinado válido) → 201 e o nome fica vazio", async () => {
+    const roomKey = await e2ee.generateRoomKey();
+    const commitment = await e2ee.commitRoomKey({ roomId: room.roomId, version: 2, roomKey, creatorEcdsaKey: bob.identity.ecdsa.privateKey });
+    const wraps = [];
+    for (const u of [alice, bob]) {
+      const wrap = await wrapFor(bob, { roomId: room.roomId, version: 2, roomKey, recipientId: u.id, recipientEcdhPub: u.pub.ecdhPub });
+      wraps.push({ recipientId: u.id, recipientKeyEpoch: u.keyEpoch, wrap });
+    }
+    const res = await bob.agent.post(`/rooms/${room.roomId}/keys/rotate`).send({ version: 2, ...commitment, wraps, nameEnv: null });
+    expect(res.status).toBe(201);
+    expect(await roomRow()).toMatchObject({ key_version: 2, name_env: null });
+  });
+
   test("PUT /rooms/:id/name: a dona troca com a chave atual", async () => {
-    const nameEnv = await e2ee.encryptRoomName({ roomKey: room.roomKey, roomId: room.roomId, kv: 1, name: "Novo nome" });
+    const { nameEnv } = await sealName(alice, { roomKey: room.roomKey, roomId: room.roomId, name: "Novo nome", seq: 2 });
     expect((await alice.agent.put(`/rooms/${room.roomId}/name`).send({ nameEnv })).status).toBe(200);
     expect((await roomRow()).name_env).toBe(nameEnv);
   });
 
   test("ATAQUE: membro que não é o dono troca o nome → 403; não-membro → 404", async () => {
     const before = (await roomRow()).name_env;
-    const nameEnv = await e2ee.encryptRoomName({ roomKey: room.roomKey, roomId: room.roomId, kv: 1, name: "Sequestrada" });
+    const { nameEnv } = await sealName(alice, { roomKey: room.roomKey, roomId: room.roomId, name: "Sequestrada", seq: 2 });
     expect((await bob.agent.put(`/rooms/${room.roomId}/name`).send({ nameEnv })).status).toBe(403);
     expect((await carol.agent.put(`/rooms/${room.roomId}/name`).send({ nameEnv })).status).toBe(404);
     expect((await roomRow()).name_env).toBe(before);
@@ -145,7 +158,7 @@ describe("nome cifrado (A3)", () => {
 
   test("com a rotação pendente (alguém saiu) → 409: o nome novo só vai recifrado com a chave nova", async () => {
     expect((await bob.agent.post(`/rooms/${room.roomId}/leave`)).status).toBe(200);
-    const nameEnv = await e2ee.encryptRoomName({ roomKey: room.roomKey, roomId: room.roomId, kv: 1, name: "x" });
+    const { nameEnv } = await sealName(alice, { roomKey: room.roomKey, roomId: room.roomId, name: "x", seq: 2 });
     const res = await alice.agent.put(`/rooms/${room.roomId}/name`).send({ nameEnv });
     expect(res.status).toBe(409);
     expect(res.body.code).toBe("ROTATION_PENDING");

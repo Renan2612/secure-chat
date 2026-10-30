@@ -92,7 +92,9 @@ const schemas = {
       commitment: b64urlBytes(32),
       commitmentSig: b64urlBytes(64),
       wraps: z.array(z.object({ recipientId: id, recipientKeyEpoch: id, wrap })).min(1).max(200),
-      nameEnv,
+      // null EXPLÍCITO: quem rotaciona não tem um nome assinado pelo dono
+      // para recifrar (o nome fica vazio até o dono renomear). Ausente: 400.
+      nameEnv: nameEnv.nullable(),
     }),
   },
   // Etapa 5: ajustes da sala, só pelo dono (routes/roomSettings.js).
