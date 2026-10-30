@@ -15,7 +15,12 @@ const crypto = require("crypto");
 const { withTransaction } = require("../helpers/transaction");
 const { inviteHash } = require("./rooms");
 
-const NOT_FOUND = { message: "Sala ou membro inexistente" };
+// Recusas: as transações devolvem { status, body } pronto (sempre antes de
+// qualquer gravação) ou { ok: true, ... } quando gravam; a resposta só é
+// enviada depois do fim da transação.
+const NOT_FOUND = { status: 404, body: { message: "Sala ou membro inexistente" } };
+const FORBIDDEN = { status: 403, body: { message: "Acesso negado" } };
+const refuse = (status, message) => ({ status, body: { message } });
 
 // SÓ PARA A MUTAÇÃO DO scripts/verify-e2ee.sh (MUTATION=server-no-rotation):
 // com este valor exato, o servidor deixa de exigir a rotação depois de uma
@@ -23,7 +28,8 @@ const NOT_FOUND = { message: "Sala ou membro inexistente" };
 // percebe). Nunca está ativa por padrão; o backend avisa no log ao subir.
 const SKIP_ROTATION_VALUE = "inseguro-so-para-teste";
 const skipRotationForTest = () => process.env.E2EE_TEST_SKIP_ROTATION === SKIP_ROTATION_VALUE;
-const FORBIDDEN = { message: "Acesso negado" };
+
+const newInvite = () => crypto.randomBytes(16).toString("hex");
 
 // Linha da sala travada, com o papel de quem pede. undefined se a sala não
 // existe ou se o usuário não é membro dela.
@@ -36,6 +42,18 @@ const lockRoomFor = async (client, roomId, userId) => {
   );
   return rows[0];
 };
+
+// Trava a sala e confere que quem pede é o dono: devolve a recusa (404 antes
+// de 403, para não revelar a sala a quem não é membro) ou undefined.
+const lockOwnedRoom = async (client, roomId, userId) => {
+  const room = await lockRoomFor(client, roomId, userId);
+  if (!room) return NOT_FOUND;
+  if (room.owner_id !== userId) return FORBIDDEN;
+  return undefined;
+};
+
+const setInvite = (client, roomId, invite) =>
+  client.query("UPDATE rooms SET invite_hash = $2 WHERE id = $1", [roomId, inviteHash(invite)]);
 
 // Tira o usuário da sala: vínculo e todos os wraps em que ele é destinatário.
 // Se ninguém ficar, apaga a sala (cascata: mensagens, versões, wraps, bans);
@@ -66,17 +84,16 @@ const leaveRoom = async (req, res, next) => {
   try {
     const outcome = await withTransaction(async (client) => {
       const room = await lockRoomFor(client, roomId, me);
-      if (!room) return { status: 404 };
+      if (!room) return NOT_FOUND;
       if (room.owner_id === me) {
         const others = await client.query("SELECT 1 FROM rooms_users WHERE room = $1 AND user_id <> $2 LIMIT 1", [roomId, me]);
-        if (others.rowCount > 0) return { status: 409 };
+        if (others.rowCount > 0) {
+          return { status: 409, body: { code: "OWNER_MUST_TRANSFER", message: "Transfira o cargo de dono antes de sair" } };
+        }
       }
-      return { status: 200, roomDeleted: await detach(client, roomId, me) };
+      return { ok: true, roomDeleted: await detach(client, roomId, me) };
     });
-    if (outcome.status === 404) return res.status(404).json(NOT_FOUND);
-    if (outcome.status === 409) {
-      return res.status(409).json({ code: "OWNER_MUST_TRANSFER", message: "Transfira o cargo de dono antes de sair" });
-    }
+    if (!outcome.ok) return res.status(outcome.status).json(outcome.body);
     announce(req, roomId, me, outcome.roomDeleted);
     return res.status(200).json({ room: roomId, roomDeleted: outcome.roomDeleted });
   } catch (err) {
@@ -90,23 +107,20 @@ const removeMember = async (req, res, next) => {
   const roomId = req.params.id;
   const target = req.params.userId;
   const me = req.session.userId;
-  const invite = crypto.randomBytes(16).toString("hex");
+  const invite = newInvite();
   try {
-    const status = await withTransaction(async (client) => {
-      const room = await lockRoomFor(client, roomId, me);
-      if (!room) return 404;
-      if (room.owner_id !== me) return 403;
-      if (target === me) return 400;
+    const outcome = await withTransaction(async (client) => {
+      const refused = await lockOwnedRoom(client, roomId, me);
+      if (refused) return refused;
+      if (target === me) return refuse(400, "Para sair da sala use POST /rooms/:id/leave");
       const isMember = await client.query("SELECT 1 FROM rooms_users WHERE room = $1 AND user_id = $2", [roomId, target]);
-      if (isMember.rowCount === 0) return 404;
+      if (isMember.rowCount === 0) return NOT_FOUND;
       await detach(client, roomId, target);
       await client.query("INSERT INTO room_bans (room, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [roomId, target]);
-      await client.query("UPDATE rooms SET invite_hash = $2 WHERE id = $1", [roomId, inviteHash(invite)]);
-      return 200;
+      await setInvite(client, roomId, invite);
+      return { ok: true };
     });
-    if (status === 404) return res.status(404).json(NOT_FOUND);
-    if (status === 403) return res.status(403).json(FORBIDDEN);
-    if (status === 400) return res.status(400).json({ message: "Para sair da sala use POST /rooms/:id/leave" });
+    if (!outcome.ok) return res.status(outcome.status).json(outcome.body);
     announce(req, roomId, target, false);
     return res.status(200).json({ room: roomId, userId: target, invite });
   } catch (err) {
@@ -121,25 +135,21 @@ const transferOwner = async (req, res, next) => {
   const target = req.body.userId;
   const me = req.session.userId;
   try {
-    const status = await withTransaction(async (client) => {
-      const room = await lockRoomFor(client, roomId, me);
-      if (!room) return 404;
-      if (room.owner_id !== me) return 403;
-      if (target === me) return 400;
+    const outcome = await withTransaction(async (client) => {
+      const refused = await lockOwnedRoom(client, roomId, me);
+      if (refused) return refused;
+      if (target === me) return refuse(400, "Você já é o dono");
       const { rows } = await client.query(
         `SELECT EXISTS (SELECT 1 FROM room_current_wraps w WHERE w.room = m.room AND w.recipient_id = m.user_id) AS has_key
          FROM rooms_users m WHERE m.room = $1 AND m.user_id = $2`,
         [roomId, target]
       );
-      if (rows.length === 0) return 404;
-      if (!rows[0].has_key) return 409;
+      if (rows.length === 0) return NOT_FOUND;
+      if (!rows[0].has_key) return refuse(409, "O novo dono precisa ter a chave atual da sala");
       await client.query("UPDATE rooms SET owner_id = $2 WHERE id = $1", [roomId, target]);
-      return 200;
+      return { ok: true };
     });
-    if (status === 404) return res.status(404).json(NOT_FOUND);
-    if (status === 403) return res.status(403).json(FORBIDDEN);
-    if (status === 400) return res.status(400).json({ message: "Você já é o dono" });
-    if (status === 409) return res.status(409).json({ message: "O novo dono precisa ter a chave atual da sala" });
+    if (!outcome.ok) return res.status(outcome.status).json(outcome.body);
     return res.status(200).json({ room: roomId, ownerId: target });
   } catch (err) {
     return next(err);
@@ -151,17 +161,15 @@ const transferOwner = async (req, res, next) => {
 const rotateInvite = async (req, res, next) => {
   const roomId = req.params.id;
   const me = req.session.userId;
-  const invite = crypto.randomBytes(16).toString("hex");
+  const invite = newInvite();
   try {
-    const status = await withTransaction(async (client) => {
-      const room = await lockRoomFor(client, roomId, me);
-      if (!room) return 404;
-      if (room.owner_id !== me) return 403;
-      await client.query("UPDATE rooms SET invite_hash = $2 WHERE id = $1", [roomId, inviteHash(invite)]);
-      return 200;
+    const outcome = await withTransaction(async (client) => {
+      const refused = await lockOwnedRoom(client, roomId, me);
+      if (refused) return refused;
+      await setInvite(client, roomId, invite);
+      return { ok: true };
     });
-    if (status === 404) return res.status(404).json(NOT_FOUND);
-    if (status === 403) return res.status(403).json(FORBIDDEN);
+    if (!outcome.ok) return res.status(outcome.status).json(outcome.body);
     return res.status(200).json({ room: roomId, invite });
   } catch (err) {
     return next(err);

@@ -21,6 +21,7 @@ const { verifyWrapSig, verifyCommitmentSig } = require("../helpers/signatures");
 const FORBIDDEN = { message: "Acesso negado" };
 const VERSION_MISMATCH = { message: "Versão da chave diferente da atual da sala" };
 const ROTATION_PENDING = { code: "ROTATION_PENDING", message: "A chave da sala precisa ser trocada antes" };
+const INVALID_RECIPIENT = { message: "Destinatário inválido" };
 
 const roomState = async (roomId, userId) => {
   const { rows } = await pool.query(
@@ -152,7 +153,7 @@ const postWrap = async (req, res, next) => {
     if (!room.has_key) return res.status(403).json(FORBIDDEN);
     if (room.rotation_required) return res.status(409).json(ROTATION_PENDING);
     const isMember = (await pool.query("SELECT 1 FROM rooms_users WHERE room = $1 AND user_id = $2", [roomId, recipientId])).rowCount > 0;
-    if (!isMember) return res.status(400).json({ message: "Destinatário inválido" });
+    if (!isMember) return res.status(400).json(INVALID_RECIPIENT);
     const outcome = await withTransaction(async (client) => {
       // Achado da revisão: as checagens acima rodam fora da transação. Com a
       // sala travada (FOR SHARE), uma saída, remoção ou rotação concorrente
@@ -187,7 +188,7 @@ const postWrap = async (req, res, next) => {
     if (outcome === "forbidden") return res.status(403).json(FORBIDDEN);
     if (outcome === "rotation") return res.status(409).json(ROTATION_PENDING);
     if (outcome === "version") return res.status(409).json(VERSION_MISMATCH);
-    if (outcome === "not-member") return res.status(400).json({ message: "Destinatário inválido" });
+    if (outcome === "not-member") return res.status(400).json(INVALID_RECIPIENT);
     if (outcome === "stale-recipient") {
       return res.status(409).json({ message: "As chaves do destinatário mudaram; busque-as de novo" });
     }
@@ -256,7 +257,7 @@ const rotateRoomKey = async (req, res, next) => {
         [roomId, me]
       );
       const room = rooms[0];
-      if (!room?.has_key) return { status: 403 };
+      if (!room?.has_key) return { status: 403, body: FORBIDDEN };
       if (version !== room.key_version + 1) return { status: 409, body: VERSION_MISMATCH };
       // Membros atuais e suas chaves; FOR SHARE em user_keys: um reset
       // concorrente espera esta transação (e então apaga os wraps novos).
@@ -302,7 +303,6 @@ const rotateRoomKey = async (req, res, next) => {
       await client.query("UPDATE rooms SET key_version = $2, rotation_required = FALSE WHERE id = $1", [roomId, version]);
       return { status: 201, pending: members.length > wraps.length };
     });
-    if (outcome.status === 403) return res.status(403).json(FORBIDDEN);
     if (outcome.status !== 201) return res.status(outcome.status).json(outcome.body);
     const { notify } = req.app.locals;
     for (const recipientId of recipients) notify.keyReady(recipientId, roomId);
