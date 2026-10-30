@@ -90,7 +90,10 @@ dumpcap -D 2>/dev/null | grep -qw "$BRIDGE" || { echo "erro: o dumpcap não enxe
 
 TMP="$(mktemp -d)"
 STAMP="$(date +%s)-$RANDOM"
-ROOM_NAME="verify-e2ee-$STAMP"
+# Nome da sala que NÃO é prefixo de nenhum e-mail temporário (os e-mails
+# aparecem no banco e na captura; senão a prova do nome cifrado acusaria um
+# falso positivo).
+ROOM_NAME="SALA-VERIFY-$(openssl rand -hex 8)"
 A_EMAIL="verify-e2ee-$STAMP-a@example.invalid"
 B_EMAIL="verify-e2ee-$STAMP-b@example.invalid"
 C_EMAIL="verify-e2ee-$STAMP-c@example.invalid"
@@ -193,6 +196,9 @@ expect_text() { # expect_text esperar-claro|esperar-cifrado "descrição" TEXTO 
 section "Preparação"
 [ -n "$MUTATION" ] && echo "  (MUTAÇÃO ATIVA: $MUTATION — esperado: provas falharem)"
 BACKEND_MUTATED=1 # a limpeza recria o backend sem as flags, mesmo se o passo abaixo falhar no meio
+# A varredura dos logs começa ANTES da recriação: o aviso de início do
+# backend é o controle positivo (num fluxo sem erro ninguém registra nada).
+LOG_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 if "${COMPOSE[@]}" "${SERVER_OVERRIDES[@]}" up -d --no-deps --wait backend >/dev/null 2>"$TMP/mutate.err"; then
   ok "backend recriado com o relógio de teste${MUTATION:+ e a flag da mutação $MUTATION}"
   check "o relógio de teste está mesmo ativo no contêiner" test "$("${COMPOSE[@]}" exec -T backend printenv E2EE_TEST_CLOCK 2>/dev/null)" = "inseguro-so-para-teste"
@@ -203,7 +209,6 @@ if "${COMPOSE[@]}" "${SERVER_OVERRIDES[@]}" up -d --no-deps --wait backend >/dev
 else
   ko "recriar o backend com o relógio de teste"; sed 's/^/         | /' "$TMP/mutate.err"; exit 1
 fi
-LOG_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" # a varredura dos logs começa aqui
 CA="$TMP/ca.crt"
 if scripts/export-ca.sh "$CA" >/dev/null; then ok "CA raiz exportada"; else ko "exportar a CA"; exit 1; fi
 register() { # register EMAIL SENHA NOME → HTTP status
