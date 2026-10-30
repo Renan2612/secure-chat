@@ -13,10 +13,13 @@ const crypto = require("node:crypto");
 const WRAP_SIG_LABEL = "secure-chat/v1/wrap-sig";
 const COMMIT_SIG_LABEL = "secure-chat/v1/key-commitment-sig";
 
+// A chave do autor vem do diretório (validada no PUT /keys): se ela não
+// importa, o banco está corrompido — erro do servidor (500, com log), não
+// "assinatura inválida". Assinatura malformada é só inválida (false).
 const verify = (ecdsaPubB64url, items, sigB64url) => {
+  const key = crypto.createPublicKey({ key: Buffer.from(ecdsaPubB64url, "base64url"), format: "der", type: "spki" });
+  const data = Buffer.from(JSON.stringify(items), "utf8");
   try {
-    const key = crypto.createPublicKey({ key: Buffer.from(ecdsaPubB64url, "base64url"), format: "der", type: "spki" });
-    const data = Buffer.from(JSON.stringify(items), "utf8");
     return crypto.verify("sha256", data, { key, dsaEncoding: "ieee-p1363" }, Buffer.from(sigB64url, "base64url"));
   } catch {
     return false;

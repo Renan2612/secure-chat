@@ -9,6 +9,8 @@
 // Uma mensagem é tentada com a chave da versão dela E com cada uma das
 // outras (um removido que "chuta" a chave antiga no lugar da nova). Um wrap
 // é tentado como se fosse para o próprio usuário e para o destinatário real.
+// Só um erro de criptografia (E2eeError) conta como "não abre"; qualquer
+// outro (bug, parâmetro errado) aborta com 2, para nunca virar um OK falso.
 // Sai 0 se rodou até o fim (o chamador interpreta as linhas); 2 em erro.
 process.on("uncaughtException", (err) => {
   process.stderr.write(`try-decrypt: ${err.message}\n`);
@@ -45,7 +47,9 @@ const main = async () => {
         try {
           text = await e2ee.decryptMessage({ body: c.body, roomKeys: { [env.kv]: key }, roomId: c.room, senderId: c.from, cid: c.cid, senderEcdsaPub: c.senderEcdsaPub });
           break;
-        } catch {}
+        } catch (err) {
+          if (!(err instanceof e2ee.E2eeError)) throw err; // bug do detector ≠ "não abre"
+        }
       }
       process.stdout.write(text === null ? "fail NO_KEY_OPENS\n" : `ok ${text}\n`);
     } else if (c.kind === "wrap") {
@@ -54,7 +58,9 @@ const main = async () => {
         try {
           await e2ee.unwrapRoomKey({ wrap: c, roomId: c.room, version: c.version, senderId: c.senderId, recipientId, recipientEcdhKey: identity.ecdh.privateKey, senderEcdsaPub: c.senderEcdsaPub });
           opened = true;
-        } catch {}
+        } catch (err) {
+          if (!(err instanceof e2ee.E2eeError)) throw err;
+        }
       }
       process.stdout.write(opened ? "ok wrap\n" : "fail INVALID_WRAP\n");
     } else {

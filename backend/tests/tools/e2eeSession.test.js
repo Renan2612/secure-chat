@@ -242,4 +242,23 @@ describe("P1: trust store ausente com keystore existente", () => {
     expect(again.data.trustStoreId).toBeTruthy();
     expect((await files.readSealedFile(again.trustPath, PASS)).id).toBe(again.data.trustStoreId);
   });
+
+  test("o trust store ANTIGO que reaparece depois do TOFU reiniciado não vale mais (recusa)", async () => {
+    const { s } = await newSession({});
+    const copy = `${s.trustPath}.copia`;
+    fs.copyFileSync(s.trustPath, copy);
+    fs.rmSync(s.trustPath);
+    await reopen(s.keystorePath); // TOFU reiniciado, identificador novo
+    fs.copyFileSync(copy, s.trustPath);
+    await expect(reopen(s.keystorePath)).rejects.toThrow(/não pertence a este keystore/);
+  });
+
+  test("keystore novo num caminho onde já existe um trust store → recusa, sem sobrescrever", async () => {
+    const { s } = await newSession({});
+    const before = fs.readFileSync(s.trustPath, "utf8");
+    fs.rmSync(s.keystorePath);
+    await expect(reopen(s.keystorePath)).rejects.toThrow(/já existe um trust store/);
+    expect(fs.readFileSync(s.trustPath, "utf8")).toBe(before);
+    expect(fs.existsSync(s.keystorePath)).toBe(false);
+  });
 });

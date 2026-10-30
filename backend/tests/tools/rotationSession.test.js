@@ -303,3 +303,47 @@ describe("achados da revisão de segurança", () => {
     expect(left).toContain(dave.id);
   });
 });
+
+describe("achados da revisão de testes (cliente)", () => {
+  test("wrap ruim de uma versão ANTIGA só avisa: não descarta o wrap bom da versão atual (negação de serviço)", async () => {
+    await alice.kick(room, bob.id);
+    delete carol.data.roomKeys[room];
+    carol.importedKeys.clear();
+    await pool.query("UPDATE room_key_wraps SET wrapped = $1 WHERE room = $2 AND version = 1 AND recipient_id = $3", ["A".repeat(64), room, carol.id]);
+    expect((await carol.ensureRoomKey(room)).ok).toBe(true);
+    expect(Object.keys(await carol.roomKeysFor(room))).toEqual(["2"]);
+    expect(carol.printed.join("\n")).toMatch(/v1 da sala \d+ não confere .* ilegível/);
+    expect((await pool.query("SELECT 1 FROM room_key_wraps WHERE room = $1 AND version = 2 AND recipient_id = $2", [room, carol.id])).rowCount).toBe(1);
+  });
+
+  test("ataque: o servidor atribui a MIM (created_by) uma v2 feita por outra conta → o compromisso não confere, recusada", async () => {
+    const mallory = await sessionFor("mallory");
+    await pool.query("INSERT INTO rooms_users (room, user_id, last_msg_viewed) VALUES ($1, $2, 0)", [room, mallory.id]);
+    await alice.approve(room, mallory.id);
+    expect((await mallory.ensureRoomKey(room)).ok).toBe(true);
+    await verify(mallory, carol);
+    expect((await mallory.rotate(room)).rotated).toBe(true);
+    await pool.query("UPDATE room_key_versions SET created_by = $1 WHERE room = $2 AND version = 2", [carol.id, room]);
+    expect(await carol.ensureRoomKey(room)).toEqual({ ok: false });
+    expect(carol.printed.join("\n")).toMatch(/KEY_COMMITMENT_MISMATCH/);
+  });
+
+  test("quem estava offline descobre a rotação pendente pelo GET (rotationRequired) e rotaciona", async () => {
+    await bob.leave(room);
+    await carol.ensureRoomKey(room);
+    expect(carol.rotationRequired.get(room)).toBe(true);
+    expect((await carol.autoRotate(room, { maxDelayMs: 0 })).rotated).toBe(true);
+    expect(carol.rotationRequired.get(room)).toBe(false);
+  });
+
+  test("/kick com a troca da chave falhando ainda devolve o convite novo (que o servidor dá uma única vez)", async () => {
+    const realRotate = alice.rotate;
+    alice.rotate = async () => {
+      throw new Error("rede caiu");
+    };
+    const { invite: fresh, rotationError } = await alice.kick(room, bob.id);
+    alice.rotate = realRotate;
+    expect(fresh).toMatch(/^[0-9a-f]{32}$/);
+    expect(rotationError.message).toMatch(/rede caiu/);
+  });
+});

@@ -440,8 +440,12 @@ const main = async () => {
       }
       case "/kick": {
         if (!Number.isInteger(userId) || userId <= 0) return print("uso: /kick <userId>");
-        const { invite, rotation } = await session.kick(room, userId);
+        const { invite, rotation, rotationError } = await session.kick(room, userId);
         print(`usuário ${userId} removido da sala ${room}; convite novo (mostrado só agora): ${invite}`);
+        if (rotationError) {
+          exitCode = 1;
+          return print(`! membro removido, mas a troca da chave falhou (${describeError(rotationError)}): o envio fica bloqueado até um /rotate`);
+        }
         return reportRotation(rotation);
       }
       case "/rotate":
@@ -514,6 +518,12 @@ const main = async () => {
     if (got.ok) {
       const from = got.sender === undefined || got.sender === user.id ? "" : `; entregue por usuário ${got.sender} [${session.trustLabel(got.sender)}]`;
       print(`chave da sala ${room} disponível (v${session.currentVersion.get(room)}${from})`);
+      // A rotação pode estar pendente desde antes desta conexão (ninguém com
+      // a chave estava online quando alguém saiu).
+      if (session.rotationRequired.get(room)) {
+        print(`a sala ${room} aguarda a troca da chave (alguém saiu); tentando trocá-la`);
+        return reportRotation(await session.autoRotate(room));
+      }
       await session.distribute(room);
     } else {
       print(`sem a chave da sala ${room}: aguardando um membro entregá-la`);
@@ -603,7 +613,10 @@ const main = async () => {
         return enqueue(() => showDelivery(packet));
       case "ERROR":
         print(`! ${clean(packet.code)}: ${clean(packet.message)}`);
-        if (packet.code === "ROTATION_PENDING") print("  (a mensagem NÃO foi enviada; reenvie depois que a chave for trocada)");
+        if (packet.code === "ROTATION_PENDING") {
+          print("  (a mensagem NÃO foi enviada; reenvie depois que a chave for trocada)");
+          enqueue(async () => reportRotation(await session.autoRotate(room)));
+        }
         if (packet.ref === "subscribe") {
           exitCode = 1; // sem a inscrição não há o que fazer
           return ws.close(1000);

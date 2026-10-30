@@ -337,3 +337,38 @@ describe("limites do corpo da rotação (acréscimo c)", () => {
     expect(res.status).toBe(413);
   });
 });
+
+describe("achados da revisão de testes", () => {
+  test("ataque: entregar a chave ANTIGA a quem entra durante a rotação exigida → 409 ROTATION_PENDING, nenhum wrap", async () => {
+    await carol.call("post", `/rooms/${room.roomId}/leave`);
+    const dave = await registerKeys(asCookie(srv, await loginUser(srv, "dave")));
+    await join(dave, room);
+    const res = await grant(alice, room, dave);
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({ code: "ROTATION_PENDING" });
+    expect((await pool.query("SELECT 1 FROM room_key_wraps WHERE recipient_id = $1", [dave.id])).rowCount).toBe(0);
+  });
+
+  test("ataque: quem saiu e voltou (sair não bane) não recebe a chave antiga enquanto a rotação é exigida", async () => {
+    await carol.call("post", `/rooms/${room.roomId}/leave`);
+    await join(carol, room);
+    expect((await grant(alice, room, carol)).status).toBe(409);
+    expect((await carol.call("get", `/rooms/${room.roomId}/keys`)).body).toMatchObject({ wraps: [], rotationRequired: true });
+  });
+
+  test.each([
+    ["wraps assinados para a v1", { wrapVersion: 1 }],
+    ["wraps assinados para outra sala", { wrapRoom: 999 }],
+  ])("ataque: rotação v2 com %s → 400, nada gravado", async (_label, { wrapVersion = 2, wrapRoom }) => {
+    await removeBob();
+    const key = await e2ee.generateRoomKey();
+    const commitment = await e2ee.commitRoomKey({ roomId: room.roomId, version: 2, roomKey: key, creatorEcdsaKey: alice.identity.ecdsa.privateKey });
+    const wraps = [];
+    for (const r of [alice, carol]) {
+      const wrap = await wrapFor(alice, { roomId: wrapRoom ?? room.roomId, version: wrapVersion, roomKey: key, recipientId: r.id, recipientEcdhPub: r.pub.ecdhPub });
+      wraps.push({ recipientId: r.id, recipientKeyEpoch: 1, wrap });
+    }
+    expect((await rotate(alice, { version: 2, ...commitment, wraps })).status).toBe(400);
+    expect(await versions()).toEqual([1]);
+  });
+});

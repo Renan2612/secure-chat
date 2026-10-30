@@ -62,7 +62,14 @@ const writeSealedFile = async (file, passphrase, data) => {
     const fd = fs.openSync(tmp, "wx", 0o600);
     try {
       fs.fchmodSync(fd, 0o600); // independe do umask
-      fs.writeSync(fd, `${JSON.stringify(sealed)}\n`);
+      // writeSync pode gravar menos do que o pedido sem lançar: repete até o
+      // fim (achado da revisão), senão um arquivo truncado iria para o lugar.
+      const bytes = Buffer.from(`${JSON.stringify(sealed)}\n`, "utf8");
+      for (let offset = 0; offset < bytes.length; ) {
+        const written = fs.writeSync(fd, bytes, offset, bytes.length - offset);
+        if (!(written > 0)) throw new Error(`gravação de ${file} não avançou`);
+        offset += written;
+      }
       fs.fsyncSync(fd);
     } finally {
       fs.closeSync(fd);

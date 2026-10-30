@@ -31,6 +31,7 @@ class E2eeSession {
     Object.assign(this, { api, me, email, keystorePath, passphrase, print });
     this.trustPath = files.trustStorePath(keystorePath);
     this.currentVersion = new Map(); // sala → versão atual da chave
+    this.rotationRequired = new Map(); // sala → o servidor exige a troca da chave
     this.importedKeys = new Map(); // `${sala}:${versão}` → CryptoKey
     this.shownFingerprint = new Map(); // userId → fingerprint exibida no /safety
     // Quem decide quem é membro é o SERVIDOR: a chave da sala só é entregue
@@ -74,6 +75,9 @@ class E2eeSession {
   async openTrust(fresh) {
     const newId = () => e2ee.encoding.toB64url(e2ee.primitives.randomBytes(16));
     const known = this.data.trustStoreId;
+    if (fresh && fs.existsSync(this.trustPath)) {
+      throw new Error(`já existe um trust store em ${this.trustPath} sem o keystore correspondente; mova-o ou use outro --keystore (nada foi alterado)`);
+    }
     if (!fresh && fs.existsSync(this.trustPath)) {
       const trust = await files.readSealedFile(this.trustPath, this.passphrase);
       if (known && trust.id !== known) {
@@ -251,6 +255,7 @@ class E2eeSession {
       return { ok: false };
     }
     this.currentVersion.set(room, state.currentVersion);
+    this.rotationRequired.set(room, state.rotationRequired === true);
     if (this.hasCurrentKey(room)) return { ok: true };
     const missing = state.wraps
       .filter((w) => w.version <= state.currentVersion && !this.data.roomKeys[room]?.[w.version])
@@ -274,7 +279,10 @@ class E2eeSession {
   // pode entregar um bom).
   async openWrap(room, state, wrap) {
     const info = state.versions.find((v) => v.version === wrap.version);
-    if (!info) return false;
+    if (!info) {
+      this.print(`! o servidor entregou um wrap da v${clean(wrap.version)} da sala ${room} sem o compromisso dessa versão: não aceito`);
+      return false;
+    }
     const pinned = this.data.rooms[room];
     if (wrap.version === 1 && pinned?.creator !== undefined && pinned.creator !== info.createdBy) {
       this.print(`! o criador da sala ${room} informado pelo servidor mudou (era usuário ${pinned.creator}, agora ${clean(info.createdBy)}): chave recusada`);
@@ -459,10 +467,17 @@ class E2eeSession {
         wraps.push({ recipientId: r.userId, recipientKeyEpoch: r.keyEpoch, wrap });
       }
       const res = await this.api("post", `/rooms/${room}/keys/rotate`, { version, ...commitment, wraps });
-      if (res.status === 201 && !res.parseError) {
-        const pinned = this.data.rooms[room];
-        await this.storeRoomKey(room, version, roomKey, { creator: pinned?.creator, version });
+      if (res.status === 201) {
+        // A versão nova já existe no servidor: uma falha local aqui não pode
+        // virar "o servidor recusou". O próprio wrap continua lá.
+        try {
+          const pinned = this.data.rooms[room];
+          await this.storeRoomKey(room, version, roomKey, { creator: pinned?.creator, version });
+        } catch (err) {
+          throw new Error(`a chave da sala ${room} foi trocada (v${version}), mas não foi possível gravá-la no keystore (${err.message}); ela será lida do seu wrap ao reiniciar`);
+        }
         this.currentVersion.set(room, version);
+        this.rotationRequired.set(room, false);
         return { rotated: true, version, left };
       }
       if (res.status === 409 && res.body?.code === "STALE_MEMBERSHIP") continue;
@@ -470,7 +485,8 @@ class E2eeSession {
         await this.ensureRoomKey(room);
         return { rotated: false, reason: "concurrent" };
       }
-      throw new Error(`o servidor recusou a troca da chave da sala ${room} (${res.status})`);
+      const why = typeof res.body?.message === "string" ? `: ${clean(res.body.message)}` : "";
+      throw new Error(`o servidor recusou a troca da chave da sala ${room} (${res.status}${why})`);
     }
     return { rotated: false, reason: "stale" };
   }
@@ -501,9 +517,15 @@ class E2eeSession {
   async kick(room, userId) {
     const removed = ok(await this.api("delete", `/rooms/${room}/members/${userId}`), 200);
     this.approved.delete(`${room}:${userId}`);
-    const kicked = { ...this.data.kicked, [room]: [...new Set([...(this.data.kicked?.[room] ?? []), userId])] };
-    await this.save({ ...this.data, kicked });
-    return { invite: removed.invite, rotation: await this.rotate(room) };
+    // A remoção já valeu no servidor e o convite novo só vem nesta resposta:
+    // nada abaixo pode fazê-lo sumir. Uma falha vira `rotationError`.
+    try {
+      const kicked = { ...this.data.kicked, [room]: [...new Set([...(this.data.kicked?.[room] ?? []), userId])] };
+      await this.save({ ...this.data, kicked });
+      return { invite: removed.invite, rotation: await this.rotate(room) };
+    } catch (err) {
+      return { invite: removed.invite, rotationError: err };
+    }
   }
 
   async transferOwner(room, userId) {

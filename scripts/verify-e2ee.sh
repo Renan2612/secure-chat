@@ -54,7 +54,15 @@ section() { printf '\n== %s\n' "$*"; }
 for tool in curl openssl node docker dumpcap tshark timeout grep sed mkfifo; do
   command -v "$tool" >/dev/null || { echo "erro: '$tool' não encontrado" >&2; exit 2; }
 done
-case "$MUTATION" in "" | plain-envelope | no-encrypt | reuse-old-key | server-no-rotation) ;; *) echo "erro: MUTATION inválida: $MUTATION" >&2; exit 2 ;; esac
+CLIENT_MUTATION=""
+case "$MUTATION" in
+  "" | server-no-rotation) ;;
+  plain-envelope | no-encrypt | reuse-old-key) CLIENT_MUTATION="scripts/mutations/$MUTATION.js" ;;
+  *) echo "erro: MUTATION inválida: $MUTATION" >&2; exit 2 ;;
+esac
+# Uma mutação que não carrega rodaria o script SEM mutação (e "passaria").
+[ -z "$CLIENT_MUTATION" ] || [ -f "$CLIENT_MUTATION" ] || { echo "erro: $CLIENT_MUTATION não existe" >&2; exit 2; }
+[ "$MUTATION" != server-no-rotation ] || [ -f scripts/mutations/server-no-rotation.compose.yml ] || { echo "erro: scripts/mutations/server-no-rotation.compose.yml não existe" >&2; exit 2; }
 if [ -z "$("${COMPOSE[@]}" ps -q --status running proxy 2>/dev/null)" ]; then
   echo "erro: a stack não está no ar (docker compose --env-file backend/.env up --build -d)" >&2
   exit 2
@@ -172,6 +180,7 @@ if [ "$MUTATION" = server-no-rotation ]; then
   BACKEND_MUTATED=1 # a limpeza recria o backend sem a flag, mesmo se o passo abaixo falhar no meio
   if "${COMPOSE[@]}" -f docker-compose.yml -f scripts/mutations/server-no-rotation.compose.yml up -d --no-deps --wait backend >/dev/null 2>"$TMP/mutate.err"; then
     ok "backend recriado com a flag de teste E2EE_TEST_SKIP_ROTATION"
+    check "a flag de teste está mesmo ativa no contêiner" test "$("${COMPOSE[@]}" exec -T backend printenv E2EE_TEST_SKIP_ROTATION 2>/dev/null)" = "inseguro-so-para-teste"
   else
     ko "recriar o backend com a flag de teste"; sed 's/^/         | /' "$TMP/mutate.err"; exit 1
   fi
@@ -200,7 +209,7 @@ start_client() { # start_client NOME EMAIL SENHA SENHA-CIFRAGEM ARGS...
   shift 4
   mkfifo "$TMP/$name.in"
   local preload=()
-  [ -f "scripts/mutations/$MUTATION.js" ] && preload=(--require "./scripts/mutations/$MUTATION.js")
+  [ -n "$CLIENT_MUTATION" ] && preload=(--require "./$CLIENT_MUTATION")
   CHAT_PASSWORD="$password" CHAT_KEY_PASSPHRASE="$keypass" HOME="$TMP/home-$name" timeout 200 node "${preload[@]}" \
     backend/tools/ws-client.js --server "$BASE/api" --ca "$CA" --origin "$BASE" --email "$email" \
     --keystore "$TMP/home-$name/keystore.json" "$@" <"$TMP/$name.in" >"$TMP/$name.out" 2>&1 &
@@ -335,7 +344,8 @@ echo "         exemplo do que o banco guarda: $(head -c 120 "$TMP/bodies.txt")�
 section "(4b-2) remoção do Bob e troca da chave"
 check "o servidor exigiu a troca da chave: a Carol recebeu o aviso (ROTATION_PENDING)" grep -q "evento: alguém saiu da sala ${ROOM_ID:-x}" "$TMP/carol.out"
 check "o Bob foi avisado da remoção e desinscrito" grep -q "não é mais membro da sala ${ROOM_ID:-x}" "$TMP/bob.out"
-check "Alice e Carol passaram à chave v2 (rotação automática)" grep -q "disponível (v2" "$TMP/carol.out"
+both_v2() { grep -q "disponível (v2" "$TMP/alice.out" && grep -q "disponível (v2" "$TMP/carol.out"; }
+check "Alice e Carol passaram à chave v2 (rotação automática)" both_v2
 V2_TO_BOB="$(psql_dev -c "SELECT COUNT(*) FROM room_key_wraps WHERE room = ${ROOM_ID:-0} AND version = 2 AND recipient_id = ${B_ID:-0}")"
 V2_WRAPS="$(psql_dev -c "SELECT COUNT(*) FROM room_key_wraps WHERE room = ${ROOM_ID:-0} AND version = 2")"
 check "a v2 tem wraps só para quem ficou (${V2_WRAPS:-?} wraps, ${V2_TO_BOB:-?} para o Bob)" test "${V2_WRAPS:-0}:${V2_TO_BOB:-x}" = "2:0"
@@ -345,30 +355,38 @@ check "Carol mostra o marcador da v2, decifrado e verificado" grep -qF "usuário
 # sem rotação, ela sai na v1) e TODOS os wraps da v2 (de qualquer
 # destinatário), com as chaves públicas dos remetentes. "Antes" = as duas
 # primeiras mensagens (v1).
-psql_dev >"$TMP/v2.jsonl" <<SQL
+V2_RC=0; V1_RC=0
+psql_dev >"$TMP/v2.jsonl" <<SQL || V2_RC=$?
 SELECT json_build_object('kind','message','room',m.room,'from',m.user_id,'cid',m.cid,'body',m.message,'senderEcdsaPub',k.ecdsa_pub)::text
   FROM messages m JOIN user_keys k ON k.user_id = m.user_id WHERE m.room = ${ROOM_ID:-0} ORDER BY m.id OFFSET 2;
 SELECT json_build_object('kind','wrap','room',w.room,'version',w.version,'recipientId',w.recipient_id,'senderId',w.sender_id,
        'ephPub',w.eph_pub,'iv',w.iv,'wrapped',w.wrapped,'sig',w.sig,'senderEcdsaPub',k.ecdsa_pub)::text
   FROM room_key_wraps w JOIN user_keys k ON k.user_id = w.sender_id WHERE w.room = ${ROOM_ID:-0} AND w.version = 2;
 SQL
-psql_dev >"$TMP/v1.jsonl" <<SQL
+psql_dev >"$TMP/v1.jsonl" <<SQL || V1_RC=$?
 SELECT json_build_object('kind','message','room',m.room,'from',m.user_id,'cid',m.cid,'body',m.message,'senderEcdsaPub',k.ecdsa_pub)::text
   FROM messages m JOIN user_keys k ON k.user_id = m.user_id WHERE m.room = ${ROOM_ID:-0} ORDER BY m.id LIMIT 2;
 SQL
-check "pacotes de depois da remoção capturados do banco ($(grep -c . "$TMP/v2.jsonl") = 1 mensagem + os wraps da v2)" test "$(grep -c '"kind" : "message"\|"kind":"message"' "$TMP/v2.jsonl")" -ge 1
+count_kind() { grep -c "\"kind\" *: *\"$1\"" "$2"; }
+packets_ok() {
+  [ "$V2_RC:$V1_RC" = "0:0" ] && [ "$(count_kind message "$TMP/v2.jsonl")" = 1 ] &&
+    [ "$(count_kind wrap "$TMP/v2.jsonl")" = "${V2_WRAPS:-x}" ] && [ "$(count_kind message "$TMP/v1.jsonl")" = 2 ]
+}
+check "pacotes capturados do banco: 1 mensagem de depois da remoção + os ${V2_WRAPS:-?} wraps da v2; 2 mensagens de antes" packets_ok
 try_decrypt() { # try_decrypt KEYSTORE SENHA < candidatos → linhas ok/fail
   TRY_KEYPASS="$2" node scripts/lib/try-decrypt.js "$1"
 }
 BOB_V2="$(try_decrypt "$TMP/home-bob/keystore.json" "$B_KEYPASS" <"$TMP/v2.jsonl")"; BOB_V2_RC=$?
-BOB_V1="$(try_decrypt "$TMP/home-bob/keystore.json" "$B_KEYPASS" <"$TMP/v1.jsonl")"
-CAROL_V1="$(try_decrypt "$TMP/home-carol/keystore.json" "$C_KEYPASS" <"$TMP/v1.jsonl")"
-CAROL_V2="$(try_decrypt "$TMP/home-carol/keystore.json" "$C_KEYPASS" <"$TMP/v2.jsonl")"
+BOB_V1="$(try_decrypt "$TMP/home-bob/keystore.json" "$B_KEYPASS" <"$TMP/v1.jsonl")"; BOB_V1_RC=$?
+CAROL_V1="$(try_decrypt "$TMP/home-carol/keystore.json" "$C_KEYPASS" <"$TMP/v1.jsonl")"; CAROL_V1_RC=$?
+CAROL_V2="$(try_decrypt "$TMP/home-carol/keystore.json" "$C_KEYPASS" <"$TMP/v2.jsonl")"; CAROL_V2_RC=$?
+check "o detector de decifragem rodou sem erro nas quatro tentativas" test "$BOB_V2_RC:$BOB_V1_RC:$CAROL_V1_RC:$CAROL_V2_RC" = "0:0:0:0"
 removed_blind() { [ "$BOB_V2_RC" = 0 ] && [ -n "$BOB_V2" ] && ! grep -q '^ok' <<<"$BOB_V2"; }
 check "(b) o removido, com o keystore inteiro e todos os pacotes de depois da remoção, não decifra nada novo" removed_blind
 check "controle positivo: com o mesmo keystore o Bob ainda lê a v1 (o removido retém o que já recebeu)" grep -qxF "ok $MARK_A" <<<"$BOB_V1"
 check "(c) quem ficou (Carol) ainda lê o texto antigo da v1 depois da rotação" grep -qxF "ok $MARK_B" <<<"$CAROL_V1"
 check "Carol lê o marcador novo com o próprio keystore" grep -qxF "ok $MARK_C" <<<"$CAROL_V2"
+check "controle positivo dos wraps: a Carol abre exatamente um wrap da v2 (o dela)" test "$(grep -cx 'ok wrap' <<<"$CAROL_V2")" = 1
 
 echo
 if [ "$FAILS" -eq 0 ]; then echo "RESULTADO: todas as provas passaram"; else echo "RESULTADO: $FAILS prova(s) falharam"; fi

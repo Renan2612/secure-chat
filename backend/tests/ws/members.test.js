@@ -296,3 +296,46 @@ describe("flag de teste E2EE_TEST_SKIP_ROTATION (só para a mutação do verify-
     a.ws.close();
   });
 });
+
+describe("achados da revisão de testes (concorrência determinística)", () => {
+  test("MSG_SEND espera a transação que trava a sala (FOR SHARE) e reavalia: remoção em andamento → ROTATION_PENDING, nada gravado", async () => {
+    await join(carol, room);
+    await grant(alice, room, carol);
+    const c = await subscribed(carol, room.roomId);
+    const lock = await pool.connect();
+    try {
+      await lock.query("BEGIN");
+      await lock.query("SELECT 1 FROM rooms WHERE id = $1 FOR UPDATE", [room.roomId]);
+      send(c.ws, { type: "MSG_SEND", id: "m", room: room.roomId, cid: "m", body: fakeEnvelope() });
+      await expectNoPacket(c.inbox, "MSG_ACK"); // esperando o lock, não gravou do snapshot antigo
+      await lock.query("UPDATE rooms SET rotation_required = TRUE WHERE id = $1", [room.roomId]);
+      await lock.query("COMMIT");
+    } finally {
+      lock.release();
+    }
+    expect(await nextPacket(c.inbox, "ERROR")).toMatchObject({ code: "ROTATION_PENDING", ref: "m" });
+    expect((await pool.query("SELECT 1 FROM messages WHERE room = $1", [room.roomId])).rowCount).toBe(0);
+    c.ws.close();
+  });
+
+  test("entregar a chave e remover o mesmo membro ao mesmo tempo: nunca sobra wrap para quem não é membro", async () => {
+    for (let n = 0; n < 5; n += 1) {
+      const dave = await registerKeys(asCookie(srv, await loginUser(srv, `dave${n}`)));
+      await pool.query("INSERT INTO rooms_users (room, user_id, last_msg_viewed) VALUES ($1, $2, 0)", [room.roomId, dave.id]);
+      await Promise.all([grant(alice, room, dave), remove(alice, dave)]);
+      const orphans = await pool.query(
+        "SELECT 1 FROM room_key_wraps w WHERE w.room = $1 AND NOT EXISTS (SELECT 1 FROM rooms_users m WHERE m.room = w.room AND m.user_id = w.recipient_id)",
+        [room.roomId]
+      );
+      expect(orphans.rowCount).toBe(0);
+      await pool.query("UPDATE rooms SET rotation_required = FALSE WHERE id = $1", [room.roomId]);
+    }
+  });
+
+  test("saída voluntária: quem ficou inscrito recebe ROTATION_PENDING", async () => {
+    const a = await subscribed(alice, room.roomId);
+    await leave(bob);
+    expect(await nextPacket(a.inbox, "ROOM_EVENT")).toMatchObject({ room: room.roomId, kind: "ROTATION_PENDING" });
+    a.ws.close();
+  });
+});

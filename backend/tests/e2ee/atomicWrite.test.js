@@ -23,7 +23,16 @@ afterEach(() => jest.restoreAllMocks());
 
 const leftovers = () => fs.readdirSync(dir).filter((name) => name !== "k.json");
 
-test("grava com fsync do arquivo e do diretório, temporário no mesmo diretório, 0600", async () => {
+test("grava com fsync do arquivo e do diretório, temporário no mesmo diretório, 0600 (mesmo com umask 0)", async () => {
+  const oldUmask = process.umask(0);
+  try {
+    await checkAtomicWrite();
+  } finally {
+    process.umask(oldUmask);
+  }
+});
+
+const checkAtomicWrite = async () => {
   const fsyncs = [];
   const opened = new Map();
   const realOpen = fs.openSync;
@@ -53,7 +62,7 @@ test("grava com fsync do arquivo e do diretório, temporário no mesmo diretóri
   expect(fs.statSync(file).mode & 0o777).toBe(0o600);
   expect(await store.readSealedFile(file, PASS)).toEqual({ versao: "nova" });
   expect(leftovers()).toEqual([]);
-});
+};
 
 test.each([
   ["a escrita falha no meio (disco cheio)", "writeSync"],
@@ -82,5 +91,22 @@ test("falha só no fsync do diretório (depois do rename) é informada: o arquiv
   await expect(store.writeSealedFile(file, PASS, { versao: "nova" })).rejects.toThrow(/diretório/);
   jest.restoreAllMocks();
   expect(await store.readSealedFile(file, PASS)).toEqual({ versao: "nova" });
+  expect(leftovers()).toEqual([]);
+});
+
+test("gravação curta (writeSync devolve menos bytes sem lançar) é completada: nunca vai um arquivo truncado para o lugar", async () => {
+  const real = fs.writeSync;
+  jest.spyOn(fs, "writeSync").mockImplementation((fd, buf, offset, length) => real(fd, buf, offset, Math.min(length, 10)));
+  await store.writeSealedFile(file, PASS, { versao: "nova" });
+  jest.restoreAllMocks();
+  expect(await store.readSealedFile(file, PASS)).toEqual({ versao: "nova" });
+  expect(leftovers()).toEqual([]);
+});
+
+test("writeSync que não avança (0 bytes) falha sem tocar no arquivo anterior", async () => {
+  jest.spyOn(fs, "writeSync").mockImplementation(() => 0);
+  await expect(store.writeSealedFile(file, PASS, { versao: "nova" })).rejects.toThrow(/não avançou/);
+  jest.restoreAllMocks();
+  expect(await store.readSealedFile(file, PASS)).toEqual({ versao: "antiga" });
   expect(leftovers()).toEqual([]);
 });

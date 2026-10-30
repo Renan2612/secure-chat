@@ -90,6 +90,9 @@ const getMyWraps = async (req, res, next) => {
     return res.status(200).json({
       room: roomId,
       currentVersion: room.key_version,
+      // 4b-2: quem estava offline quando alguém saiu também descobre que a
+      // chave precisa ser trocada (o ROTATION_PENDING só vai aos inscritos).
+      rotationRequired: room.rotation_required,
       versions: versions.rows.map((v) => ({
         version: v.version,
         createdBy: v.created_by,
@@ -151,6 +154,22 @@ const postWrap = async (req, res, next) => {
     const isMember = (await pool.query("SELECT 1 FROM rooms_users WHERE room = $1 AND user_id = $2", [roomId, recipientId])).rowCount > 0;
     if (!isMember) return res.status(400).json({ message: "Destinatário inválido" });
     const outcome = await withTransaction(async (client) => {
+      // Achado da revisão: as checagens acima rodam fora da transação. Com a
+      // sala travada (FOR SHARE), uma saída, remoção ou rotação concorrente
+      // termina antes, e tudo é conferido de novo: nunca fica wrap para quem
+      // acabou de ser removido, nem da versão antiga durante a rotação.
+      const { rows: current } = await client.query(
+        `SELECT r.key_version, r.rotation_required,
+                EXISTS (SELECT 1 FROM rooms_users m WHERE m.room = r.id AND m.user_id = $2) AS recipient_member,
+                EXISTS (SELECT 1 FROM room_current_wraps w WHERE w.room = r.id AND w.recipient_id = $3) AS sender_has_key
+         FROM rooms r WHERE r.id = $1 FOR SHARE`,
+        [roomId, recipientId, me]
+      );
+      const now = current[0];
+      if (!now?.sender_has_key) return "forbidden";
+      if (now.rotation_required) return "rotation";
+      if (now.key_version !== version) return "version";
+      if (!now.recipient_member) return "not-member";
       const { rows } = await client.query("SELECT key_epoch FROM user_keys WHERE user_id = $1 FOR SHARE", [recipientId]);
       if (rows[0]?.key_epoch !== recipientKeyEpoch) return "stale-recipient";
       const inserted = await client.query(
@@ -165,6 +184,10 @@ const postWrap = async (req, res, next) => {
       );
       return inserted.rowCount > 0 ? "saved" : "duplicate";
     });
+    if (outcome === "forbidden") return res.status(403).json(FORBIDDEN);
+    if (outcome === "rotation") return res.status(409).json(ROTATION_PENDING);
+    if (outcome === "version") return res.status(409).json(VERSION_MISMATCH);
+    if (outcome === "not-member") return res.status(400).json({ message: "Destinatário inválido" });
     if (outcome === "stale-recipient") {
       return res.status(409).json({ message: "As chaves do destinatário mudaram; busque-as de novo" });
     }

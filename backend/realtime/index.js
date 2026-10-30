@@ -182,17 +182,21 @@ const attachRealtime = (server, { session, trustProxy = proxyaddr.compile([]), .
 
   // Chamados pelas rotas HTTP sem esperar: uma falha aqui só perde o aviso
   // (o cliente também descobre pendências ao se inscrever).
-  const fireAndLog = (what, promise) =>
-    Promise.resolve(promise).catch((err) => console.error(`[ws] falha ao avisar ${what}: ${err.message}`));
+  // Recebe uma FUNÇÃO: um erro síncrono também vira só log (nunca um 500 de
+  // uma operação já gravada, nem impede os avisos seguintes).
+  const fireAndLog = (what, fn) =>
+    Promise.resolve()
+      .then(fn)
+      .catch((err) => console.error(`[ws] falha ao avisar ${what}: ${err.message}`));
 
   return {
     registry,
     notify: {
-      keyPending: (room) => fireAndLog("KEY_PENDING", notifyKeyPending(room)),
-      keyReady: (userId, room) => fireAndLog("KEY_READY", notifyKeyReady(userId, room)),
-      removed: (userId, room) => fireAndLog("REMOVED", notifyRemoved(userId, room)),
-      rotationPending: (room) => fireAndLog("ROTATION_PENDING", notifyRotationPending(room)),
-      keyRotated: (room) => fireAndLog("KEY_ROTATED", notifyKeyRotated(room)),
+      keyPending: (room) => fireAndLog("KEY_PENDING", () => notifyKeyPending(room)),
+      keyReady: (userId, room) => fireAndLog("KEY_READY", () => notifyKeyReady(userId, room)),
+      removed: (userId, room) => fireAndLog("REMOVED", () => notifyRemoved(userId, room)),
+      rotationPending: (room) => fireAndLog("ROTATION_PENDING", () => notifyRotationPending(room)),
+      keyRotated: (room) => fireAndLog("KEY_ROTATED", () => notifyKeyRotated(room)),
     },
     // Fim da sessão (logout): fecha todas as conexões do usuário.
     closeUser: (userId) => {
