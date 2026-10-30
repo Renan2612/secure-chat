@@ -274,7 +274,8 @@ printf '{"email":"%s","password":"%s"}' "$A_EMAIL" "$A_PASSWORD" >"$TMP/login.js
 check "a Alice abriu uma sessão para a remoção" test "$(api_alice POST /login "@$TMP/login.json")" = "200"
 rm -f "$TMP/login.json"
 check "a Alice removeu o Bob (DELETE /rooms/${ROOM_ID:-?}/members/${B_ID:-?})" test "$(api_alice DELETE "/rooms/${ROOM_ID:-0}/members/${B_ID:-0}")" = "200"
-api_alice POST /logout >/dev/null
+# Sem logout aqui: o logout encerra TODAS as conexões do usuário (inclusive
+# o ws-client da Alice). A sessão auxiliar é apagada na limpeza (trap).
 wait_for "$TMP/bob.out" "não é mais membro" 15
 wait_for "$TMP/alice.out" "chave da sala ${ROOM_ID:-x} disponível \(v2" 20
 wait_for "$TMP/carol.out" "chave da sala ${ROOM_ID:-x} disponível \(v2" 20
