@@ -127,16 +127,18 @@ const verifyRoomName = async ({ payload, roomId, ownerEcdsaPub }) => {
 // Próximo seq que o dono assina: acima do último verificado (lastSeq) e do
 // visto agora no servidor (seenSeq, mesmo não verificado: pode ser de um
 // dono anterior que este cliente não viu). Pular números é inofensivo (os
-// outros clientes comparam com o último verificado DELES). Achado da
-// revisão: um não-dono que rotaciona pode publicar um seq = 2^31 - 1
-// assinado por ele; somar 1 estouraria e o dono nunca mais renomearia. No
-// estouro, o visto é ignorado.
+// outros clientes comparam com o último verificado DELES). Achados da
+// revisão: um não-dono que rotaciona escolhe o seq do conteúdo que publica
+// (assinado por ele); sem limite, empurraria o contador do dono até o teto
+// e ele nunca mais renomearia. Por isso o visto só conta até
+// SEQ_WINDOW acima do último verificado; fora disso, é ignorado.
+const SEQ_WINDOW = 1000;
 const nextRoomNameSeq = (lastSeq, seenSeq) => {
   const last = lastSeq ?? 0;
-  const candidate = Math.max(last, seenSeq ?? 0) + 1;
-  if (candidate <= MAX_INT) return candidate;
-  if (last + 1 <= MAX_INT) return last + 1;
-  throw invalidName("o contador do nome da sala chegou ao limite");
+  const seen = seenSeq ?? 0;
+  const base = seen > last && seen - last <= SEQ_WINDOW ? seen : last;
+  if (base + 1 > MAX_INT) throw invalidName("o contador do nome da sala chegou ao limite");
+  return base + 1;
 };
 
 // O que mostrar como nome da sala. Entradas: o name_env do servidor (ou

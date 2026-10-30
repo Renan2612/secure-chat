@@ -153,6 +153,15 @@ describe("próximo seq do dono (achado da revisão automática do c2bfcd0)", () 
     expect(payload.seq).toBe(4);
   });
 
+  test("ATAQUE (achado da revisão do 4263d60): seq não verificado logo abaixo do teto empurraria o dono até o teto → ignorado fora da janela", () => {
+    expect(e2ee.nextRoomNameSeq(3, 2147483646)).toBe(4);
+    expect(e2ee.nextRoomNameSeq(3, 3 + 10000)).toBe(4);
+    // Dentro da janela (um dono anterior renomeou enquanto este cliente estava fora): vale o visto.
+    expect(e2ee.nextRoomNameSeq(3, 3 + 1000)).toBe(1004);
+    expect(e2ee.nextRoomNameSeq(null, 1000)).toBe(1001);
+    expect(e2ee.nextRoomNameSeq(null, 1001)).toBe(1);
+  });
+
   test("o próprio último verificado no teto: erro claro (não há seq maior)", () => {
     expect(() => e2ee.nextRoomNameSeq(2147483647, null)).toThrow(expect.objectContaining({ code: "INVALID_NAME" }));
   });
