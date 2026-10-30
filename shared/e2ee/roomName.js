@@ -124,6 +124,21 @@ const verifyRoomName = async ({ payload, roomId, ownerEcdsaPub }) => {
   }
 };
 
+// Próximo seq que o dono assina: acima do último verificado (lastSeq) e do
+// visto agora no servidor (seenSeq, mesmo não verificado: pode ser de um
+// dono anterior que este cliente não viu). Pular números é inofensivo (os
+// outros clientes comparam com o último verificado DELES). Achado da
+// revisão: um não-dono que rotaciona pode publicar um seq = 2^31 - 1
+// assinado por ele; somar 1 estouraria e o dono nunca mais renomearia. No
+// estouro, o visto é ignorado.
+const nextRoomNameSeq = (lastSeq, seenSeq) => {
+  const last = lastSeq ?? 0;
+  const candidate = Math.max(last, seenSeq ?? 0) + 1;
+  if (candidate <= MAX_INT) return candidate;
+  if (last + 1 <= MAX_INT) return last + 1;
+  throw invalidName("o contador do nome da sala chegou ao limite");
+};
+
 // O que mostrar como nome da sala. Entradas: o name_env do servidor (ou
 // null), as chaves da sala, o dono ATUAL informado pelo servidor e a chave
 // ECDSA FIXADA dele (trust store; undefined se não confiável) e `last`, o
@@ -164,6 +179,7 @@ module.exports = {
   decryptRoomName,
   verifyRoomName,
   openRoomName,
+  nextRoomNameSeq,
   parseRoomNameEnvelope: (nameEnv) => ({ kv: parseEnvelope(nameEnv).kv }),
   MAX_ROOM_NAME_BYTES,
   MAX_NAME_ENV_BYTES,

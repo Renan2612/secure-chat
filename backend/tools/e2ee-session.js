@@ -499,7 +499,7 @@ class E2eeSession {
     const version = this.currentVersion.get(room);
     const roomKey = (await this.roomKeysFor(room))[version];
     if (!roomKey) throw new Error(`você não tem a chave atual da sala ${room}`);
-    const seq = Math.max(this.data.roomNames[room]?.seq ?? 0, info.seenSeq ?? 0) + 1;
+    const seq = e2ee.nextRoomNameSeq(this.data.roomNames[room]?.seq, info.seenSeq);
     const payload = await e2ee.signRoomName({ roomId: room, seq, ownerId: this.me.id, name, ownerEcdsaKey: this.identity.ecdsa.privateKey });
     const res = await this.api("put", `/rooms/${room}/name`, { nameEnv: await e2ee.encryptRoomName({ roomKey, roomId: room, kv: version, payload }) });
     if (res.status === 403) throw new Error("só o dono da sala troca o nome");

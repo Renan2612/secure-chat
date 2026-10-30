@@ -139,3 +139,21 @@ describe("rotação e troca de dono", () => {
     expect(await open(sameSeq, asBob)).toMatchObject({ verified: false });
   });
 });
+
+describe("próximo seq do dono (achado da revisão automática do c2bfcd0)", () => {
+  test("acima do último verificado e do visto (mesmo não verificado)", () => {
+    expect(e2ee.nextRoomNameSeq(null, null)).toBe(1);
+    expect(e2ee.nextRoomNameSeq(3, null)).toBe(4);
+    expect(e2ee.nextRoomNameSeq(3, 7)).toBe(8);
+  });
+
+  test("ATAQUE: não-dono publica seq = 2^31 - 1 (assinado por ele) para o dono nunca mais renomear → ignora o visto", async () => {
+    expect(e2ee.nextRoomNameSeq(3, 2147483647)).toBe(4);
+    const payload = await signed("Ainda renomeio", e2ee.nextRoomNameSeq(3, 2147483647));
+    expect(payload.seq).toBe(4);
+  });
+
+  test("o próprio último verificado no teto: erro claro (não há seq maior)", () => {
+    expect(() => e2ee.nextRoomNameSeq(2147483647, null)).toThrow(expect.objectContaining({ code: "INVALID_NAME" }));
+  });
+});
