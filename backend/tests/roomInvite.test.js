@@ -4,13 +4,13 @@ const { pool, resetDb, createUser } = require("./helpers");
 
 let alice;
 let bob;
-let room; // { id, name, key } devolvido a Alice no createRoom
+let room; // { id, key } devolvido a Alice no createRoom
 
 beforeEach(async () => {
   await resetDb();
   alice = await createUser("alice");
   bob = await createUser("bob");
-  const res = await alice.agent.post("/createRoom").send({ name: "Sala secreta" });
+  const res = await alice.agent.post("/createRoom").send({});
   expect(res.status).toBe(201);
   room = res.body;
 });
@@ -23,8 +23,15 @@ const membership = async (roomId, userId) =>
 
 describe("createRoom", () => {
   test("devolve a chave de convite apenas ao criador, com 128 bits aleatórios", async () => {
-    expect(room).toEqual({ id: expect.any(Number), name: "Sala secreta", key: expect.any(String) });
+    expect(room).toEqual({ id: expect.any(Number), key: expect.any(String) });
     expect(room.key).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  test("Etapa 5: nome em claro é RECUSADO (só chega cifrado, na publicação da v1)", async () => {
+    const res = await alice.agent.post("/createRoom").send({ name: "Sala secreta" });
+    expect(res.status).toBe(400);
+    expect((await pool.query("SELECT COUNT(*)::int AS n FROM rooms")).rows[0].n).toBe(1);
+    expect((await pool.query("SELECT name_env FROM rooms WHERE id = $1", [room.id])).rows[0].name_env).toBeNull();
   });
 
   test("criador entra automaticamente na sala", async () => {
@@ -33,7 +40,7 @@ describe("createRoom", () => {
   });
 
   test("cada sala recebe uma chave diferente", async () => {
-    const other = (await alice.agent.post("/createRoom").send({ name: "Outra" })).body;
+    const other = (await alice.agent.post("/createRoom").send({})).body;
     expect(other.key).not.toBe(room.key);
   });
 });
@@ -54,7 +61,7 @@ describe("joinRooms exige a chave de convite", () => {
   });
 
   test("chave de outra sala → 403", async () => {
-    const bobsRoom = (await bob.agent.post("/createRoom").send({ name: "Sala do Bob" })).body;
+    const bobsRoom = (await bob.agent.post("/createRoom").send({})).body;
     const res = await bob.agent.post("/joinRooms").send({ idRoom: room.id, key: bobsRoom.key });
     expect(res.status).toBe(403);
   });
@@ -68,7 +75,7 @@ describe("joinRooms exige a chave de convite", () => {
   test("chave certa → B entra e passa a ler a sala", async () => {
     const res = await bob.agent.post("/joinRooms").send({ idRoom: room.id, key: room.key });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ id: room.id, name: "Sala secreta" });
+    expect(res.body).toEqual({ id: room.id });
     expect(await membership(room.id, bob.id)).toBe(1);
     expect((await bob.agent.get(`/messages/${room.id}`)).status).toBe(200);
   });
@@ -87,15 +94,9 @@ describe("descoberta de salas privadas", () => {
     expect(res.status).toBe(404);
   });
 
-  test("checkRoomExists não revela salas das quais o usuário não é membro", async () => {
-    const res = await bob.agent.post("/checkRoomExists").send({ name: "Sala secreta" });
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual([]);
-  });
-
-  test("checkRoomExists encontra as salas do próprio usuário (evitar nome repetido)", async () => {
+  test("Etapa 5: a busca por nome (checkRoomExists) foi removida: o servidor não conhece os nomes", async () => {
     const res = await alice.agent.post("/checkRoomExists").send({ name: "Sala secreta" });
-    expect(res.body).toEqual([{ id: room.id, name: "Sala secreta" }]);
+    expect(res.status).toBe(404);
   });
 });
 
@@ -107,9 +108,9 @@ describe("createRoom é atômico e resiste a falhas de conexão", () => {
     const carol = await createUser("carol");
     // Conta apagada com a sessão ainda ativa: o INSERT em rooms_users viola a FK.
     await pool.query("DELETE FROM users WHERE id = $1", [carol.id]);
-    const res = await carol.agent.post("/createRoom").send({ name: "Sala órfã" });
+    const res = await carol.agent.post("/createRoom").send({});
     expect(res.status).toBe(500);
-    expect((await pool.query("SELECT 1 FROM rooms WHERE name = 'Sala órfã'")).rowCount).toBe(0);
+    expect((await pool.query("SELECT COUNT(*)::int AS n FROM rooms")).rows[0].n).toBe(1); // só a da Alice
   });
 
   test("evento 'error' na conexão durante a transação não derruba o processo", async () => {
@@ -122,7 +123,7 @@ describe("createRoom é atômico e resiste a falhas de conexão", () => {
       setImmediate(() => client.emit("error", new Error("conexão caiu")));
       return client;
     });
-    const res = await alice.agent.post("/createRoom").send({ name: "Sala instável" });
+    const res = await alice.agent.post("/createRoom").send({});
     expect([201, 500]).toContain(res.status);
   });
 });

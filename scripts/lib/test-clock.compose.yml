@@ -1,0 +1,10 @@
+# Usado SÓ pelo scripts/verify-e2ee.sh (Etapa 5): sobe o backend com o relógio
+# de teste (backend/helpers/testHooks.js). Cada SIGUSR2 no processo do
+# backend adianta o relógio da expiração em 1 h e roda o expurgo na hora:
+# o script prova que a mensagem efêmera some do histórico e do banco sem
+# esperar o tempo real. O script aplica este arquivo por cima do
+# docker-compose.yml e, na saída, recria o backend sem ele.
+services:
+  backend:
+    environment:
+      E2EE_TEST_CLOCK: inseguro-so-para-teste

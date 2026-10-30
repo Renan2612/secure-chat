@@ -122,11 +122,22 @@ test("mensagem recusada pelo servidor (ERROR) não deixa o cliente pendurado no 
 
 const sessionCount = async () => (await pool.query("SELECT COUNT(*)::int AS n FROM user_sessions")).rows[0].n;
 
+// Etapa 5: um Origin de outro site já é recusado no /login (CSRF, 403), antes
+// de haver sessão; para o upgrade falhar DEPOIS do login, o --ws aponta para
+// um caminho que não é o /ws (404).
 test("upgrade recusado depois do login: sai com 1 e não deixa a sessão viva", async () => {
+  const before = await sessionCount();
+  const out = run(alice.email, PASSWORD, ["--ws", srv.wsUrl.replace(/\/ws$/, "/nao-e-o-ws")]);
+  expect(await out.exited).toBe(1);
+  expect(out.stderr).toMatch(/upgrade recusado \(404\)/);
+  expect(await sessionCount()).toBe(before);
+});
+
+test("Origin de outro site: o próprio login é recusado (403) e nenhuma sessão é criada", async () => {
   const before = await sessionCount();
   const out = run(alice.email, PASSWORD, ["--origin", "https://outra-origem.example"]);
   expect(await out.exited).toBe(1);
-  expect(out.stderr).toMatch(/upgrade recusado \(403\)/);
+  expect(out.stderr).toMatch(/login falhou \(403\)/);
   expect(await sessionCount()).toBe(before);
 });
 

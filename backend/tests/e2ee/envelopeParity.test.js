@@ -31,10 +31,18 @@ const cases = () => [
   ["texto puro", "oi", false],
   ["JSON lista", "[1,2]", false],
   ["campo extra", JSON.stringify({ ...base.small, x: 1 }), false],
-  ["campo faltando", JSON.stringify({ v: 1, kv: 3, iv: base.small.iv, ct: base.small.ct }), false],
-  ["ordem das chaves trocada", JSON.stringify({ kv: 3, v: 1, iv: base.small.iv, ct: base.small.ct, sig: base.small.sig }), false],
+  ["campo faltando (sem exp: era o v1)", JSON.stringify({ v: 2, kv: 3, iv: base.small.iv, ct: base.small.ct, sig: base.small.sig }), false],
+  ["envelope v1 antigo", JSON.stringify({ v: 1, kv: 3, iv: base.small.iv, ct: base.small.ct, sig: base.small.sig }), false],
+  ["ordem das chaves trocada", JSON.stringify({ kv: 3, v: 2, iv: base.small.iv, ct: base.small.ct, sig: base.small.sig, exp: null }), false],
   ["com espaços", JSON.stringify(base.small, null, 1), false],
-  ["v = 2", JSON.stringify({ ...base.small, v: 2 }), false],
+  ["v = 1", JSON.stringify({ ...base.small, v: 1 }), false],
+  ["v = 3", JSON.stringify({ ...base.small, v: 3 }), false],
+  ["com exp", JSON.stringify({ ...base.small, exp: 1893456000 }), true],
+  ["exp texto", JSON.stringify({ ...base.small, exp: "1893456000" }), false],
+  ["exp fracionário", JSON.stringify({ ...base.small, exp: 1893456000.5 }), false],
+  ["exp zero", JSON.stringify({ ...base.small, exp: 0 }), false],
+  ["exp negativo", JSON.stringify({ ...base.small, exp: -60 }), false],
+  ["exp acima de 2^53", JSON.stringify({ ...base.small, exp: 2 ** 53 }), false],
   ["kv = 0", JSON.stringify({ ...base.small, kv: 0 }), false],
   ["kv fracionário", JSON.stringify({ ...base.small, kv: 1.5 }), false],
   ["kv acima do INTEGER do Postgres", JSON.stringify({ ...base.small, kv: 2147483648 }), false],
@@ -56,6 +64,7 @@ test("cliente e servidor concordam caso a caso", () => {
   }
 });
 
-test("o servidor extrai o kv do envelope", () => {
-  expect(server.parseEnvelope(JSON.stringify(base.small))).toEqual({ kv: 3 });
+test("o servidor extrai o kv e o exp do envelope", () => {
+  expect(server.parseEnvelope(JSON.stringify(base.small))).toEqual({ kv: 3, exp: null });
+  expect(server.parseEnvelope(JSON.stringify({ ...base.small, exp: 1893456000 }))).toEqual({ kv: 3, exp: 1893456000 });
 });

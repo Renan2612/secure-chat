@@ -14,14 +14,19 @@
 //                          enquanto a sala exige rotação (quem entra depois
 //                          de uma saída recebe só a chave NOVA)
 //   rotacionar           → membro com o wrap da versão atual (Etapa 4b-2, D3)
+// Etapa 5 (A3): a publicação da v1 e cada rotação trazem o NOME da sala
+// cifrado com a chave daquela versão (nameEnv, kv = versão): só a estrutura
+// é conferida (helpers/roomName.js, no zod) e que o kv é o da versão.
 const pool = require("../db");
 const { withTransaction } = require("../helpers/transaction");
 const { verifyWrapSig, verifyCommitmentSig } = require("../helpers/signatures");
+const { parseRoomNameEnvelope } = require("../helpers/roomName");
 
 const FORBIDDEN = { message: "Acesso negado" };
 const VERSION_MISMATCH = { message: "Versão da chave diferente da atual da sala" };
 const ROTATION_PENDING = { code: "ROTATION_PENDING", message: "A chave da sala precisa ser trocada antes" };
 const INVALID_RECIPIENT = { message: "Destinatário inválido" };
+const NAME_VERSION_MISMATCH = { message: "O nome da sala deve vir cifrado com a chave desta versão" };
 
 const roomState = async (roomId, userId) => {
   const { rows } = await pool.query(
@@ -40,7 +45,8 @@ const wrapRow = (w) => ({ version: w.version, senderId: w.sender_id, ephPub: w.e
 const publishRoomKey = async (req, res, next) => {
   const roomId = req.params.id;
   const me = req.session.userId;
-  const { version, wrap, commitment, commitmentSig } = req.body;
+  const { version, wrap, commitment, commitmentSig, nameEnv } = req.body;
+  if (parseRoomNameEnvelope(nameEnv).kv !== version) return res.status(400).json(NAME_VERSION_MISMATCH);
   try {
     const room = await roomState(roomId, me);
     // Sala inexistente, alheia ou de outro criador: o mesmo 403.
@@ -62,6 +68,7 @@ const publishRoomKey = async (req, res, next) => {
          VALUES ($1, $2, $3, $3, $4, $5, $6, $7, $8)`,
         [roomId, version, me, mine[0].key_epoch, wrap.ephPub, wrap.iv, wrap.wrapped, wrap.sig]
       );
+      await client.query("UPDATE rooms SET name_env = $2 WHERE id = $1", [roomId, nameEnv]);
       return true;
     });
     if (!published) return res.status(409).json({ message: "Esta versão da chave já foi publicada" });
@@ -234,14 +241,17 @@ const discardMyWrap = async (req, res, next) => {
 //   - o autor está entre os destinatários, sem repetição (senão 400);
 //   - o compromisso e cada wrap foram assinados pelo autor, com a chave
 //     pública registrada dele, para esta sala, versão e destinatário (400).
-// Então grava a versão e os wraps, sobe key_version e zera rotation_required.
+//   - o nome da sala vem recifrado com a chave nova (kv = versão; 400);
+// Então grava a versão, os wraps e o nome, sobe key_version e zera
+// rotation_required.
 // Os wraps antigos de quem ficou continuam (relê o histórico).
 const STALE_MEMBERSHIP = "STALE_MEMBERSHIP";
 
 const rotateRoomKey = async (req, res, next) => {
   const roomId = req.params.id;
   const me = req.session.userId;
-  const { version, commitment, commitmentSig, wraps } = req.body;
+  const { version, commitment, commitmentSig, wraps, nameEnv } = req.body;
+  if (parseRoomNameEnvelope(nameEnv).kv !== version) return res.status(400).json(NAME_VERSION_MISMATCH);
   const recipients = wraps.map((w) => w.recipientId);
   if (new Set(recipients).size !== recipients.length || !recipients.includes(me)) {
     return res.status(400).json({ message: "Um wrap por membro atual, incluindo o autor" });
@@ -300,7 +310,11 @@ const rotateRoomKey = async (req, res, next) => {
           [roomId, version, w.recipientId, me, w.recipientKeyEpoch, w.wrap.ephPub, w.wrap.iv, w.wrap.wrapped, w.wrap.sig]
         );
       }
-      await client.query("UPDATE rooms SET key_version = $2, rotation_required = FALSE WHERE id = $1", [roomId, version]);
+      await client.query("UPDATE rooms SET key_version = $2, rotation_required = FALSE, name_env = $3 WHERE id = $1", [
+        roomId,
+        version,
+        nameEnv,
+      ]);
       return { status: 201, pending: members.length > wraps.length };
     });
     if (outcome.status !== 201) return res.status(outcome.status).json(outcome.body);

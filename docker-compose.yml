@@ -8,10 +8,37 @@
 # Backend e banco ficam só na rede "interna" (sem portas no host e sem
 # saída para a internet); o proxy é o único caminho até o backend.
 
+# Logs (Etapa 5, A4; inventário em docs/06-privacidade.md): json-file com
+# rotação em TODOS os serviços — até 3 arquivos de 1 MB por contêiner, e o
+# mais antigo é apagado. Sem isso o Docker guarda o log inteiro para sempre.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "1m"
+    max-file: "3"
+
 services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *logging
+    # Postgres sem registrar comandos, conexões (com o IP de quem conecta)
+    # nem desconexões; erros em modo "terse" (sem DETAIL: a violação de
+    # unicidade do e-mail, por exemplo, traria o e-mail) e sem o texto do
+    # comando que falhou. São os padrões do Postgres para os três primeiros;
+    # aqui ficam explícitos para uma imagem ou config futura não mudá-los.
+    command:
+      - postgres
+      - -c
+      - log_statement=none
+      - -c
+      - log_connections=off
+      - -c
+      - log_disconnections=off
+      - -c
+      - log_min_error_statement=panic
+      - -c
+      - log_error_verbosity=terse
     environment:
       POSTGRES_USER: ${DB_USER:-postgres}
       # Sem valor padrão: faltando, o compose falha em vez de criar o banco
@@ -32,6 +59,7 @@ services:
   backend:
     build: ./backend
     restart: unless-stopped
+    logging: *logging
     env_file:
       - ./backend/.env
     # Sobrescrevem o backend/.env (que serve também para rodar fora do Docker).
@@ -52,6 +80,7 @@ services:
     # Versão fixada por tag E digest (a tag sozinha pode ser republicada).
     image: caddy:2.11.7-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
     restart: unless-stopped
+    logging: *logging
     environment:
       PUBLIC_HOST: ${PUBLIC_HOST:-localhost}
     ports:

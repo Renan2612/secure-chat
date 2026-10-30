@@ -60,10 +60,13 @@ const ERRORS = {
   CID_REUSED: "cid já usado em outra sala",
   // E2EE (docs/05-e2ee.md): o body tem de ser um envelope cifrado v1 com a
   // versão atual da chave da sala; o servidor confere só a estrutura.
-  E2EE_REQUIRED: "O body precisa ser um envelope E2EE v1",
+  E2EE_REQUIRED: "O body precisa ser um envelope E2EE v2",
   KEY_VERSION_MISMATCH: "Versão da chave diferente da atual da sala",
   // Etapa 4b-2: alguém saiu ou foi removido e a chave ainda não foi trocada.
   ROTATION_PENDING: "A chave da sala precisa ser trocada antes de enviar",
+  // Etapa 5 (A1): expiração assinada no envelope (exp) e retenção da sala.
+  TTL_INVALID: "Expiração (exp) fora dos limites (30 s a 7 dias, ou acima da retenção da sala)",
+  RETENTION_REQUIRED: "Esta sala tem retenção: a mensagem precisa de expiração (exp)",
   INTERNAL: "Erro interno",
 };
 

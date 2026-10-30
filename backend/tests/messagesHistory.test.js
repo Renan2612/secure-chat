@@ -58,7 +58,7 @@ describe("GET /messages/:id paginado", () => {
   );
 });
 
-describe("coluna messages.message: só envelope E2EE v1, até 8192 bytes", () => {
+describe("coluna messages.message: só envelope E2EE v2, até 8192 bytes", () => {
   test("aceita o maior envelope do protocolo", async () => {
     await expect(insertMessage(roomId, alice.id, "max", fakeEnvelope({ paddedBytes: 5888 }))).resolves.toEqual(expect.any(Number));
   });

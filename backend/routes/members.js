@@ -176,4 +176,4 @@ const rotateInvite = async (req, res, next) => {
   }
 };
 
-module.exports = { SKIP_ROTATION_VALUE, leaveRoom, removeMember, transferOwner, rotateInvite };
+module.exports = { SKIP_ROTATION_VALUE, NOT_FOUND, lockOwnedRoom, leaveRoom, removeMember, transferOwner, rotateInvite };

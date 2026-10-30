@@ -23,7 +23,8 @@ const subscribed = async (user, roomId) => {
 };
 
 // Corpo de rotação de um cliente honesto: chave NOVA aleatória, compromisso
-// e wraps assinados pelo autor. `signer` permite forjar a assinatura.
+// e wraps assinados pelo autor, e o nome da sala recifrado com a chave nova
+// (Etapa 5). `signer` permite forjar a assinatura.
 const rotationBody = async (author, { version = 2, recipients, roomKey, signer = author, commitSigner = author }) => {
   const key = roomKey ?? (await e2ee.generateRoomKey());
   const commitment = await e2ee.commitRoomKey({ roomId: room.roomId, version, roomKey: key, creatorEcdsaKey: commitSigner.identity.ecdsa.privateKey });
@@ -32,7 +33,8 @@ const rotationBody = async (author, { version = 2, recipients, roomKey, signer =
     const wrap = await wrapFor({ ...author, identity: signer.identity }, { roomId: room.roomId, version, roomKey: key, recipientId: r.id, recipientEcdhPub: r.pub.ecdhPub });
     wraps.push({ recipientId: r.id, recipientKeyEpoch: r.keyEpoch, wrap });
   }
-  return { key, body: { version, ...commitment, wraps } };
+  const nameEnv = await e2ee.encryptRoomName({ roomKey: key, roomId: room.roomId, kv: version, name: room.name });
+  return { key, body: { version, ...commitment, wraps, nameEnv } };
 };
 
 const rotate = (author, body) => author.call("post", `/rooms/${room.roomId}/keys/rotate`).send(body);

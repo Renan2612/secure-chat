@@ -1,0 +1,9 @@
+# MUTAÇÃO para validar o scripts/verify-e2ee.sh (MUTATION=server-no-purge):
+# sobe o backend com a flag SÓ DE TESTE que faz o expurgo NÃO apagar as
+# mensagens expiradas (backend/helpers/purge.js). O histórico continua
+# escondendo a vencida, mas a linha fica no banco. Esperado: o script
+# percebe e sai com código != 0. Nunca use fora disso.
+services:
+  backend:
+    environment:
+      E2EE_TEST_SKIP_PURGE: inseguro-so-para-teste

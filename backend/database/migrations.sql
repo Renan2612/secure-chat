@@ -35,14 +35,22 @@ CREATE TABLE IF NOT EXISTS users(
 -- key_version: versão atual da chave da sala (docs/05-e2ee.md).
 -- rotation_required: alguém saiu ou foi removido e a chave ainda não foi
 -- trocada; enquanto for true, MSG_SEND é recusado (falha fechada).
+-- name_env (Etapa 5, A3): o NOME da sala, cifrado com a chave da sala
+-- ({"v":1,"kv","iv","ct"}, shared/e2ee/roomName.js). O servidor nunca vê o
+-- nome em claro; null só entre a criação e a publicação da v1.
+-- retention_seconds (Etapa 5, A1): retenção máxima das mensagens FUTURAS
+-- (null = sem limite); quando definida, toda mensagem precisa de exp.
 CREATE TABLE IF NOT EXISTS rooms(
    id SERIAL PRIMARY KEY,
-   name VARCHAR(255) NOT NULL,
+   name_env TEXT NULL CHECK (
+      octet_length(name_env) <= 512
+      AND name_env ~ '^\{"v":1,"kv":[1-9][0-9]{0,9},"iv":"[A-Za-z0-9_-]{16}","ct":"[A-Za-z0-9_-]+"\}$'),
    invite_hash CHAR(64) NOT NULL CHECK (invite_hash ~ '^[0-9a-f]{64}$'),
    created_by INTEGER NOT NULL REFERENCES users (id),
    owner_id INTEGER NOT NULL REFERENCES users (id),
    key_version INTEGER NOT NULL DEFAULT 1 CHECK (key_version >= 1),
-   rotation_required BOOLEAN NOT NULL DEFAULT FALSE
+   rotation_required BOOLEAN NOT NULL DEFAULT FALSE,
+   retention_seconds INTEGER NULL CHECK (retention_seconds BETWEEN 60 AND 604800)
 );
 
 CREATE TABLE IF NOT EXISTS rooms_users (
@@ -63,15 +71,26 @@ CREATE TABLE IF NOT EXISTS messages(
    id SERIAL PRIMARY KEY,
    room INTEGER NOT NULL,
    user_id INTEGER NOT NULL,
-   -- Envelope E2EE v1 (docs/05-e2ee.md): o servidor guarda só texto cifrado.
+   -- Envelope E2EE v2 (docs/05-e2ee.md): o servidor guarda só texto cifrado.
    -- Limite em BYTES igual ao maxBodyBytes do protocolo; o CHECK de formato
-   -- é a falha fechada do banco: nem um bug no app grava texto puro, e o kv
-   -- do envelope tem de ser o key_version da linha. (Tamanhos exatos de iv,
-   -- ct e sig: realtime/envelope.js; o regex do Postgres não repete > 255.)
+   -- é a falha fechada do banco: nem um bug no app grava texto puro, o kv
+   -- do envelope tem de ser o key_version da linha e o exp do envelope tem
+   -- de ser o expires_at da linha (ou null com null). (Tamanhos exatos de
+   -- iv, ct e sig: realtime/envelope.js; o regex do Postgres não repete > 255.)
    message TEXT NOT NULL CHECK (octet_length(message) BETWEEN 1 AND 8192),
    key_version INTEGER NOT NULL CHECK (key_version >= 1),
-   CHECK (message ~ ('^\{"v":1,"kv":' || key_version::text || ',"iv":"[A-Za-z0-9_-]{16}","ct":"[A-Za-z0-9_-]+","sig":"[A-Za-z0-9_-]{86}"\}$')),
-   dt_message TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+   -- Etapa 5 (A1): expiração assinada pelo remetente (exp, segundos Unix).
+   -- Expurgada pelo job do servidor (helpers/purge.js); o histórico e a
+   -- entrega já a ignoram ao vencer.
+   expires_at TIMESTAMPTZ NULL CHECK (expires_at IS NULL OR expires_at = date_trunc('second', expires_at)),
+   CHECK (message ~ ('^\{"v":2,"kv":' || key_version::text
+      || ',"iv":"[A-Za-z0-9_-]{16}","ct":"[A-Za-z0-9_-]+","sig":"[A-Za-z0-9_-]{86}","exp":'
+      || COALESCE(EXTRACT(EPOCH FROM expires_at)::bigint::text, 'null') || '\}$')),
+   -- Etapa 5 (A4): só o minuto (a ordem vem do id). O teto do exp (7 d + 5
+   -- min de tolerância, + 1 min do truncamento) também vale aqui.
+   dt_message TIMESTAMPTZ NOT NULL DEFAULT date_trunc('minute', NOW())
+      CHECK (dt_message = date_trunc('minute', dt_message)),
+   CHECK (expires_at IS NULL OR expires_at <= dt_message + INTERVAL '7 days 6 minutes'),
    -- ID gerado pelo cliente para idempotência (MSG_SEND): reenviar com o
    -- mesmo cid não duplica. Único por remetente. Faz parte do AAD da E2EE.
    cid VARCHAR(64) NOT NULL,
@@ -81,6 +100,9 @@ CREATE TABLE IF NOT EXISTS messages(
    FOREIGN KEY (room)
       REFERENCES rooms (id) ON DELETE CASCADE
 );
+
+-- O expurgo varre só as linhas com expiração.
+CREATE INDEX IF NOT EXISTS messages_expires_at_idx ON messages (expires_at) WHERE expires_at IS NOT NULL;
 
 -- Versões publicadas da chave da sala (D4). A chave em si NUNCA vem para
 -- cá: só existe embrulhada (room_key_wraps) para cada membro.

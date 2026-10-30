@@ -4,8 +4,11 @@ const http = require("http");
 const { createApp } = require("./app");
 const { createSession } = require("./config/session");
 const { attachRealtime } = require("./realtime");
+const { systemClock } = require("./helpers/expiry");
 
-const createServer = ({ appOptions = {}, realtimeOptions = {} } = {}) => {
+// clock: relógio da expiração das mensagens (app e realtime usam o mesmo);
+// só os testes injetam outro.
+const createServer = ({ appOptions = {}, realtimeOptions = {}, clock = systemClock } = {}) => {
   const session = createSession();
   // O app nasce antes do realtime; o logout chama o realtime já montado.
   let realtime;
@@ -16,11 +19,13 @@ const createServer = ({ appOptions = {}, realtimeOptions = {} } = {}) => {
     removed: (userId, room) => realtime.notify.removed(userId, room),
     rotationPending: (room) => realtime.notify.rotationPending(room),
     keyRotated: (room) => realtime.notify.keyRotated(room),
+    retentionChanged: (room, seconds) => realtime.notify.retentionChanged(room, seconds),
+    renamed: (room) => realtime.notify.renamed(room),
   };
-  const app = createApp({ ...appOptions, session, onSessionEnd, notify });
+  const app = createApp({ ...appOptions, session, onSessionEnd, notify, clock });
   const server = http.createServer(app);
   // Mesma regra de confiança no X-Forwarded-For das rotas HTTP (TRUST_PROXY).
-  realtime = attachRealtime(server, { session, trustProxy: app.get("trust proxy fn"), ...realtimeOptions });
+  realtime = attachRealtime(server, { session, trustProxy: app.get("trust proxy fn"), clock, ...realtimeOptions });
   return { app, server, realtime };
 };
 

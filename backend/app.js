@@ -8,17 +8,14 @@ const { createSession } = require("./config/session");
 
 const { registerUser } = require("./routes/register");
 const { loginUser, logoutUser } = require("./routes/login");
-const {
-  getRooms,
-  createRooms,
-  checkRoomExists,
-  joinRooms,
-  roomsUsers,
-} = require("./routes/rooms");
+const { getRooms, createRooms, joinRooms, roomsUsers } = require("./routes/rooms");
 const { getMessages, updateLastRead } = require("./routes/messages");
 const { putKeys, resetKeys, getKeys } = require("./routes/keys");
 const { leaveRoom, removeMember, transferOwner, rotateInvite } = require("./routes/members");
 const { publishRoomKey, getMyWraps, getPending, postWrap, discardMyWrap, rotateRoomKey } = require("./routes/roomKeys");
+const { setRetention, setName, listBans, unban } = require("./routes/roomSettings");
+const { requireSameOrigin } = require("./middleware/requireSameOrigin");
+const { systemClock } = require("./helpers/expiry");
 const requireAuth = require("./middleware/requireAuth");
 const requireRoomMember = require("./middleware/requireRoomMember");
 const validate = require("./middleware/validate");
@@ -64,9 +61,13 @@ const createApp = ({
   // keyPending(room) → há membro sem a chave da sala; keyReady(userId, room)
   // → chegou um wrap para o usuário; removed(userId, room) → o usuário saiu
   // ou foi removido; rotationPending(room) → a chave precisa ser trocada;
-  // keyRotated(room) → há uma versão nova da chave.
+  // keyRotated(room) → há uma versão nova da chave; retentionChanged(room,
+  // segundos) e renamed(room) → o dono mudou a retenção ou o nome (Etapa 5).
   // Sem realtime (testes HTTP), não fazem nada.
   notify = {},
+  // Relógio da expiração das mensagens (helpers/expiry.js); só os testes
+  // injetam outro.
+  clock = systemClock,
 } = {}) => {
   const app = express();
 
@@ -99,6 +100,10 @@ const createApp = ({
     })
   );
 
+  // --- CSRF (Etapa 5, A2): Origin da própria origem e corpo só em JSON ---
+  // Antes de ler o corpo, a sessão e os limites de tentativas.
+  app.use(requireSameOrigin());
+
   // --- Limite de tamanho do corpo da requisição ---
   // A rotação leva um wrap por membro (~350 bytes cada): o corpo dela é lido
   // com limite próprio, só DEPOIS do requireAuth (quem não tem sessão não
@@ -110,7 +115,17 @@ const createApp = ({
   app.use(session.middleware);
   app.locals.onSessionEnd = onSessionEnd;
   const noop = () => {};
-  app.locals.notify = { keyPending: noop, keyReady: noop, removed: noop, rotationPending: noop, keyRotated: noop, ...notify };
+  app.locals.notify = {
+    keyPending: noop,
+    keyReady: noop,
+    removed: noop,
+    rotationPending: noop,
+    keyRotated: noop,
+    retentionChanged: noop,
+    renamed: noop,
+    ...notify,
+  };
+  app.locals.clock = clock;
 
   // --- Rate limiting em rotas sensíveis (login/registro) ---
   const limiterDefaults = {
@@ -157,7 +172,8 @@ const createApp = ({
     requireRoomMember,
     updateLastRead
   );
-  app.post("/checkRoomExists", validate(schemas.checkRoomExists), checkRoomExists);
+  // POST /checkRoomExists (busca por nome) foi REMOVIDA na Etapa 5: o
+  // servidor não conhece mais o nome das salas (só o name_env cifrado).
   app.post("/createRoom", validate(schemas.createRoom), createRooms);
   app.post("/joinRooms", validate(schemas.joinRooms), joinRooms);
   app.get("/roomUsers/:room", validate(schemas.roomUsers), requireRoomMember, roomsUsers);
@@ -180,6 +196,12 @@ const createApp = ({
   app.delete("/rooms/:id/members/:userId", validate(schemas.removeMember), removeMember);
   app.post("/rooms/:id/owner", validate(schemas.transferOwner), transferOwner);
   app.post("/rooms/:id/invite/rotate", validate(schemas.leaveRoom), rotateInvite);
+
+  // --- Ajustes do dono (Etapa 5): retenção, nome cifrado, banimentos ---
+  app.put("/rooms/:id/retention", validate(schemas.setRetention), setRetention);
+  app.put("/rooms/:id/name", validate(schemas.setName), setName);
+  app.get("/rooms/:id/bans", validate(schemas.leaveRoom), listBans);
+  app.delete("/rooms/:id/bans/:userId", validate(schemas.unban), unban);
 
   // As rotas de debug /session, /sessionRoom e /session (POST) foram REMOVIDAS.
   // A rota POST /session permitia que qualquer cliente definisse req.session.userId

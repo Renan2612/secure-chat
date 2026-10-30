@@ -1,5 +1,5 @@
 // Mensagens cifradas (D5). Servidor: falha fechada sem ler o conteúdo — só
-// aceita um envelope E2EE v1 estruturalmente válido e com a versão atual da
+// aceita um envelope E2EE v2 estruturalmente válido e com a versão atual da
 // chave. Cliente: decifra, verifica a assinatura com a chave FIXADA do
 // remetente e recusa o que o servidor adulterar.
 const e2ee = require("../../../shared/e2ee");
@@ -202,7 +202,7 @@ describe("servidor malicioso: o cliente percebe", () => {
 
   test("mensagem legítima é aceita (e marcada como não verificada: TOFU sem conferência)", async () => {
     const r = await receiverForBob().accept(deliver);
-    expect(r).toEqual({ status: "ok", text: "transferir 10", verified: false });
+    expect(r).toEqual({ status: "ok", text: "transferir 10", verified: false, exp: null });
   });
 
   test("servidor troca o `from` (atribui à Carol) → inválida, nunca exibida", async () => {
@@ -258,7 +258,7 @@ describe("servidor malicioso: o cliente percebe", () => {
       roomKeysFor: async () => ({ 1: bobKey }),
       senderKeyFor: async () => ({ ecdsaPub: alice.pub.ecdsaPub, trust: "verified" }),
     });
-    expect(await receiver.accept(deliver)).toEqual({ status: "ok", text: "transferir 10", verified: true });
+    expect(await receiver.accept(deliver)).toEqual({ status: "ok", text: "transferir 10", verified: true, exp: null });
   });
 
   test("sem a chave da versão → missing_key (não exibe)", async () => {

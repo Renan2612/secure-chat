@@ -1,6 +1,6 @@
 // Sessão armazenada no servidor (item H): revogação real no logout,
 // proteção contra session fixation e atributos do cookie.
-const request = require("supertest");
+const request = require("./request");
 const { app, pool, resetDb, createUser, failQueriesMatching, PASSWORD } = require("./helpers");
 const { createApp } = require("../app");
 

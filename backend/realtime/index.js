@@ -51,10 +51,21 @@ const loadSession = (sessionMiddleware, req) =>
 // trustProxy: a função de confiança que o Express compilou a partir de
 // TRUST_PROXY (app.get("trust proxy fn")); o IP do upgrade é calculado com a
 // MESMA regra das rotas HTTP. Sem ela, não confia em nenhum proxy.
-const attachRealtime = (server, { session, trustProxy = proxyaddr.compile([]), ...options } = {}) => {
+// clock: relógio do servidor para a expiração (helpers/expiry.js);
+// injetável só nos testes.
+const attachRealtime = (server, { session, trustProxy = proxyaddr.compile([]), clock, ...options } = {}) => {
   const limits = { ...DEFAULT_LIMITS, ...options };
   const registry = new ConnectionRegistry();
-  const { handlers, notifyKeyPending, notifyKeyReady, notifyRemoved, notifyRotationPending, notifyKeyRotated } = createHandlers(registry);
+  const {
+    handlers,
+    notifyKeyPending,
+    notifyKeyReady,
+    notifyRemoved,
+    notifyRotationPending,
+    notifyKeyRotated,
+    notifyRetentionChanged,
+    notifyRenamed,
+  } = createHandlers(registry, { clock });
   // perMessageDeflate desligado: compressão de dados com segredos abre
   // ataques do tipo CRIME/BREACH, e o ganho aqui seria pequeno.
   // maxPayload: quadro maior é recusado pela própria ws com close 1009,
@@ -197,6 +208,8 @@ const attachRealtime = (server, { session, trustProxy = proxyaddr.compile([]), .
       removed: (userId, room) => fireAndLog("REMOVED", () => notifyRemoved(userId, room)),
       rotationPending: (room) => fireAndLog("ROTATION_PENDING", () => notifyRotationPending(room)),
       keyRotated: (room) => fireAndLog("KEY_ROTATED", () => notifyKeyRotated(room)),
+      retentionChanged: (room, seconds) => fireAndLog("RETENTION_CHANGED", () => notifyRetentionChanged(room, seconds)),
+      renamed: (room) => fireAndLog("RENAMED", () => notifyRenamed(room)),
     },
     // Fim da sessão (logout): fecha todas as conexões do usuário.
     closeUser: (userId) => {

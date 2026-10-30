@@ -36,13 +36,15 @@ const concat = (...parts) => {
   return out;
 };
 
-// JSON canônico de uma LISTA de inteiros seguros e strings (sem objetos: a
-// ordem das chaves de um objeto não é garantida entre implementações).
-// Usado em AAD, info do HKDF e nos dados assinados.
+// JSON canônico de uma LISTA de inteiros seguros, strings e null (sem
+// objetos: a ordem das chaves de um objeto não é garantida entre
+// implementações). Usado em AAD, info do HKDF e nos dados assinados. O null
+// (Etapa 5) é o exp de uma mensagem sem expiração: em JSON, `null` não se
+// confunde com nenhum inteiro nem string.
 const canonical = (items) => {
   for (const item of items) {
-    if (!(typeof item === "string" || Number.isSafeInteger(item))) {
-      throw new E2eeError("INVALID_CONTEXT", "contexto deve ter só inteiros e strings");
+    if (!(item === null || typeof item === "string" || Number.isSafeInteger(item))) {
+      throw new E2eeError("INVALID_CONTEXT", "contexto deve ter só inteiros, strings e null");
     }
   }
   return utf8(JSON.stringify(items));

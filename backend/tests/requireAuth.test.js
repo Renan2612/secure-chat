@@ -1,5 +1,5 @@
 // Ataque: atacante sem conta (sem sessão) tenta usar a API diretamente.
-const request = require("supertest");
+const request = require("./request");
 const { app, pool, resetDb, PASSWORD } = require("./helpers");
 
 beforeEach(resetDb);

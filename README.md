@@ -16,8 +16,8 @@ saneado de [asafebxd/MessageWebApp](https://github.com/asafebxd/MessageWebApp)
 - [x] **Etapa 4a** — TLS, proxy reverso (Caddy) e origem única ([`docs/04-tls-e-proxy.md`](docs/04-tls-e-proxy.md))
 - [x] **Etapa 4b-1** — Criptografia ponta a ponta, núcleo ([`docs/05-e2ee.md`](docs/05-e2ee.md))
 - [x] **Etapa 4b-2** — E2EE: composição da sala (sair, remover, transferir o dono, trocar a chave) ([`docs/05-e2ee.md`](docs/05-e2ee.md) §11)
-- [ ] Frontend com E2EE (as regras do cliente de referência estão em `docs/05-e2ee.md` §7 e §11)
-- [ ] Etapa 5 — Privacidade adicional
+- [x] **Etapa 5, Parte A** — Privacidade: mensagens efêmeras e retenção, nome da sala cifrado, CSRF, banimentos, logs e metadados ([`docs/06-privacidade.md`](docs/06-privacidade.md), [`docs/05-e2ee.md`](docs/05-e2ee.md) §12)
+- [ ] Etapa 5, Partes B e C — Frontend com E2EE (plano em [`docs/plano-etapa5.md`](docs/plano-etapa5.md); andamento em [`docs/status-5.md`](docs/status-5.md))
 - [ ] Etapa 6 — Infraestrutura e validação
 - [ ] Etapa 7 — Entrega
 
@@ -114,6 +114,10 @@ Comandos dentro do cliente: `/members`, `/safety <id>`, `/trust <id>`,
 a chave), `/leave`, `/rotate`, `/owner <id>` e `/invite` (convite novo). Quando
 alguém sai, o envio fica bloqueado até a chave ser trocada, o que o cliente
 faz sozinho se tiver a chave atual ([`docs/05-e2ee.md`](docs/05-e2ee.md) §11.4).
+Desde a Etapa 5: `/ttl <1min|1h|24h|7d|off>` (as próximas mensagens
+expiram), `/retention <segundos|off>`, `/bans`, `/unban <id>` e
+`/rename <nome>` (os três últimos e a retenção, só o dono; o nome vai
+cifrado) — [`docs/06-privacidade.md`](docs/06-privacidade.md).
 
 Para derrubar: `docker compose --env-file backend/.env down` (sem `-v`,
 preserva o banco e a CA local).
@@ -121,7 +125,7 @@ preserva o banco e a CA local).
 > Vindo de uma etapa anterior? O schema mudou (Etapa 2: tabela de sessões,
 > e-mail único; Etapa 3: `messages.message` em TEXT e coluna `cid`; Etapa
 > 4b-1: chaves e envelopes; Etapa 4b-2: dono, convite só como hash,
-> banimentos e rotação) e o
+> banimentos e rotação; Etapa 5: envelope v2, nome cifrado, retenção) e o
 > script de init só roda num volume vazio: recrie com
 > `docker compose down -v && docker compose --env-file backend/.env up --build`
 > (apaga os dados de desenvolvimento). Se o volume foi criado sem o
@@ -166,7 +170,8 @@ conforme o modelo de ameaças e o roteiro de etapas da disciplina.
 
 - [Modelo de ameaças](docs/00-modelo-ameacas.md)
 - [Linha de base de segurança (antes/depois)](docs/01-baseline-seguranca.md)
-- [Criptografia ponta a ponta (Etapas 4b-1 e 4b-2)](docs/05-e2ee.md) — o schema mudou: recrie o banco (`docker compose --env-file backend/.env down -v`, que também apaga a CA local; depois `scripts/export-ca.sh`), ou reaplique a migração com backup (§6)
+- [Criptografia ponta a ponta (Etapas 4b-1, 4b-2 e 5)](docs/05-e2ee.md)
+- [Privacidade (Etapa 5)](docs/06-privacidade.md) — **o schema mudou de novo** (envelope v2, nome cifrado): recrie o banco. Só o volume do banco, mantendo a CA local: `docker compose --env-file backend/.env down && docker volume rm secure-chat_db_data`; ou tudo (`down -v`, que também apaga a CA: depois `scripts/export-ca.sh` e importe de novo)
 - [Autenticação e autorização (Etapa 2)](docs/02-autenticacao-autorizacao.md)
 - [Protocolo de tempo real (Etapa 3)](docs/03-protocolo.md)
 - [TLS, proxy reverso e origem única (Etapa 4a)](docs/04-tls-e-proxy.md)

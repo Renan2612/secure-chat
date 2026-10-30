@@ -27,17 +27,19 @@ const wrapFor = (sender, { roomId, version = 1, roomKey, recipientId, recipientE
     senderEcdsaKey: sender.identity.ecdsa.privateKey,
   });
 
-// Cria a sala, gera a chave da sala e publica a versão 1 com o próprio wrap.
+// Cria a sala, gera a chave da sala e publica a versão 1 com o próprio wrap
+// e o nome cifrado (Etapa 5: o nome nunca vai em claro).
 const createKeyedRoom = async (owner, name = "Sala cifrada") => {
-  const created = await owner.call("post", "/createRoom").send({ name });
+  const created = await owner.call("post", "/createRoom").send({});
   if (created.status !== 201) throw new Error(`createRoom: ${created.status}`);
   const roomId = created.body.id;
   const roomKey = await e2ee.generateRoomKey();
   const wrap = await wrapFor(owner, { roomId, roomKey, recipientId: owner.id, recipientEcdhPub: owner.pub.ecdhPub });
   const commitment = await e2ee.commitRoomKey({ roomId, version: 1, roomKey, creatorEcdsaKey: owner.identity.ecdsa.privateKey });
-  const published = await owner.call("post", `/rooms/${roomId}/keys`).send({ version: 1, wrap, ...commitment });
+  const nameEnv = await e2ee.encryptRoomName({ roomKey, roomId, kv: 1, name });
+  const published = await owner.call("post", `/rooms/${roomId}/keys`).send({ version: 1, wrap, ...commitment, nameEnv });
   if (published.status !== 201) throw new Error(`POST /rooms/${roomId}/keys: ${published.status} ${JSON.stringify(published.body)}`);
-  return { roomId, inviteKey: created.body.key, roomKey };
+  return { roomId, inviteKey: created.body.key, roomKey, name };
 };
 
 const join = async (user, room) => {

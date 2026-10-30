@@ -3,31 +3,34 @@
 // estado guardado na conexão: quem é removido da sala perde o acesso na hora.
 const pool = require("../db");
 const { parseEnvelope } = require("./envelope");
+const { CLOCK_SKEW_SECONDS, systemClock, nowSeconds, expProblem } = require("../helpers/expiry");
 
 const isMember = async (userId, room) =>
   (await pool.query("SELECT 1 FROM rooms_users WHERE room = $1 AND user_id = $2", [room, userId]))
     .rowCount > 0;
 
-// Grava só se o remetente for membro, a sala não exigir rotação e o kv for a
-// versão atual, na MESMA consulta: não há janela entre checar e gravar. A
-// linha da sala é lida com FOR SHARE: uma saída, remoção ou rotação em
-// andamento (FOR UPDATE) termina antes, e a condição é reavaliada sobre a
-// linha nova (rotation_required = true → nada é gravado). O remetente vem
-// da sessão (conn.userId), nunca do pacote. Devolve { saved } (nova),
+// Grava só se o remetente for membro, a sala não exigir rotação, o kv for a
+// versão atual e o exp respeitar a retenção da sala, na MESMA consulta: não
+// há janela entre checar e gravar. A linha da sala é lida com FOR SHARE: uma
+// saída, remoção, rotação ou troca de retenção em andamento (FOR UPDATE)
+// termina antes, e a condição é reavaliada sobre a linha nova. O remetente
+// vem da sessão (conn.userId), nunca do pacote. Devolve { saved } (nova),
 // { duplicate } (o cid já foi gravado nesta sala: reenvio), { reused } (cid
 // já usado em outra sala), {} (não é membro da sala pedida), { rotation }
-// (é membro, cid novo, mas a chave precisa ser trocada antes) ou
-// { staleKey } (o kv do envelope não é a versão atual da chave da sala).
-const insertIfMember = async (userId, room, cid, body, kv) => {
+// (é membro, cid novo, mas a chave precisa ser trocada antes), { staleKey }
+// (o kv do envelope não é a versão atual da chave da sala) ou { retention:
+// código } (a sala tem retenção e o exp falta ou passa dela).
+const insertIfMember = async (userId, room, cid, body, { kv, exp }, nowSec) => {
   const inserted = await pool.query(
-    `INSERT INTO messages (room, user_id, message, cid, key_version)
-     SELECT r.id, $2, $3, $4, $5 FROM rooms r
+    `INSERT INTO messages (room, user_id, message, cid, key_version, expires_at)
+     SELECT r.id, $2, $3, $4, $5, to_timestamp($6::double precision) FROM rooms r
      WHERE r.id = $1 AND r.key_version = $5 AND NOT r.rotation_required
+       AND (r.retention_seconds IS NULL OR $6::bigint <= $7::bigint + r.retention_seconds + $8::bigint)
        AND EXISTS (SELECT 1 FROM rooms_users WHERE room = $1 AND user_id = $2)
      FOR SHARE OF r
      ON CONFLICT (user_id, cid) DO NOTHING
      RETURNING id, dt_message`,
-    [room, userId, body, cid, kv]
+    [room, userId, body, cid, kv, exp, nowSec, CLOCK_SKEW_SECONDS]
   );
   if (inserted.rowCount > 0) return { saved: inserted.rows[0] };
   // Nada gravado. Autorização primeiro: quem não é membro da sala pedida
@@ -41,9 +44,14 @@ const insertIfMember = async (userId, room, cid, body, kv) => {
   );
   const original = rows[0];
   if (original) return original.room === room ? { duplicate: original } : { reused: true };
-  // Membro, cid novo: faltou a rotação ou a versão da chave.
-  const state = await pool.query("SELECT rotation_required FROM rooms WHERE id = $1", [room]);
-  return state.rows[0]?.rotation_required ? { rotation: true } : { staleKey: true };
+  // Membro, cid novo: faltou a rotação, a versão da chave ou a retenção.
+  const state = (await pool.query("SELECT rotation_required, key_version, retention_seconds FROM rooms WHERE id = $1", [room])).rows[0];
+  if (state?.rotation_required) return { rotation: true };
+  if (state && state.key_version !== kv) return { staleKey: true };
+  if (state?.retention_seconds !== null && state?.retention_seconds !== undefined) {
+    return { retention: exp === null ? "RETENTION_REQUIRED" : "TTL_INVALID" };
+  }
+  return { staleKey: true };
 };
 
 // Usuários com o wrap da versão ATUAL da chave da sala (podem distribuí-la).
@@ -67,7 +75,7 @@ const hasPendingMembers = async (room) =>
     )
   ).rowCount > 0;
 
-const createHandlers = (registry) => {
+const createHandlers = (registry, { clock = systemClock } = {}) => {
   // Entrega só às conexões inscritas na sala cujo usuário AINDA é membro;
   // inscrições de quem saiu da sala são desfeitas aqui (UNSUBSCRIBED).
   const deliver = async (room, packet) => {
@@ -123,6 +131,17 @@ const createHandlers = (registry) => {
     for (const conn of registry.subscribers(room)) conn.send({ type: "ROOM_EVENT", room, kind: "KEY_ROTATED" });
   };
 
+  // Etapa 5: o dono mudou a retenção (vale para as mensagens futuras) ou o
+  // nome cifrado da sala. A retenção não é segredo e vai no aviso; o nome
+  // não: quem quiser busca o name_env em GET /rooms.
+  const notifyRetentionChanged = (room, retentionSeconds) => {
+    for (const conn of registry.subscribers(room)) conn.send({ type: "ROOM_EVENT", room, kind: "RETENTION_CHANGED", retentionSeconds });
+  };
+
+  const notifyRenamed = (room) => {
+    for (const conn of registry.subscribers(room)) conn.send({ type: "ROOM_EVENT", room, kind: "RENAMED" });
+  };
+
   const handlers = {
     // Sala inexistente e sala alheia recebem o mesmo NOT_MEMBER.
     async SUBSCRIBE(conn, { room, id }) {
@@ -154,20 +173,28 @@ const createHandlers = (registry) => {
     // Reenvio do mesmo cid: devolve o MSG_ACK original, sem gravar nem
     // entregar de novo.
     async MSG_SEND(conn, { room, cid, body, id }) {
-      // Falha fechada (E2EE): sem envelope cifrado v1 bem formado, nada é
+      // Falha fechada (E2EE): sem envelope cifrado v2 bem formado, nada é
       // gravado — impede mandar texto puro por engano. Só estrutura: o
       // servidor não decifra (não tem a chave da sala).
       const envelope = parseEnvelope(body);
       if (!envelope) return conn.error("E2EE_REQUIRED", id);
-      const { saved, duplicate, reused, rotation, staleKey } = await insertIfMember(conn.userId, room, cid, body, envelope.kv);
+      // Limites do exp que não dependem da sala (não revelam nada dela).
+      const nowSec = nowSeconds(clock);
+      const ttl = expProblem(envelope.exp, nowSec);
+      if (ttl) return conn.error(ttl, id);
+      const { saved, duplicate, reused, rotation, staleKey, retention } = await insertIfMember(conn.userId, room, cid, body, envelope, nowSec);
       if (reused) return conn.error("CID_REUSED", id);
       if (rotation) return conn.error("ROTATION_PENDING", id);
       if (staleKey) return conn.error("KEY_VERSION_MISMATCH", id);
+      if (retention) return conn.error(retention, id);
       const message = saved ?? duplicate;
       if (!message) return conn.error("NOT_MEMBER", id);
       const ts = message.dt_message.toISOString();
       conn.send({ type: "MSG_ACK", cid, id: message.id, ts });
       if (!saved) return undefined;
+      // Vencida antes da entrega (o relógio andou durante a gravação): não
+      // é entregue; o expurgo a apaga.
+      if (envelope.exp !== null && envelope.exp * 1000 <= clock.nowMs()) return undefined;
       // A mensagem já está gravada e confirmada: uma falha na entrega não vira
       // ERROR para o remetente (seria ACK + ERROR para o mesmo envio). Os
       // inscritos a recuperam pelo histórico HTTP.
@@ -182,7 +209,16 @@ const createHandlers = (registry) => {
     },
   };
 
-  return { handlers, notifyKeyPending, notifyKeyReady, notifyRemoved, notifyRotationPending, notifyKeyRotated };
+  return {
+    handlers,
+    notifyKeyPending,
+    notifyKeyReady,
+    notifyRemoved,
+    notifyRotationPending,
+    notifyKeyRotated,
+    notifyRetentionChanged,
+    notifyRenamed,
+  };
 };
 
 module.exports = { createHandlers };

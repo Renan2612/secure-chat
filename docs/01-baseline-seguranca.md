@@ -115,6 +115,16 @@ automática) e duas mutações novas que fazem o script falhar.
 **Continua aberto:** a lista de membros assinada pelo dono, o histórico de
 chaves públicas antigas no trust store e o frontend ([`05-e2ee.md`](05-e2ee.md) §11.7).
 
+## Resolvido na Etapa 5 — privacidade (Parte A: backend e cliente de referência)
+
+| # | Problema | Correção | Prova |
+|---|---|---|---|
+| J | Mensagens ficavam para sempre | Envelope v2 com `exp` assinado (o servidor não o altera); limites de 30 s a 7 d; retenção por sala definida pelo dono; histórico e entrega ignoram vencidas; expurgo a cada 60 s | `backend/tests/e2ee/ephemeral.test.js`, `backend/tests/ws/ephemeral.test.js`, `scripts/verify-e2ee.sh` (some do histórico e do banco; mutação `server-no-purge` falha) |
+| K | Nome da sala em claro no banco; busca por nome | `name_env` cifrado com a chave da sala, obrigatório na v1 e em cada rotação; `checkRoomExists` removida | `backend/tests/roomSettings.test.js` (nenhuma coluna tem o nome), `scripts/verify-e2ee.sh` (controle invertido) |
+| L | CSRF dependia só do `SameSite` | `Origin` obrigatório e igual a `CLIENT_URL` em POST/PUT/PATCH/DELETE (inclusive login), corpo só em JSON | `backend/tests/csrf.test.js` |
+| M | Logs do Docker sem rotação; Postgres podia registrar valores; horários ao milissegundo | `json-file` 3 × 1 MB; Postgres sem comandos, conexões nem DETAIL; `dt_message`/`ts` só com o minuto; inventário em `docs/06-privacidade.md` | `backend/tests/privacyLogs.test.js`, `scripts/verify-e2ee.sh` (logs dos contêineres) |
+| N | Banimentos sem gestão | `GET /rooms/:id/bans` e `DELETE /rooms/:id/bans/:userId` (só o dono) | `backend/tests/roomSettings.test.js` |
+
 ## Pendente — propositalmente NÃO corrigido ainda
 
 Estes problemas são o núcleo das próximas etapas e foram deixados como estão

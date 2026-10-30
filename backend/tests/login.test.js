@@ -4,7 +4,7 @@
 // produção (definido antes de carregar os módulos que o leem).
 process.env.BCRYPT_COST = "12";
 
-const request = require("supertest");
+const request = require("./request");
 const { app, pool, resetDb, createUser, failQueriesMatching, PASSWORD } = require("./helpers");
 const { createApp } = require("../app");
 

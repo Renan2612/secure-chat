@@ -1,6 +1,6 @@
 // Ataque: coleta de informação — rotas de debug, enumeração, vazamento de
 // hash de senha / chave de sala nas respostas e detalhes internos em erros.
-const request = require("supertest");
+const request = require("./request");
 const { app, pool, resetDb, createUser, insertMessage, failQueriesMatching, PASSWORD } = require("./helpers");
 
 beforeEach(resetDb);
@@ -36,7 +36,7 @@ test("nenhuma resposta da API contém hash de senha nem room.key (exceto createR
     return res;
   };
 
-  const created = await alice.agent.post("/createRoom").send({ name: "Sala" });
+  const created = await alice.agent.post("/createRoom").send({});
   expect(created.status).toBe(201);
   const { key, id: roomId } = created.body;
   expect(key).toMatch(/^[0-9a-f]{32}$/);
@@ -59,7 +59,7 @@ test("nenhuma resposta da API contém hash de senha nem room.key (exceto createR
   await alice.agent.get("/rooms").then(record("GET /rooms", 200));
   await alice.agent.get(`/messages/${roomId}`).then(record("GET /messages", 200));
   await alice.agent.get(`/roomUsers/${roomId}`).then(record("GET /roomUsers", 200));
-  await alice.agent.post("/checkRoomExists").send({ name: "Sala" }).then(record("checkRoomExists", 200));
+  await alice.agent.get(`/rooms/${roomId}/bans`).then(record("GET bans", 200));
   await alice.agent
     .post("/updateLastViewed")
     .send({ room: roomId, idLastMessage: 1 })
@@ -108,7 +108,7 @@ describe("erros não vazam detalhes internos", () => {
       .mockImplementation((callback) =>
         callback ? realConnect(callback) : Promise.reject(new Error("pool esgotado"))
       );
-    const res = await agent.post("/createRoom").send({ name: "Sala" });
+    const res = await agent.post("/createRoom").send({});
     expect(res.status).toBe(500);
     expect(res.body).toEqual({ message: "Erro interno" });
   });

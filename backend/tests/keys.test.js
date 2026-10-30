@@ -2,7 +2,7 @@
 // usuário, consultar chaves de quem não compartilha sala (diretório
 // público), substituir a própria chave por PUT, guardar chave privada.
 const nodeCrypto = require("node:crypto");
-const request = require("supertest");
+const request = require("./request");
 const e2ee = require("../../shared/e2ee");
 const { app, pool, resetDb, createUser, createRoomInDb } = require("./helpers");
 

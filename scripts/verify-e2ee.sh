@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
-# Provas das Etapas 4b-1 (E2EE) e 4b-2 (remoção e troca da chave) contra a
-# stack NO AR (docker compose --env-file backend/.env up --build). Termina
-# com código != 0 se qualquer prova falhar.
+# Provas das Etapas 4b-1 (E2EE), 4b-2 (remoção e troca da chave) e 5
+# (privacidade: efêmeras, nome da sala cifrado, logs) contra a stack NO AR
+# (docker compose --env-file backend/.env up --build). Termina com código
+# != 0 se qualquer prova falhar.
 #
 # Uso: scripts/verify-e2ee.sh
 #      MUTATION=plain-envelope scripts/verify-e2ee.sh      (deve FALHAR)
 #      MUTATION=no-encrypt scripts/verify-e2ee.sh          (deve FALHAR)
 #      MUTATION=reuse-old-key scripts/verify-e2ee.sh       (deve FALHAR: cliente reaproveita a chave na rotação)
-#      MUTATION=server-no-rotation scripts/verify-e2ee.sh  (deve FALHAR: servidor não exige a rotação;
-#                                                          recria o backend com a flag de teste e o devolve ao normal na saída)
+#      MUTATION=server-no-rotation scripts/verify-e2ee.sh  (deve FALHAR: servidor não exige a rotação)
+#      MUTATION=server-no-purge scripts/verify-e2ee.sh     (deve FALHAR: servidor não apaga as expiradas)
 #      KEEP_CAPTURE=capturas scripts/verify-e2ee.sh        (guarda a captura)
 #
+# O backend é RECRIADO no início com o relógio de teste (E2EE_TEST_CLOCK,
+# scripts/lib/test-clock.compose.yml; as mutações de servidor somam a flag
+# delas) e devolvido ao normal na saída, conferindo que nenhuma flag ficou.
+# Recriar também zera o limite de tentativas de /register e /login.
 # Sem sudo: a captura usa o dumpcap como usuário do grupo wireshark.
 # Cria três usuários (@example.invalid, senhas aleatórias só em variáveis) e
 # uma sala temporários; Alice, Bob e Carol (três ws-client) trocam mensagens
@@ -30,9 +35,15 @@
 #       keystore inteiro (todas as chaves antigas) e todos os pacotes da v2,
 #       não decifra nada novo (controle positivo: ele ainda lê a v1, que já
 #       tinha); a Carol, que ficou, ainda lê o texto antigo (v1) e o novo.
+#   (5) a Alice manda uma mensagem com /ttl 1min; a Carol a vê com a
+#       expiração; o relógio de teste do backend avança (SIGUSR2) e ela some
+#       do histórico E do banco (expurgo); o nome da sala NÃO aparece em
+#       claro no banco nem na captura (só cifrado; a Carol o lê); os logs
+#       de todos os contêineres não têm e-mails, nome da sala, marcadores,
+#       cookie nem o IP do cliente.
 # Tudo o que foi criado é APAGADO na saída (trap), inclusive em falha.
-# Gasta 7 tentativas do limite de /register e /login por IP (20 / 15 min):
-# entre várias execuções seguidas, reinicie o backend (o limite é em memória).
+# Gasta 7 tentativas do limite de /register e /login por IP (20 / 15 min);
+# como o backend é recriado no início, o limite começa zerado.
 set -uo pipefail
 umask 077
 cd "$(dirname "$0")/.."
@@ -55,14 +66,18 @@ for tool in curl openssl node docker dumpcap tshark timeout grep sed mkfifo; do
   command -v "$tool" >/dev/null || { echo "erro: '$tool' não encontrado" >&2; exit 2; }
 done
 CLIENT_MUTATION=""
+SERVER_OVERRIDES=(-f docker-compose.yml -f scripts/lib/test-clock.compose.yml)
 case "$MUTATION" in
-  "" | server-no-rotation) ;;
+  "") ;;
+  server-no-rotation | server-no-purge) SERVER_OVERRIDES+=(-f "scripts/mutations/$MUTATION.compose.yml") ;;
   plain-envelope | no-encrypt | reuse-old-key) CLIENT_MUTATION="scripts/mutations/$MUTATION.js" ;;
   *) echo "erro: MUTATION inválida: $MUTATION" >&2; exit 2 ;;
 esac
 # Uma mutação que não carrega rodaria o script SEM mutação (e "passaria").
 [ -z "$CLIENT_MUTATION" ] || [ -f "$CLIENT_MUTATION" ] || { echo "erro: $CLIENT_MUTATION não existe" >&2; exit 2; }
-[ "$MUTATION" != server-no-rotation ] || [ -f scripts/mutations/server-no-rotation.compose.yml ] || { echo "erro: scripts/mutations/server-no-rotation.compose.yml não existe" >&2; exit 2; }
+for file in "${SERVER_OVERRIDES[@]}"; do
+  [ "$file" = -f ] || [ -f "$file" ] || { echo "erro: $file não existe" >&2; exit 2; }
+done
 if [ -z "$("${COMPOSE[@]}" ps -q --status running proxy 2>/dev/null)" ]; then
   echo "erro: a stack não está no ar (docker compose --env-file backend/.env up --build -d)" >&2
   exit 2
@@ -84,6 +99,7 @@ A_KEYPASS="$(openssl rand -hex 16)"; B_KEYPASS="$(openssl rand -hex 16)"; C_KEYP
 MARK_A="MARCADOR-ALICE-$(openssl rand -hex 8)"
 MARK_B="MARCADOR-BOB-$(openssl rand -hex 8)"
 MARK_C="MARCADOR-V2-$(openssl rand -hex 8)"
+MARK_E="MARCADOR-EFEMERA-$(openssl rand -hex 8)"
 CAPTURE="$TMP/interna.pcapng"
 PIDS=()
 
@@ -129,11 +145,11 @@ SQL
     local kept="$KEEP_CAPTURE/verify-e2ee-$STAMP${MUTATION:+-$MUTATION}.pcapng"
     if mkdir -p "$KEEP_CAPTURE" && cp "$CAPTURE" "$kept"; then echo "(captura guardada em $kept)"; else echo "aviso: não foi possível guardar a captura em $KEEP_CAPTURE" >&2; fi
   fi
-  if [ "$MUTATION" = server-no-rotation ] && [ -n "${BACKEND_MUTATED:-}" ]; then
-    # Devolve o backend ao normal (sem a flag de teste) e confere.
+  if [ -n "${BACKEND_MUTATED:-}" ]; then
+    # Devolve o backend ao normal (sem nenhuma flag de teste) e confere.
     if "${COMPOSE[@]}" up -d --no-deps --wait backend >/dev/null 2>"$TMP/restore.err" &&
-      ! "${COMPOSE[@]}" exec -T backend printenv E2EE_TEST_SKIP_ROTATION >/dev/null 2>&1; then
-      echo "(backend recriado sem a flag de teste)"
+      ! "${COMPOSE[@]}" exec -T backend sh -c 'env | grep -q "^E2EE_TEST_"' 2>/dev/null; then
+      echo "(backend recriado sem as flags de teste)"
     else
       echo "ERRO: não foi possível devolver o backend ao normal; rode: docker compose --env-file backend/.env up -d --no-deps backend" >&2
       rc=3
@@ -176,15 +192,18 @@ expect_text() { # expect_text esperar-claro|esperar-cifrado "descrição" TEXTO 
 
 section "Preparação"
 [ -n "$MUTATION" ] && echo "  (MUTAÇÃO ATIVA: $MUTATION — esperado: provas falharem)"
-if [ "$MUTATION" = server-no-rotation ]; then
-  BACKEND_MUTATED=1 # a limpeza recria o backend sem a flag, mesmo se o passo abaixo falhar no meio
-  if "${COMPOSE[@]}" -f docker-compose.yml -f scripts/mutations/server-no-rotation.compose.yml up -d --no-deps --wait backend >/dev/null 2>"$TMP/mutate.err"; then
-    ok "backend recriado com a flag de teste E2EE_TEST_SKIP_ROTATION"
-    check "a flag de teste está mesmo ativa no contêiner" test "$("${COMPOSE[@]}" exec -T backend printenv E2EE_TEST_SKIP_ROTATION 2>/dev/null)" = "inseguro-so-para-teste"
-  else
-    ko "recriar o backend com a flag de teste"; sed 's/^/         | /' "$TMP/mutate.err"; exit 1
-  fi
+BACKEND_MUTATED=1 # a limpeza recria o backend sem as flags, mesmo se o passo abaixo falhar no meio
+if "${COMPOSE[@]}" "${SERVER_OVERRIDES[@]}" up -d --no-deps --wait backend >/dev/null 2>"$TMP/mutate.err"; then
+  ok "backend recriado com o relógio de teste${MUTATION:+ e a flag da mutação $MUTATION}"
+  check "o relógio de teste está mesmo ativo no contêiner" test "$("${COMPOSE[@]}" exec -T backend printenv E2EE_TEST_CLOCK 2>/dev/null)" = "inseguro-so-para-teste"
+  case "$MUTATION" in
+    server-no-rotation) check "a flag E2EE_TEST_SKIP_ROTATION está ativa" test "$("${COMPOSE[@]}" exec -T backend printenv E2EE_TEST_SKIP_ROTATION 2>/dev/null)" = "inseguro-so-para-teste" ;;
+    server-no-purge) check "a flag E2EE_TEST_SKIP_PURGE está ativa" test "$("${COMPOSE[@]}" exec -T backend printenv E2EE_TEST_SKIP_PURGE 2>/dev/null)" = "inseguro-so-para-teste" ;;
+  esac
+else
+  ko "recriar o backend com o relógio de teste"; sed 's/^/         | /' "$TMP/mutate.err"; exit 1
 fi
+LOG_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" # a varredura dos logs começa aqui
 CA="$TMP/ca.crt"
 if scripts/export-ca.sh "$CA" >/dev/null; then ok "CA raiz exportada"; else ko "exportar a CA"; exit 1; fi
 register() { # register EMAIL SENHA NOME → HTTP status
@@ -281,6 +300,21 @@ wait_for "$TMP/alice.out" "chave da sala ${ROOM_ID:-x} disponível \(v2" 20
 wait_for "$TMP/carol.out" "chave da sala ${ROOM_ID:-x} disponível \(v2" 20
 echo "$MARK_C" >&"$ALICE_IN"
 wait_for "$TMP/carol.out" "$MARK_C" 15
+
+# (5) Efêmera: /ttl 1min na Alice; a Carol a vê com a expiração. Depois o
+# relógio de teste do backend avança 1 h (SIGUSR2), o que vence a mensagem
+# e roda o expurgo.
+printf '/ttl 1min\n%s\n' "$MARK_E" >&"$ALICE_IN"
+wait_for "$TMP/carol.out" "\[expira [^]]*\]: $MARK_E" 15
+EPH_ID="$(psql_dev -c "SELECT id FROM messages WHERE room = ${ROOM_ID:-0} AND expires_at IS NOT NULL ORDER BY id DESC LIMIT 1")"
+EPH_ROWS_BEFORE="$(psql_dev -c "SELECT COUNT(*) FROM messages WHERE id = ${EPH_ID:-0}")"
+api_alice GET "/messages/${ROOM_ID:-0}?limit=100" >/dev/null
+HISTORY_BEFORE="$(node -e 'try{process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).map(m=>m.idmessage).join(","))}catch{}' "$TMP/api.out")"
+"${COMPOSE[@]}" exec -T backend kill -USR2 1 2>"$TMP/kill.err"; KILL_RC=$?
+sleep 2
+EPH_ROWS_AFTER="$(psql_dev -c "SELECT COUNT(*) FROM messages WHERE id = ${EPH_ID:-0}")"
+HISTORY_STATUS="$(api_alice GET "/messages/${ROOM_ID:-0}?limit=100")"
+HISTORY_AFTER="$(node -e 'try{process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).map(m=>m.idmessage).join(","))}catch{}' "$TMP/api.out")"
 sleep 1
 exec {ALICE_IN}>&- {BOB_IN}>&- {CAROL_IN}>&-   # fim da entrada: os clientes saem e fazem logout
 wait "$alice_PID"; A_STATUS=$?
@@ -307,6 +341,8 @@ expect_text esperar-claro "controle positivo do detector: acha o marcador codifi
 expect_text esperar-cifrado "marcador da Alice não aparece na captura" "$MARK_A" "$CAPTURE" "$TMP/capture.txt"
 expect_text esperar-cifrado "marcador do Bob não aparece na captura" "$MARK_B" "$CAPTURE" "$TMP/capture.txt"
 expect_text esperar-cifrado "marcador da v2 (depois da remoção) não aparece na captura" "$MARK_C" "$CAPTURE" "$TMP/capture.txt"
+expect_text esperar-cifrado "marcador da efêmera não aparece na captura" "$MARK_E" "$CAPTURE" "$TMP/capture.txt"
+expect_text esperar-cifrado "o nome da sala não aparece em claro na captura" "$ROOM_NAME" "$CAPTURE" "$TMP/capture.txt"
 
 section "(a) e (c) banco de dados"
 : >"$TMP/db.txt"
@@ -317,7 +353,14 @@ for table in $TABLES; do
   psql_dev -c "SELECT row_to_json(t)::text FROM \"$table\" t" >>"$TMP/db.txt" || { ko "despejo da tabela $table falhou"; DUMP_FAILS=1; }
 done
 check "todas as tabelas foram despejadas para a varredura" test "$DUMP_FAILS" = 0
-expect_text esperar-claro "controle positivo: o nome da sala (metadado) aparece em claro no banco" "$ROOM_NAME" "$TMP/db.txt"
+# Etapa 5 (A3): o nome da sala deixou de ser metadado em claro (era o
+# controle positivo até a 4b-2). Controle positivo novo: o name_env (cifrado)
+# desta sala está no despejo, e a Carol leu o nome decifrado.
+expect_text esperar-cifrado "o nome da sala NÃO aparece em claro em nenhuma coluna (só cifrado)" "$ROOM_NAME" "$TMP/db.txt"
+NAME_CT="$(psql_dev -c "SELECT name_env FROM rooms WHERE id = ${ROOM_ID:-0}" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{process.stdout.write(JSON.parse(d).ct.slice(0,40))}catch{}})')"
+expect_text esperar-claro "controle positivo: o name_env cifrado desta sala está no despejo do banco" "$NAME_CT" "$TMP/db.txt"
+check "controle positivo: a Carol leu o nome da sala decifrado" grep -qF "«$ROOM_NAME»" "$TMP/carol.out"
+expect_text esperar-cifrado "marcador da efêmera não aparece em nenhuma coluna" "$MARK_E" "$TMP/db.txt"
 expect_text esperar-cifrado "marcador da Alice não aparece em nenhuma coluna" "$MARK_A" "$TMP/db.txt"
 expect_text esperar-cifrado "marcador do Bob não aparece em nenhuma coluna" "$MARK_B" "$TMP/db.txt"
 expect_text esperar-cifrado "marcador da v2 não aparece em nenhuma coluna" "$MARK_C" "$TMP/db.txt"
@@ -338,7 +381,7 @@ envelopes_ok() {
     process.exit(lines.length > 0 ? 0 : 1);
   ' "$TMP/bodies.txt" 2>"$TMP/envelopes.err" || { sed 's/^/         | /' "$TMP/envelopes.err"; return 1; }
 }
-check "cada mensagem no banco é só o envelope E2EE v1 {v,kv,iv,ct,sig}" envelopes_ok
+check "cada mensagem no banco é só o envelope E2EE v2 {v,kv,iv,ct,sig,exp}" envelopes_ok
 check "versões da chave gravadas = 1 e 2 (a v2 nasceu da rotação)" test "$(cat "$TMP/kv.txt")" = "1,2"
 echo "         exemplo do que o banco guarda: $(head -c 120 "$TMP/bodies.txt")…"
 
@@ -388,6 +431,30 @@ check "controle positivo: com o mesmo keystore o Bob ainda lê a v1 (o removido 
 check "(c) quem ficou (Carol) ainda lê o texto antigo da v1 depois da rotação" grep -qxF "ok $MARK_B" <<<"$CAROL_V1"
 check "Carol lê o marcador novo com o próprio keystore" grep -qxF "ok $MARK_C" <<<"$CAROL_V2"
 check "controle positivo dos wraps: a Carol abre exatamente um wrap da v2 (o dela)" test "$(grep -cx 'ok wrap' <<<"$CAROL_V2")" = 1
+
+section "(5) mensagem efêmera e expurgo"
+check "Carol mostrou a efêmera da Alice com a expiração" grep -qE "\[expira [^]]*\]: $MARK_E" "$TMP/carol.out"
+check "a efêmera foi gravada com expires_at (id ${EPH_ID:-?})" test -n "${EPH_ID:-}" -a "${EPH_ROWS_BEFORE:-0}" = 1
+in_list() { [[ ",$2," == *",$1,"* ]]; }
+check "controle positivo: antes do expurgo o histórico tinha a efêmera" in_list "${EPH_ID:-x}" "$HISTORY_BEFORE"
+check "o relógio de teste do backend avançou (SIGUSR2 entregue)" test "$KILL_RC" = 0
+not_in_history() { [ "$HISTORY_STATUS" = 200 ] && [ -n "$HISTORY_AFTER" ] && ! in_list "${EPH_ID:-x}" "$HISTORY_AFTER"; }
+check "depois de vencer, a efêmera some do histórico (as outras continuam: ${HISTORY_AFTER:-vazio})" not_in_history
+check "depois do expurgo, a efêmera some do BANCO (linhas com o id ${EPH_ID:-?}: ${EPH_ROWS_AFTER:-?})" test "${EPH_ROWS_AFTER:-x}" = 0
+
+section "(5) logs de todos os contêineres (desde a recriação do backend)"
+"${COMPOSE[@]}" logs --no-color --since "$LOG_SINCE" >"$TMP/logs.txt" 2>&1; LOGS_RC=$?
+check "logs obtidos ($(wc -l <"$TMP/logs.txt") linhas)" test "$LOGS_RC" = 0 -a -s "$TMP/logs.txt"
+check "controle positivo: o log tem o aviso do relógio de teste do backend" grep -q "E2EE_TEST_CLOCK definido" "$TMP/logs.txt"
+CLIENT_IP="$(docker network inspect -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' "$(docker network ls -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.network=borda | head -n 1)" 2>/dev/null)"
+check "IP com que os clientes chegam ao proxy obtido (${CLIENT_IP:-?})" test -n "$CLIENT_IP"
+for needle in "$A_EMAIL" "$B_EMAIL" "$C_EMAIL" "$ROOM_NAME" "$MARK_A" "$MARK_B" "$MARK_C" "$MARK_E"; do
+  expect_text esperar-cifrado "log sem: $needle" "$needle" "$TMP/logs.txt"
+done
+if [ -n "$CLIENT_IP" ]; then
+  if grep -qF "$CLIENT_IP" "$TMP/logs.txt"; then ko "o IP do cliente ($CLIENT_IP) aparece no log"; else ok "o IP do cliente ($CLIENT_IP) não aparece no log"; fi
+fi
+if grep -qE 'sid=s%3A|sid=s:' "$TMP/logs.txt"; then ko "um cookie de sessão aparece no log"; else ok "nenhum cookie de sessão no log"; fi
 
 echo
 if [ "$FAILS" -eq 0 ]; then echo "RESULTADO: todas as provas passaram"; else echo "RESULTADO: $FAILS prova(s) falharam"; fi

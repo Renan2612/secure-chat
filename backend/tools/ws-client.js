@@ -21,7 +21,9 @@
 // dentro de um repositório git), --reset-keys (substitui as chaves públicas
 // no servidor pelas deste keystore).
 // Comandos (linhas que começam com /): /members, /safety <id>, /trust <id>,
-// /approve <id>, /keys, /kick <id>, /leave, /rotate, /owner <id>, /invite.
+// /approve <id>, /keys, /kick <id>, /leave, /rotate, /owner <id>, /invite,
+// /ttl <1min|1h|24h|7d|off>, /retention <segundos|off>, /bans, /unban <id>,
+// /rename <nome>.
 // O /trust só confirma a chave cujo número de segurança o /safety mostrou. A
 // chave da sala só é entregue sozinha a membros VERIFICADOS; os demais
 // precisam de /approve (quem decide quem é membro é o servidor).
@@ -39,6 +41,13 @@
 // login (esta vai ao servidor; aquela nunca sai da máquina). Nenhuma das duas
 // é aceita como argumento: argumentos ficam visíveis no `ps` e no histórico.
 // Envio sem MSG_ACK em --ack-timeout-ms é avisado como não confirmado.
+// Privacidade (Etapa 5): /ttl liga a expiração das PRÓXIMAS mensagens (o exp
+// vai assinado no envelope; com retenção na sala, vale o menor dos dois);
+// mensagem recebida com exp é esquecida ao vencer (o terminal não apaga o
+// que já mostrou: isso é dito na tela); /retention (só o dono) define a
+// retenção máxima da sala para as mensagens futuras; /bans e /unban (só o
+// dono) listam e desfazem banimentos; /rename (só o dono) troca o nome, que
+// vai cifrado com a chave da sala (o servidor não o vê).
 const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
@@ -65,9 +74,13 @@ const describeError = (err) => {
     : base;
 };
 const LOOPBACK = /^(localhost|127(\.\d{1,3}){3}|\[::1\])$/;
-const COMMANDS = "/members, /safety <userId>, /trust <userId>, /approve <userId>, /keys, /kick <userId>, /leave, /rotate, /owner <userId>, /invite";
+const COMMANDS =
+  "/members, /safety <userId>, /trust <userId>, /approve <userId>, /keys, /kick <userId>, /leave, /rotate, /owner <userId>, /invite, " +
+  "/ttl <1min|1h|24h|7d|off>, /retention <segundos|off>, /bans, /unban <userId>, /rename <nome>";
 const OPTIONS = ["server", "ws", "origin", "email", "room", "ca", "ack-timeout-ms", "keystore", "create-room", "join"];
 const FLAGS = ["reset-keys"];
+
+const describeTtl = (seconds) => (seconds === null ? "sem expiração" : `${seconds} s`);
 
 const fail = (message) => {
   process.stderr.write(`erro: ${message}\n`);
@@ -323,6 +336,9 @@ const main = async () => {
   let inputStarted = false;
   let room = args.room;
   let leaving = false; // /leave em andamento: o REMOVED que vem depois é esperado
+  let ttl = null; // /ttl: segundos (null = sem expiração)
+  let retention = null; // retenção da sala (servidor): segundos ou null
+  const expiring = new Map(); // id da mensagem → timer do esquecimento
   // Linhas digitadas e eventos tratados EM ORDEM (cifrar é assíncrono).
   let queue = Promise.resolve();
   let queued = 0;
@@ -373,7 +389,9 @@ const main = async () => {
       return;
     }
     const cid = crypto.randomUUID();
-    const body = await session.encrypt(room, cid, line);
+    // Com retenção na sala, a mensagem PRECISA de exp, até o limite dela.
+    const effective = retention === null ? ttl : Math.min(ttl ?? retention, retention);
+    const body = await session.encrypt(room, cid, line, e2ee.expFor(effective));
     // Sem ACK no prazo (ex.: descartada pelo rate limit, que não responde
     // a cada quadro), a linha é dada como não enviada.
     pending.set(
@@ -469,6 +487,58 @@ const main = async () => {
       }
       case "/invite":
         return print(`convite novo da sala ${room} (mostrado só agora; o anterior deixou de valer): ${await session.rotateInvite(room)}`);
+      case "/ttl": {
+        if (arg === "off") {
+          ttl = null;
+        } else if (Object.hasOwn(e2ee.TTL_PRESETS, arg ?? "")) {
+          ttl = e2ee.TTL_PRESETS[arg];
+        } else {
+          return print("uso: /ttl <1min|1h|24h|7d|off>");
+        }
+        const capped = retention !== null && (ttl === null || ttl > retention) ? ` (a retenção da sala limita a ${retention} s)` : "";
+        return print(`expiração das próximas mensagens: ${describeTtl(ttl)}${capped}`);
+      }
+      case "/retention": {
+        const seconds = arg === "off" ? null : Number(arg);
+        if (seconds !== null && !Number.isSafeInteger(seconds)) return print("uso: /retention <segundos|off> (60 a 604800)");
+        try {
+          retention = await session.setRetention(room, seconds);
+        } catch (err) {
+          return print(`! ${err.message}`);
+        }
+        return print(`retenção da sala ${room}: ${describeTtl(retention)} (vale para as mensagens futuras)`);
+      }
+      case "/bans": {
+        let bans;
+        try {
+          bans = await session.bans(room);
+        } catch (err) {
+          return print(`! ${err.message}`);
+        }
+        if (bans.length === 0) return print(`ninguém banido da sala ${room}`);
+        print(`banidos da sala ${room}:`);
+        for (const b of bans) print(`  ${b.userId} ${clean(b.name)}`);
+        return undefined;
+      }
+      case "/unban": {
+        if (!Number.isInteger(userId) || userId <= 0) return print("uso: /unban <userId>");
+        try {
+          await session.unban(room, userId);
+        } catch (err) {
+          return print(`! ${err.message}`);
+        }
+        return print(`usuário ${userId} desbanido da sala ${room} (para voltar, precisa de um convite válido)`);
+      }
+      case "/rename": {
+        const newName = line.trim().slice("/rename".length).trim();
+        if (!newName) return print("uso: /rename <nome>");
+        try {
+          await session.rename(room, newName);
+        } catch (err) {
+          return print(`! ${err.message}`);
+        }
+        return print(`sala ${room} renomeada (o nome vai cifrado: o servidor não o vê)`);
+      }
       default:
         return print(`comandos: ${COMMANDS}`);
     }
@@ -518,6 +588,7 @@ const main = async () => {
     if (got.ok) {
       const from = got.sender === undefined || got.sender === user.id ? "" : `; entregue por usuário ${got.sender} [${session.trustLabel(got.sender)}]`;
       print(`chave da sala ${room} disponível (v${session.currentVersion.get(room)}${from})`);
+      await showRoomInfo();
       // A rotação pode estar pendente desde antes desta conexão (ninguém com
       // a chave estava online quando alguém saiu).
       if (session.rotationRequired.get(room)) {
@@ -530,12 +601,37 @@ const main = async () => {
     }
   };
 
+  const showRoomInfo = async () => {
+    const info = await session.roomInfo(room);
+    retention = info.retentionSeconds;
+    print(`sala ${room}: ${info.name === null ? `Sala #${room} (nome indisponível)` : `«${clean(info.name)}»`}; retenção: ${describeTtl(retention)}`);
+  };
+
+  // Mensagem com exp: esquecida ao vencer (o texto não fica guardado em
+  // lugar nenhum deste cliente; o que o terminal já mostrou não dá para
+  // apagar, e isso é dito).
+  const forgetAt = (id, exp) => {
+    const ms = exp * 1000 - Date.now();
+    const timer = setTimeout(() => {
+      expiring.delete(id);
+      print(`mensagem ${clean(id)} expirou: removida da memória deste cliente (o terminal não apaga o que já mostrou)`);
+    }, Math.max(0, Math.min(ms, 2147483647)));
+    timer.unref();
+    expiring.set(id, timer);
+  };
+
   const showDelivery = async (packet) => {
     const result = await session.accept(packet);
     const who = `sala ${clean(packet.room)} · usuário ${clean(packet.from)}`;
     switch (result.status) {
-      case "ok":
-        return print(`[${clean(packet.ts)}] ${who} [${result.verified ? "verificado" : "não verificado"}]: ${clean(result.text)}`);
+      case "ok": {
+        const until = result.exp === null ? "" : ` [expira ${new Date(result.exp * 1000).toISOString()}]`;
+        print(`[${clean(packet.ts)}] ${who} [${result.verified ? "verificado" : "não verificado"}]${until}: ${clean(result.text)}`);
+        if (result.exp !== null) forgetAt(packet.id, result.exp);
+        return undefined;
+      }
+      case "expired":
+        return print(`! ${who}: mensagem expirada descartada (não exibida)`);
       case "duplicate":
         return undefined; // reentrega: já foi mostrada
       case "untrusted":
@@ -596,6 +692,16 @@ const main = async () => {
           print(`evento: alguém saiu da sala ${room}; o envio fica bloqueado até a chave ser trocada`);
           return enqueue(async () => reportRotation(await session.autoRotate(room)));
         }
+        if (packet.kind === "RETENTION_CHANGED") {
+          const value = packet.retentionSeconds;
+          if (value !== null && !Number.isSafeInteger(value)) return undefined;
+          retention = value;
+          return print(`evento: retenção da sala ${room} agora é ${describeTtl(retention)} (vale para as mensagens futuras)`);
+        }
+        if (packet.kind === "RENAMED") {
+          print(`evento: o nome da sala ${room} mudou`);
+          return enqueue(showRoomInfo);
+        }
         if (packet.kind === "REMOVED") {
           if (leaving) return undefined;
           print(`! evento: você não é mais membro da sala ${room} (removido pelo dono ou saiu em outra conexão)`);
@@ -613,6 +719,10 @@ const main = async () => {
         return enqueue(() => showDelivery(packet));
       case "ERROR":
         print(`! ${clean(packet.code)}: ${clean(packet.message)}`);
+        if (packet.code === "RETENTION_REQUIRED" || packet.code === "TTL_INVALID") {
+          print("  (a mensagem NÃO foi enviada; confira o /ttl e a retenção da sala)");
+          enqueue(showRoomInfo);
+        }
         if (packet.code === "ROTATION_PENDING") {
           print("  (a mensagem NÃO foi enviada; reenvie depois que a chave for trocada)");
           enqueue(async () => reportRotation(await session.autoRotate(room)));

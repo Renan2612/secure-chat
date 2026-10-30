@@ -1,7 +1,7 @@
 // Utilitários dos testes do protocolo em tempo real (/ws): sobe o servidor
 // HTTP de verdade numa porta livre e oferece um cliente WebSocket que
 // registra tudo o que recebe, para os testes esperarem por tipos de pacote.
-const request = require("supertest");
+const request = require("../request");
 const WebSocket = require("ws");
 const { createServer } = require("../../createServer");
 const { PASSWORD } = require("../helpers");
@@ -10,10 +10,12 @@ const ORIGIN = "http://localhost:3000"; // = CLIENT_URL em tests/env.js
 
 let counter = 0;
 
-const startServer = async (realtimeOptions = {}) => {
+// `clock` (Etapa 5): relógio da expiração, para os testes de efêmeras.
+const startServer = async (realtimeOptions = {}, { clock } = {}) => {
   const instance = createServer({
     appOptions: { authRateLimitMax: 10000, loginEmailRateLimitMax: 10000 },
     realtimeOptions,
+    ...(clock ? { clock } : {}),
   });
   await new Promise((resolve) => instance.server.listen(0, "127.0.0.1", resolve));
   const { port } = instance.server.address();

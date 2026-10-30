@@ -198,30 +198,35 @@ Direção: **C→S** (cliente para servidor), **S→C** (servidor para cliente).
 | `SUBSCRIBED` | S→C | `room` | Inscrição aceita. |
 | `UNSUBSCRIBE` | C→S | `room` | Cancela a inscrição (idempotente). |
 | `UNSUBSCRIBED` | S→C | `room` | Inscrição cancelada, a pedido do cliente **ou pelo servidor** quando o usuário deixou de ser membro da sala (§7). |
-| `MSG_SEND` | C→S | `room`: inteiro; `cid`: `[A-Za-z0-9_-]{1,64}`; `body`: string, 1 a **8192 bytes UTF-8**, sem o caractere NUL, e (Etapa 4b-1) um **envelope E2EE v1** bem formado com o `kv` da versão atual da chave da sala (§4.3) | Envia uma mensagem. **Não tem campo `from`**. |
+| `MSG_SEND` | C→S | `room`: inteiro; `cid`: `[A-Za-z0-9_-]{1,64}`; `body`: string, 1 a **8192 bytes UTF-8**, sem o caractere NUL, e (Etapa 4b-1) um **envelope E2EE** bem formado com o `kv` da versão atual da chave da sala (§4.3) — desde a Etapa 5, **v2**, com `exp` dentro dos limites e da retenção da sala | Envia uma mensagem. **Não tem campo `from`**. |
 | `MSG_ACK` | S→C | `cid`; `id`: inteiro (id da mensagem no banco); `ts`: ISO 8601 | A mensagem foi **gravada**. Correlação pelo `cid`. Reenvio do mesmo `cid` → o mesmo ACK. |
 | `MSG_DELIVER` | S→C | `room`; `id`; `from`: inteiro (usuário **da sessão** do remetente, preenchido pelo servidor); `cid` (Etapa 4b-1: o do `MSG_SEND`); `ts`; `body` (como veio) | Mensagem nova na sala. Vai a toda conexão inscrita cujo usuário é membro, **inclusive as do próprio remetente**. O cliente deduplica por (`from`, `cid`), que também entram no AAD da E2EE. |
-| `ROOM_EVENT` | S→C | `room`; `kind`: `"KEY_PENDING"`, `"KEY_READY"`, `"REMOVED"`, `"ROTATION_PENDING"` ou `"KEY_ROTATED"` | **Extensão do v1 (Etapas 4b-1 e 4b-2).** `KEY_PENDING`: vai às conexões inscritas na sala cujo usuário **tem a chave atual**, quando há membro sem ela (alguém entrou, registrou chaves, trocou de chave, ou um portador se inscreveu com pendentes, inclusive depois de uma rotação que o deixou de fora). `KEY_READY`: vai a **todas** as conexões do destinatário (inscritas ou não) quando chega um wrap para ele, inclusive o de uma rotação. **4b-2:** `REMOVED` vai a todas as conexões de quem saiu ou foi removido, que é desinscrito da sala sem fechar a conexão; `ROTATION_PENDING` vai aos inscritos que ficaram, quando a sala passa a exigir a troca da chave; `KEY_ROTATED` vai aos inscritos depois de uma rotação. Não carrega dado de chave: o cliente busca pela API ([`05-e2ee.md`](05-e2ee.md) §5 e §11). Clientes que não conhecem um `kind` podem ignorá-lo. |
+| `ROOM_EVENT` | S→C | `room`; `kind`: `"KEY_PENDING"`, `"KEY_READY"`, `"REMOVED"`, `"ROTATION_PENDING"`, `"KEY_ROTATED"`, `"RETENTION_CHANGED"` (com `retentionSeconds`: inteiro ou `null`) ou `"RENAMED"` | **Extensão do v1 (Etapas 4b-1 e 4b-2).** `KEY_PENDING`: vai às conexões inscritas na sala cujo usuário **tem a chave atual**, quando há membro sem ela (alguém entrou, registrou chaves, trocou de chave, ou um portador se inscreveu com pendentes, inclusive depois de uma rotação que o deixou de fora). `KEY_READY`: vai a **todas** as conexões do destinatário (inscritas ou não) quando chega um wrap para ele, inclusive o de uma rotação. **4b-2:** `REMOVED` vai a todas as conexões de quem saiu ou foi removido, que é desinscrito da sala sem fechar a conexão; `ROTATION_PENDING` vai aos inscritos que ficaram, quando a sala passa a exigir a troca da chave; `KEY_ROTATED` vai aos inscritos depois de uma rotação. **Etapa 5:** `RETENTION_CHANGED` e `RENAMED` vão aos inscritos quando o dono muda a retenção ou o nome cifrado da sala ([`06-privacidade.md`](06-privacidade.md)). Não carrega dado de chave nem o nome: o cliente busca pela API ([`05-e2ee.md`](05-e2ee.md) §5, §11 e §12). Clientes que não conhecem um `kind` podem ignorá-lo. |
 | `ERROR` | S→C | `code` (§5.1); `message`: texto genérico; `ref?`: o `id` do pacote que causou o erro | Pacote recusado. Salvo os casos da §5.2, a conexão continua aberta. |
 
 Exemplo de troca:
 
 ```json
 C→S {"v":1,"type":"MSG_SEND","id":"r9","room":7,"cid":"5f0c…","body":"{\"v\":1,\"kv\":1,\"iv\":\"…\",\"ct\":\"…\",\"sig\":\"…\"}"}
-S→C {"v":1,"type":"MSG_ACK","cid":"5f0c…","id":42,"ts":"2026-10-28T14:03:11.512Z"}
-S→C {"v":1,"type":"MSG_DELIVER","room":7,"id":42,"from":3,"cid":"5f0c…","ts":"2026-10-28T14:03:11.512Z","body":"{\"v\":1,…}"}
+S→C {"v":1,"type":"MSG_ACK","cid":"5f0c…","id":42,"ts":"2026-10-28T14:03:00.000Z"}
+S→C {"v":1,"type":"MSG_DELIVER","room":7,"id":42,"from":3,"cid":"5f0c…","ts":"2026-10-28T14:03:00.000Z","body":"{\"v\":2,…,\"exp\":null}"}
 S→C {"v":1,"type":"ROOM_EVENT","room":7,"kind":"KEY_PENDING"}
 ```
 
-### 4.3 `body` cifrado (Etapa 4b-1)
+Desde a Etapa 5 o `ts` (e o `dt_message` do histórico) tem só o **minuto**:
+a ordem das mensagens é a do `id`.
+
+### 4.3 `body` cifrado (Etapa 4b-1; v2 na Etapa 5)
 
 O servidor não decifra, não interpreta, **não registra em log** e não
 compara reenvios. Ele confere só o tamanho (até 8192 bytes, sem NUL, que o
 Postgres recusa em `TEXT`) e, desde a Etapa 4b-1, a **estrutura** do
-envelope E2EE v1 (`backend/realtime/envelope.js`, formato em
-[`05-e2ee.md`](05-e2ee.md) §4): exatamente `{"v":1,"kv":…,"iv":…,"ct":…,"sig":…}`
-na forma canônica, `iv` de 12 bytes, `sig` de 64 e `ct` com tamanho de
-padding válido. Fora disso → `E2EE_REQUIRED` (falha fechada: um cliente
+envelope E2EE (`backend/realtime/envelope.js`, formato em
+[`05-e2ee.md`](05-e2ee.md) §4 e §12): desde a Etapa 5, exatamente
+`{"v":2,"kv":…,"iv":…,"ct":…,"sig":…,"exp":…}` na forma canônica, `iv` de 12
+bytes, `sig` de 64, `ct` com tamanho de padding válido e `exp` `null` ou
+inteiro positivo. O `exp` (expiração assinada) é conferido contra o relógio
+do servidor e a retenção da sala (`TTL_INVALID`, `RETENTION_REQUIRED`). Fora disso → `E2EE_REQUIRED` (falha fechada: um cliente
 com bug não consegue mandar texto puro). Com o `kv` diferente da versão
 atual da chave da sala → `KEY_VERSION_MISMATCH`. O banco repete a regra
 com um `CHECK` na coluna `messages.message`.
@@ -257,9 +262,11 @@ Portanto:
 | `RATE_LIMITED` | Pacotes demais; aguarde | quadro acima do ritmo (§6). Enviado **só na 1ª violação** de cada sequência, para não amplificar a inundação | segue aberta; na 20ª violação seguida fecha com 4429 |
 | `NOT_MEMBER` | Sem acesso a esta sala | SUBSCRIBE ou MSG_SEND para sala da qual o usuário não é membro **ou que não existe** (mesma resposta) | segue aberta |
 | `CID_REUSED` | cid já usado em outra sala | MSG_SEND com `cid` que o usuário já usou em outra sala | segue aberta |
-| `E2EE_REQUIRED` | O body precisa ser um envelope E2EE v1 | **Etapa 4b-1.** MSG_SEND cujo `body` não é um envelope E2EE v1 bem formado (texto puro, JSON qualquer, campo extra, fora da forma canônica, tamanhos errados de `iv`, `sig` ou `ct`) — nada é gravado | segue aberta |
+| `E2EE_REQUIRED` | O body precisa ser um envelope E2EE v2 | **Etapa 4b-1 (v2 na 5).** MSG_SEND cujo `body` não é um envelope E2EE v2 bem formado (inclusive um envelope v1) (texto puro, JSON qualquer, campo extra, fora da forma canônica, tamanhos errados de `iv`, `sig` ou `ct`) — nada é gravado | segue aberta |
 | `KEY_VERSION_MISMATCH` | Versão da chave diferente da atual da sala | **Etapa 4b-1.** MSG_SEND de um membro com envelope válido, mas `kv` ≠ versão atual da chave da sala — nada é gravado (inclusive um kv antigo depois de uma rotação) | segue aberta |
 | `ROTATION_PENDING` | A chave da sala precisa ser trocada antes de enviar | **Etapa 4b-2.** MSG_SEND de um membro numa sala em que alguém saiu ou foi removido e a chave ainda não foi trocada (`rotation_required`) — nada é gravado; reenviar depois da rotação, com a chave nova | segue aberta |
+| `TTL_INVALID` | Expiração (exp) fora dos limites (30 s a 7 dias, ou acima da retenção da sala) | **Etapa 5.** `exp` já vencido ou acima de agora + 7 d + 5 min (conferido **antes** do banco, para qualquer remetente), ou, para um membro, acima de agora + retenção + 5 min — nada é gravado | segue aberta |
+| `RETENTION_REQUIRED` | Esta sala tem retenção: a mensagem precisa de expiração (exp) | **Etapa 5.** Membro manda `exp: null` numa sala com retenção — nada é gravado | segue aberta |
 | `INTERNAL` | Erro interno | falha inesperada ao tratar o pacote (ex.: banco fora). Num `MSG_SEND`, significa sempre **"não gravado"** (reenviar com o mesmo `cid` é seguro). Uma falha só na **entrega**, depois de gravar e mandar o `MSG_ACK`, não gera ERROR: vai ao log como "falha na entrega" e os inscritos recuperam a mensagem pelo histórico. O log registra o tipo do pacote, o código (SQLSTATE) e a mensagem do erro, nunca o pacote | segue aberta |
 
 As mensagens são fixas e genéricas: nunca ecoam a entrada nem detalham
@@ -269,7 +276,10 @@ Ordem das checagens do `MSG_SEND` (Etapa 4b-1): schema do pacote
 (`BAD_REQUEST`) → estrutura do envelope, sem consultar o banco
 (`E2EE_REQUIRED`) → pertinência à sala (`NOT_MEMBER`) → `cid` já gravado
 (mesmo `MSG_ACK`) ou de outra sala (`CID_REUSED`) → rotação exigida
-(`ROTATION_PENDING`, Etapa 4b-2) → versão da chave (`KEY_VERSION_MISMATCH`).
+(`ROTATION_PENDING`, Etapa 4b-2) → versão da chave (`KEY_VERSION_MISMATCH`)
+→ retenção da sala (`RETENTION_REQUIRED` / `TTL_INVALID`, Etapa 5). Os
+limites gerais do `exp` (`TTL_INVALID`) vêm logo depois da estrutura do
+envelope, sem consultar o banco.
 A gravação é condicional na mesma consulta (membro, sala sem rotação exigida
 **e** `kv` = versão atual), sem janela entre checar e gravar. A linha da sala
 é lida com `FOR SHARE`: uma saída, remoção ou rotação em andamento termina
@@ -481,6 +491,7 @@ Etapa 4b-1 (E2EE; detalhes em [`05-e2ee.md`](05-e2ee.md) §7):
 | — | `ROOM_EVENT {room, kind}`: `KEY_PENDING` (entregar a chave a quem está pendente, depois de conferir as chaves dele) e `KEY_READY` (buscar o próprio wrap) |
 | `GET /messages/:id` com `message` em claro | `message` é o envelope; cada item traz também `cid` e `keyversion` |
 | — | Rotas de chaves: `PUT /keys`, `POST /keys/reset`, `GET /keys/:userId`, `POST`/`GET /rooms/:id/keys`, `GET /rooms/:id/keys/pending`, `POST /rooms/:id/keys/wraps`, `DELETE /rooms/:id/keys/wraps/mine` |
+| — | **Etapa 5:** envelope **v2** com `exp` (`/ttl`); `ERROR TTL_INVALID` e `RETENTION_REQUIRED`; `ROOM_EVENT RETENTION_CHANGED` e `RENAMED`; `PUT /rooms/:id/retention`, `PUT /rooms/:id/name`, `GET /rooms/:id/bans`, `DELETE /rooms/:id/bans/:userId`; `POST /createRoom {}` sem nome (o nome vai cifrado na publicação da v1 e em cada rotação); `GET /rooms` devolve `nameEnv`; `POST /checkRoomExists` removida; toda requisição que muda estado exige `Origin` = `CLIENT_URL` e, com corpo, JSON (CSRF) ([`06-privacidade.md`](06-privacidade.md)) |
 | — | **4b-2:** `POST /rooms/:id/leave`, `DELETE /rooms/:id/members/:userId`, `POST /rooms/:id/owner`, `POST /rooms/:id/invite/rotate`, `POST /rooms/:id/keys/rotate` ([`05-e2ee.md`](05-e2ee.md) §11.3); `ROOM_EVENT` `REMOVED`, `ROTATION_PENDING`, `KEY_ROTATED`; `ERROR ROTATION_PENDING`. O frontend precisa tratar `REMOVED` (sair da tela da sala) e `ROTATION_PENDING` (bloquear o envio e, se tiver a chave, rotacionar) |
 
 Roteiro mínimo do cliente:
@@ -591,7 +602,7 @@ na **rede interna proxy → backend**, onde o TLS já terminou.
 | `POST /login` | senha em claro | cifrado (TLS) | senha em claro (vai ao servidor; §9 do `05-e2ee.md`) |
 | Cookie `sid` | em claro | cifrado (TLS) | em claro (é o servidor que o valida) |
 | Upgrade `/ws` | cabeçalhos em claro | cifrado (TLS) | em claro |
-| `MSG_SEND.body` / `MSG_DELIVER.body` | texto em claro | cifrado (TLS) | **envelope E2EE** `{v,kv,iv,ct,sig}`: ilegível |
+| `MSG_SEND.body` / `MSG_DELIVER.body` | texto em claro | cifrado (TLS) | **envelope E2EE** `{v,kv,iv,ct,sig,exp}` (v2 na Etapa 5): ilegível |
 | Metadados (sala, remetente, `cid`, horário, tamanho) | em claro | IPs, portas, tamanhos e horários | sala, remetente, `cid` e horários em claro; tamanho só em blocos de 128 bytes |
 | Coluna `messages.message` no banco | texto em claro | texto em claro | envelope (o `CHECK` recusa texto puro) |
 | Prova automatizada | — | `scripts/verify-tls.sh` | `scripts/verify-e2ee.sh` (marcador ausente, nem decodificado de base64) |

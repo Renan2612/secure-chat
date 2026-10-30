@@ -227,13 +227,16 @@ class E2eeSession {
     });
   }
 
+  // Etapa 5 (A3): o nome não vai em claro. A sala nasce sem nome e ele
+  // chega cifrado com a v1 da chave (o AAD do nome precisa do id da sala).
   async createRoom(name) {
-    const created = ok(await this.api("post", "/createRoom", { name }), 201);
+    const created = ok(await this.api("post", "/createRoom", {}), 201);
     const roomKey = await e2ee.generateRoomKey();
     const ctx = { roomId: created.id, version: 1 };
     const wrap = await e2ee.wrapRoomKey({ ...ctx, roomKey, senderId: this.me.id, recipientId: this.me.id, recipientEcdhPub: this.pub.ecdhPub, senderEcdsaKey: this.identity.ecdsa.privateKey });
     const commitment = await e2ee.commitRoomKey({ ...ctx, roomKey, creatorEcdsaKey: this.identity.ecdsa.privateKey });
-    ok(await this.api("post", `/rooms/${created.id}/keys`, { version: 1, wrap, ...commitment }), 201);
+    const nameEnv = await e2ee.encryptRoomName({ roomKey, roomId: created.id, kv: 1, name });
+    ok(await this.api("post", `/rooms/${created.id}/keys`, { version: 1, wrap, ...commitment, nameEnv }), 201);
     await this.storeRoomKey(created.id, 1, roomKey, { creator: this.me.id, version: 1 });
     this.currentVersion.set(created.id, 1);
     return created;
@@ -443,6 +446,63 @@ class E2eeSession {
     return { recipients, left };
   }
 
+  // --- ajustes da sala (Etapa 5) ----------------------------------------------
+
+  // { name, retentionSeconds, ownerId } da sala, pelo GET /rooms. O nome é
+  // decifrado com as chaves que este cliente tem; sem a chave (ou se não
+  // conferir), name = null e quem exibe mostra "Sala #id".
+  async roomInfo(room) {
+    const rooms = ok(await this.api("get", "/rooms"), 200);
+    const info = Array.isArray(rooms) ? rooms.find((r) => r.id === room) : undefined;
+    if (!info) throw new Error(`a sala ${room} não aparece na sua lista`);
+    let name = null;
+    if (info.nameEnv) {
+      try {
+        name = await e2ee.decryptRoomName({ nameEnv: info.nameEnv, roomKeys: await this.roomKeysFor(room), roomId: room });
+      } catch (err) {
+        if (!(err instanceof e2ee.E2eeError)) throw err;
+      }
+    }
+    return { name, retentionSeconds: info.retentionSeconds ?? null, ownerId: info.ownerId };
+  }
+
+  // Nome cifrado com a chave da versão `version` (a atual, ou a nova numa
+  // rotação).
+  nameEnvFor(room, version, roomKey, name) {
+    return e2ee.encryptRoomName({ roomKey, roomId: room, kv: version, name });
+  }
+
+  async rename(room, name) {
+    await this.ensureRoomKey(room);
+    const version = this.currentVersion.get(room);
+    const roomKey = (await this.roomKeysFor(room))[version];
+    if (!roomKey) throw new Error(`você não tem a chave atual da sala ${room}`);
+    const res = await this.api("put", `/rooms/${room}/name`, { nameEnv: await this.nameEnvFor(room, version, roomKey, name) });
+    if (res.status === 403) throw new Error("só o dono da sala troca o nome");
+    if (res.status === 409 && res.body?.code === "ROTATION_PENDING") throw new Error("a chave precisa ser trocada antes (alguém saiu)");
+    return ok(res, 200);
+  }
+
+  async setRetention(room, retentionSeconds) {
+    const res = await this.api("put", `/rooms/${room}/retention`, { retentionSeconds });
+    if (res.status === 403) throw new Error("só o dono da sala define a retenção");
+    if (res.status === 400) throw new Error("retenção inválida (de 60 s a 604800 s, ou off)");
+    return ok(res, 200).retentionSeconds;
+  }
+
+  async bans(room) {
+    const res = await this.api("get", `/rooms/${room}/bans`);
+    if (res.status === 403) throw new Error("só o dono da sala vê os banimentos");
+    return ok(res, 200).bans;
+  }
+
+  async unban(room, userId) {
+    const res = await this.api("delete", `/rooms/${room}/bans/${userId}`);
+    if (res.status === 403) throw new Error("só o dono da sala desfaz banimentos");
+    if (res.status === 404) throw new Error(`usuário ${userId} não está banido desta sala`);
+    if (res.status !== 204) throw new Error(`resposta inesperada do servidor (${res.status})`);
+  }
+
   // Troca a chave da sala: chave NOVA de getRandomValues (nunca derivada da
   // anterior: quem saiu a calcularia), compromisso assinado por mim e um
   // wrap por destinatário. 409 STALE_MEMBERSHIP (alguém saiu ou trocou de
@@ -455,6 +515,10 @@ class E2eeSession {
     const got = await this.ensureRoomKey(room);
     if (expectVersion !== undefined && this.currentVersion.get(room) !== expectVersion) return { rotated: false, reason: "concurrent" };
     if (!got.ok) throw new Error(`você não tem a chave atual da sala ${room}: não dá para trocá-la`);
+    // Etapa 5: o nome vai recifrado com a chave nova (quem saiu não o lê).
+    // Sem o nome atual legível, vai "Sala #id": a rotação não pode ficar
+    // bloqueada por isso (é ela que tira o acesso de quem saiu).
+    const name = (await this.roomInfo(room)).name ?? `Sala #${room}`;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       const version = this.currentVersion.get(room) + 1;
       const { recipients, left } = await this.rotationRecipients(room);
@@ -466,7 +530,8 @@ class E2eeSession {
         const wrap = await e2ee.wrapRoomKey({ ...ctx, roomKey, senderId: this.me.id, recipientId: r.userId, recipientEcdhPub: r.ecdhPub, senderEcdsaKey: this.identity.ecdsa.privateKey });
         wraps.push({ recipientId: r.userId, recipientKeyEpoch: r.keyEpoch, wrap });
       }
-      const res = await this.api("post", `/rooms/${room}/keys/rotate`, { version, ...commitment, wraps });
+      const nameEnv = await this.nameEnvFor(room, version, roomKey, name);
+      const res = await this.api("post", `/rooms/${room}/keys/rotate`, { version, ...commitment, wraps, nameEnv });
       if (res.status === 201) {
         // A versão nova já existe no servidor: uma falha local aqui não pode
         // virar "o servidor recusou". O próprio wrap continua lá.
@@ -538,10 +603,11 @@ class E2eeSession {
 
   // --- mensagens ------------------------------------------------------------
 
-  async encrypt(room, cid, text) {
+  // exp: segundos Unix (e2ee.expFor) ou null; vai assinado no envelope v2.
+  async encrypt(room, cid, text, exp = null) {
     const version = this.currentVersion.get(room);
     const keys = await this.roomKeysFor(room);
-    return e2ee.encryptMessage({ roomKey: keys[version], kv: version, roomId: room, senderId: this.me.id, cid, text, senderEcdsaKey: this.identity.ecdsa.privateKey });
+    return e2ee.encryptMessage({ roomKey: keys[version], kv: version, roomId: room, senderId: this.me.id, cid, text, senderEcdsaKey: this.identity.ecdsa.privateKey, exp });
   }
 
   // Mensagem que não verifica pode ser de quem trocou de chave: confere o

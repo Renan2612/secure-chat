@@ -2,6 +2,8 @@
 // zod (ex.: um "user" forjado no corpo de POST /messages nem chega à rota).
 const { z } = require("zod");
 const { isP256Spki, isB64urlBytes } = require("../helpers/publicKeys");
+const { parseRoomNameEnvelope } = require("../helpers/roomName");
+const { MIN_RETENTION_SECONDS, MAX_TTL_SECONDS } = require("../helpers/expiry");
 
 const INT_MAX = 2147483647; // limite do tipo INTEGER do Postgres
 
@@ -41,13 +43,17 @@ const wrap = z.object({ ephPub: publicKey, iv: b64urlBytes(12), wrapped: b64urlB
 const keyVersion = id;
 
 const displayName = z.string().trim().min(1).max(100);
-const roomName = z.string().trim().min(1).max(100);
+// Etapa 5 (A3): o nome da sala só chega cifrado (shared/e2ee/roomName.js).
+const nameEnv = z.string().refine((value) => parseRoomNameEnvelope(value) !== null);
+// Etapa 5 (A1): retenção de 1 min a 7 d, ou null (sem limite).
+const retentionSeconds = z.number().int().min(MIN_RETENTION_SECONDS).max(MAX_TTL_SECONDS).nullable();
 
 const schemas = {
   register: { body: z.object({ email, password: newPassword, name: displayName }) },
   login: { body: z.object({ email, password: loginPassword }) },
-  createRoom: { body: z.object({ name: roomName }) },
-  checkRoomExists: { body: z.object({ name: roomName }) },
+  // Sem nome em claro: um "name" no corpo é RECUSADO (strict), em vez de
+  // descartado em silêncio — o cliente não pode achar que o gravou.
+  createRoom: { body: z.object({}).strict() },
   joinRooms: { body: z.object({ idRoom: id, key: z.string().min(1).max(128) }) },
   // Histórico paginado: as `limit` mais recentes (padrão 50, máximo 100)
   // com id menor que `before`, para paginar para trás.
@@ -65,7 +71,7 @@ const schemas = {
   putKeys: { body: publicKeys },
   publishRoomKey: {
     params: z.object({ id: idParam }),
-    body: z.object({ version: keyVersion, wrap, commitment: b64urlBytes(32), commitmentSig: b64urlBytes(64) }),
+    body: z.object({ version: keyVersion, wrap, commitment: b64urlBytes(32), commitmentSig: b64urlBytes(64), nameEnv }),
   },
   roomKeys: { params: z.object({ id: idParam }) },
   postWrap: {
@@ -86,8 +92,13 @@ const schemas = {
       commitment: b64urlBytes(32),
       commitmentSig: b64urlBytes(64),
       wraps: z.array(z.object({ recipientId: id, recipientKeyEpoch: id, wrap })).min(1).max(200),
+      nameEnv,
     }),
   },
+  // Etapa 5: ajustes da sala, só pelo dono (routes/roomSettings.js).
+  setRetention: { params: z.object({ id: idParam }), body: z.object({ retentionSeconds }) },
+  setName: { params: z.object({ id: idParam }), body: z.object({ nameEnv }) },
+  unban: { params: z.object({ id: idParam, userId: idParam }) },
 };
 
 module.exports = schemas;

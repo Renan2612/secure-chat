@@ -234,13 +234,13 @@ describe("mensagens: envelope cifrado e assinado", () => {
     expect(await decrypt(await encrypt(text))).toBe(text);
   });
 
-  test("o envelope é JSON canônico {v,kv,iv,ct,sig} e não contém o texto", async () => {
+  test("o envelope é JSON canônico {v,kv,iv,ct,sig,exp} e não contém o texto", async () => {
     const body = await encrypt("MARCADOR-SECRETO");
     expect(body).not.toContain("MARCADOR");
     const env = JSON.parse(body);
-    expect(Object.keys(env)).toEqual(["v", "kv", "iv", "ct", "sig"]);
+    expect(Object.keys(env)).toEqual(["v", "kv", "iv", "ct", "sig", "exp"]);
     expect(JSON.stringify(env)).toBe(body);
-    expect(env).toMatchObject({ v: 1, kv: 1 });
+    expect(env).toMatchObject({ v: 2, kv: 1, exp: null });
     expect(e2ee.encoding.fromB64url(env.iv)).toHaveLength(12);
     expect(e2ee.encoding.fromB64url(env.sig)).toHaveLength(64);
   });
@@ -311,7 +311,7 @@ describe("mensagens: envelope cifrado e assinado", () => {
     ["texto puro", "oi, tudo bem?"],
     ["JSON sem cifra", '{"text":"oi"}'],
     ["campo extra", (env) => JSON.stringify({ ...env, text: "oi" })],
-    ["v diferente", (env) => JSON.stringify({ ...env, v: 2 })],
+    ["v diferente", (env) => JSON.stringify({ ...env, v: 1 })],
     ["fora da forma canônica (espaços)", (env) => JSON.stringify(env, null, 1)],
   ])("parseEnvelope recusa %s", async (_label, make) => {
     const env = JSON.parse(await encrypt("oi"));

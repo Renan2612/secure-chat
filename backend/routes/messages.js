@@ -6,21 +6,22 @@ const pool = require("../db");
 // Histórico paginado (leitura). Pertencimento à sala verificado antes,
 // pelo middleware requireRoomMember; limit/before validados pelo zod.
 // Busca as `limit` mais recentes (antes de `before`, se informado) e as
-// devolve em ordem cronológica. O envio é só pelo WebSocket (MSG_SEND).
+// devolve em ordem cronológica (pelo id: dt_message só tem o minuto). O
+// envio é só pelo WebSocket (MSG_SEND). Mensagens já vencidas (expires_at
+// no passado, pelo relógio do servidor) não saem, mesmo antes do expurgo.
 const getMessages = async (req, res, next) => {
   const { limit, before } = req.query;
   try {
     const { rows } = await pool.query(
-      `SELECT users.name AS userName, users.id AS userId, message AS message, dt_message AS dtMessage, messages.id as idMessage, rooms.name AS roomName, rooms.id as roomId, messages.cid AS cid, messages.key_version AS keyVersion FROM messages
-    JOIN rooms
-    ON room = rooms.id
+      `SELECT users.name AS userName, users.id AS userId, message AS message, dt_message AS dtMessage, messages.id as idMessage, messages.room as roomId, messages.cid AS cid, messages.key_version AS keyVersion FROM messages
     JOIN users
     ON users.id = messages.user_id
-    WHERE rooms.id = $1 AND ($2::int IS NULL OR messages.id < $2)
+    WHERE messages.room = $1 AND ($2::int IS NULL OR messages.id < $2)
+      AND (messages.expires_at IS NULL OR messages.expires_at > to_timestamp($4::double precision))
     ORDER BY messages.id DESC
     LIMIT $3
     `,
-      [req.params.id, before ?? null, limit]
+      [req.params.id, before ?? null, limit, req.app.locals.clock.nowMs() / 1000]
     );
     return res.status(200).json(rows.reverse());
   } catch (err) {

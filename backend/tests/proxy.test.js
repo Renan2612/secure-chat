@@ -1,7 +1,7 @@
 // Etapa 4a: o Express atrás do proxy reverso (Caddy). Confiar no número
 // EXATO de saltos, nunca em qualquer X-Forwarded-For; o rate limit precisa
 // ver o IP real do cliente, e o cookie de sessão só pode sair com Secure.
-const request = require("supertest");
+const request = require("./request");
 const { createApp } = require("../app");
 const { createSession } = require("../config/session");
 const { pool, resetDb, createUser, PASSWORD } = require("./helpers");

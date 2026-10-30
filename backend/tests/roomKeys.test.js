@@ -3,7 +3,7 @@
 // lê wraps; quem não tem a chave distribui uma; destinatário errado;
 // duplicata; servidor malicioso troca o remetente de um wrap.
 const e2ee = require("../../shared/e2ee");
-const { pool, resetDb, createUser } = require("./helpers");
+const { pool, resetDb, createUser, fakeNameEnv } = require("./helpers");
 const { asAgent, registerKeys, wrapFor, createKeyedRoom, join, grant, fetchRoomKey } = require("./e2ee/flow");
 
 let alice;
@@ -48,30 +48,30 @@ describe("criação da sala e versão 1", () => {
     const evilKey = await e2ee.generateRoomKey();
     const wrap = await wrapFor(alice, { roomId: room.roomId, roomKey: evilKey, recipientId: alice.id, recipientEcdhPub: alice.pub.ecdhPub });
     const c = await commitFor(alice, room.roomId, 1, evilKey);
-    expect((await alice.call("post", `/rooms/${room.roomId}/keys`).send({ version: 1, wrap, ...c })).status).toBe(409);
+    expect((await alice.call("post", `/rooms/${room.roomId}/keys`).send({ version: 1, wrap, ...c, nameEnv: fakeNameEnv(1) })).status).toBe(409);
   });
 
   test("ataque: membro que não é o criador não publica a versão 1 de uma sala nova", async () => {
-    const created = await alice.call("post", "/createRoom").send({ name: "Sem chave ainda" });
+    const created = await alice.call("post", "/createRoom").send({});
     await join(bob, { roomId: created.body.id, inviteKey: created.body.key });
     const roomKey = await e2ee.generateRoomKey();
     const wrap = await wrapFor(bob, { roomId: created.body.id, roomKey, recipientId: bob.id, recipientEcdhPub: bob.pub.ecdhPub });
     const c = await commitFor(bob, created.body.id, 1, roomKey);
-    expect((await bob.call("post", `/rooms/${created.body.id}/keys`).send({ version: 1, wrap, ...c })).status).toBe(403);
+    expect((await bob.call("post", `/rooms/${created.body.id}/keys`).send({ version: 1, wrap, ...c, nameEnv: fakeNameEnv(1) })).status).toBe(403);
   });
 
   test("ataque: não-membro não publica chave de sala alheia", async () => {
-    const created = await alice.call("post", "/createRoom").send({ name: "Outra" });
+    const created = await alice.call("post", "/createRoom").send({});
     const wrap = await wrapFor(carol, { roomId: created.body.id, roomKey: room.roomKey, recipientId: carol.id, recipientEcdhPub: carol.pub.ecdhPub });
     const c = await commitFor(carol, created.body.id, 1, room.roomKey);
-    expect((await carol.call("post", `/rooms/${created.body.id}/keys`).send({ version: 1, wrap, ...c })).status).toBe(403);
+    expect((await carol.call("post", `/rooms/${created.body.id}/keys`).send({ version: 1, wrap, ...c, nameEnv: fakeNameEnv(1) })).status).toBe(403);
   });
 
   test("versão diferente da atual (2) → 409", async () => {
-    const created = await alice.call("post", "/createRoom").send({ name: "Outra" });
+    const created = await alice.call("post", "/createRoom").send({});
     const wrap = await wrapFor(alice, { roomId: created.body.id, version: 2, roomKey: room.roomKey, recipientId: alice.id, recipientEcdhPub: alice.pub.ecdhPub });
     const c = await commitFor(alice, created.body.id, 2, room.roomKey);
-    expect((await alice.call("post", `/rooms/${created.body.id}/keys`).send({ version: 2, wrap, ...c })).status).toBe(409);
+    expect((await alice.call("post", `/rooms/${created.body.id}/keys`).send({ version: 2, wrap, ...c, nameEnv: fakeNameEnv(2) })).status).toBe(409);
   });
 });
 
@@ -316,8 +316,8 @@ describe("compromisso da chave: wrap com chave falsa é detectado e pode ser des
   });
 
   test("publicar a versão sem compromisso → 400", async () => {
-    const created = await alice.call("post", "/createRoom").send({ name: "Sem compromisso" });
+    const created = await alice.call("post", "/createRoom").send({});
     const wrap = await wrapFor(alice, { roomId: created.body.id, roomKey: room.roomKey, recipientId: alice.id, recipientEcdhPub: alice.pub.ecdhPub });
-    expect((await alice.call("post", `/rooms/${created.body.id}/keys`).send({ version: 1, wrap })).status).toBe(400);
+    expect((await alice.call("post", `/rooms/${created.body.id}/keys`).send({ version: 1, wrap, nameEnv: fakeNameEnv(1) })).status).toBe(400);
   });
 });

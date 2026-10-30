@@ -1,6 +1,6 @@
 // Validação de entrada: tudo que não segue o formato esperado é recusado
 // com 400 e uma mensagem genérica, antes de chegar ao banco.
-const request = require("supertest");
+const request = require("./request");
 const { app, pool, resetDb, createUser, createRoomInDb } = require("./helpers");
 
 const INVALID = { message: "Requisição inválida" };
@@ -59,10 +59,8 @@ describe("POST /login", () => {
 
 describe("rotas de sala", () => {
   test.each([
-    ["createRoom sem nome", "/createRoom", { name: "" }],
-    ["createRoom com nome longo", "/createRoom", { name: "s".repeat(101) }],
-    ["createRoom com nome não-string", "/createRoom", { name: 42 }],
-    ["checkRoomExists com nome longo", "/checkRoomExists", { name: "s".repeat(101) }],
+    ["createRoom com nome em claro (Etapa 5: só cifrado)", "/createRoom", { name: "Sala" }],
+    ["createRoom com campo desconhecido", "/createRoom", { x: 1 }],
     ["joinRooms com id texto", "/joinRooms", { idRoom: "abc", key: "k" }],
     ["joinRooms com id negativo", "/joinRooms", { idRoom: -1, key: "k" }],
     ["joinRooms com id fracionário", "/joinRooms", { idRoom: 1.5, key: "k" }],
