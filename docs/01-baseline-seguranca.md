@@ -100,6 +100,21 @@ duas mutações que fazem o script falhar) e por testes de ataque.
 **Continua visível ao servidor:** metadados (quem, quando, tamanho em blocos
 de 128 bytes) e quem é membro de cada sala; ver [`05-e2ee.md`](05-e2ee.md) §10.
 
+## Resolvido na Etapa 4b-2 — composição da sala e troca da chave
+
+Detalhes em [`05-e2ee.md`](05-e2ee.md) §11. Provado por testes de ataque e
+pelo `scripts/verify-e2ee.sh`, estendido com três usuários (remoção, rotação
+automática) e duas mutações novas que fazem o script falhar.
+
+| # | Problema | Correção | Evidência |
+|---|---|---|---|
+| G | Quem sai ou é removido continuaria lendo tudo com a chave que já tem; não havia como sair nem remover | Sair, remover (com banimento) e transferir o dono, numa transação com a sala travada; rotação obrigatória com chave nova aleatória (o envio fica bloqueado com `ROTATION_PENDING` até ela); o cliente só aceita versão nova de autor verificado e recusa chave reaproveitada | `backend/tests/ws/members.test.js`, `backend/tests/ws/rotation.test.js`, `backend/tests/tools/rotationSession.test.js`, `backend/tests/tools/wsClientMembers.test.js`; `scripts/verify-e2ee.sh` (o removido, com o keystore inteiro, não decifra nada novo; quem ficou lê o antigo e o novo) e as mutações `reuse-old-key` e `server-no-rotation` |
+| H | Convite da sala guardado em claro no banco | Só o SHA-256 (`invite_hash`), comparado com `timingSafeEqual`; o dono troca o convite (`/invite`), e a remoção gera um novo | `backend/tests/migration4b2.test.js` |
+| I | Pendências da revisão da 4b-1: trust store perdido sem aviso, gravação sem `fsync`, sem vetores fixos | Identificador do trust store no keystore (aviso e TOFU reiniciado); gravação atômica com `fsync` do arquivo e do diretório; vetores calculados com OpenSSL e Python | `backend/tests/tools/e2eeSession.test.js` (P1), `backend/tests/e2ee/atomicWrite.test.js`, `backend/tests/e2ee/vectors.test.js` |
+
+**Continua aberto:** a lista de membros assinada pelo dono, o histórico de
+chaves públicas antigas no trust store e o frontend ([`05-e2ee.md`](05-e2ee.md) §11.7).
+
 ## Pendente — propositalmente NÃO corrigido ainda
 
 Estes problemas são o núcleo das próximas etapas e foram deixados como estão
@@ -160,5 +175,5 @@ Ou com Docker:
 cp backend/.env.example backend/.env
 docker compose --env-file backend/.env up --build
 scripts/verify-tls.sh   # Etapa 4a: provas de TLS e da origem única
-scripts/verify-e2ee.sh  # Etapa 4b-1: provas da criptografia ponta a ponta
+scripts/verify-e2ee.sh  # Etapas 4b-1 e 4b-2: provas da criptografia ponta a ponta e da troca da chave
 ```
