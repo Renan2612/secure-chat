@@ -9,6 +9,7 @@ const { createSession } = require("./config/session");
 const { registerUser } = require("./routes/register");
 const { loginUser, logoutUser } = require("./routes/login");
 const { getRooms, createRooms, joinRooms, roomsUsers } = require("./routes/rooms");
+const { getMe } = require("./routes/me");
 const { getMessages, updateLastRead } = require("./routes/messages");
 const { putKeys, resetKeys, getKeys } = require("./routes/keys");
 const { leaveRoom, removeMember, transferOwner, rotateInvite } = require("./routes/members");
@@ -163,6 +164,7 @@ const createApp = ({
   // --- Daqui para baixo, tudo exige sessão autenticada ---
   app.use(requireAuth);
 
+  app.get("/me", getMe); // Etapa 5: o frontend retoma a sessão ao recarregar
   app.get("/rooms", getRooms);
   app.post("/logout", logoutUser); // era GET: logout por GET permite CSRF via <img>/<a>
   app.get("/messages/:id", validate(schemas.getMessages), requireRoomMember, getMessages);

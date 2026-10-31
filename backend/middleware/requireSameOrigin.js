@@ -1,9 +1,9 @@
 // Proteção contra CSRF (Etapa 5, A2), em TODA requisição que muda estado
 // (POST, PUT, PATCH, DELETE), inclusive /login e /register:
 //   - Origin obrigatório e igual à origem configurada (CLIENT_URL). Sem
-//     Origin, ou de outro site → 403. O cookie é SameSite=Strict, mas a
-//     checagem não depende do navegador acertar o "site" (subdomínios,
-//     navegadores antigos, extensões).
+//     Origin, ou de outro site → 403. O cookie é SameSite=Lax (não vai em
+//     POST de outro site), mas a checagem não depende do navegador acertar
+//     o "site" (subdomínios, navegadores antigos, extensões).
 //   - Corpo só em JSON: um formulário HTML entre sites só manda
 //     application/x-www-form-urlencoded, multipart/form-data ou text/plain
 //     sem preflight. Com corpo (ou Content-Type declarado) que não seja
