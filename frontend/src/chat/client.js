@@ -244,6 +244,8 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
       name: opened.name,
       nameVerified: opened.verified,
       nameTampered: opened.tampered,
+      namePayload: opened.payload,
+      seenSeq: opened.seenSeq,
       ownerId: entry.ownerId,
       retentionSeconds: entry.retentionSeconds ?? null,
       unread: Number(entry.nummessages ?? 0),
@@ -260,6 +262,220 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
   // Membros da sala (id e nome de exibição): o nome é dado do servidor, só
   // exibido como TEXTO.
   const members = async (room) => expect(await api("get", `/roomUsers/${room}`), 200);
+
+  const roomEntry = async (room) => {
+    const entry = expect(await api("get", "/rooms"), 200).find((r) => r.id === room);
+    if (!entry) throw new ClientError("NOT_MEMBER", "você não está nesta sala");
+    return describeRoom(entry);
+  };
+
+  // --- verificação (C1) -----------------------------------------------------
+
+  // Número de segurança com a chave CANDIDATA (a pendente, se mudou); a
+  // fingerprint devolvida é a que a confirmação tem de citar.
+  const safety = async (userId) => {
+    if (!vault.trust.peers[userId] && (await observe(userId)) === null) throw new ClientError("NO_KEYS", "usuário sem chave pública");
+    const peer = vault.trust.peers[userId];
+    const candidate = peer.changed ?? peer;
+    const number = await e2ee.safetyNumber({ userId: me.id, ...vault.pub }, { userId, ecdhPub: candidate.ecdhPub, ecdsaPub: candidate.ecdsaPub });
+    return { number, fingerprint: candidate.fingerprint, changed: Boolean(peer.changed) };
+  };
+
+  // Só confirma a chave cuja fingerprint FOI EXIBIDA (confirmTrust recusa se
+  // a chave pendente mudou entre a exibição e a confirmação).
+  const confirm = (userId, shownFingerprint) => vault.updateTrust((trust) => e2ee.confirmTrust(trust, userId, shownFingerprint));
+
+  // --- entrega da chave e rotação (C1) ---------------------------------------
+
+  // Aprovações explícitas (/approve), só nesta aba: valem para a entrega e
+  // para a próxima rotação, e caem quando a pessoa deixa de ser membro.
+  const approved = new Set();
+  const isKicked = (room, userId) => (state().kicked[room] ?? []).includes(userId);
+
+  const pendingOf = async (room) => {
+    const res = await api("get", `/rooms/${room}/keys/pending`);
+    if (res.status === 403) return null; // não tenho a chave atual
+    return expect(res, 200);
+  };
+
+  const deliverTo = async (room, version, roomKey, pending) => {
+    const wrap = await e2ee.wrapRoomKey({ roomKey, roomId: room, version, senderId: me.id, recipientId: pending.userId, recipientEcdhPub: pending.keys.ecdhPub, senderEcdsaKey: vault.identity.ecdsa.privateKey });
+    expect(await api("post", `/rooms/${room}/keys/wraps`, { version, recipientId: pending.userId, recipientKeyEpoch: pending.keys.keyEpoch, wrap }), 201);
+  };
+
+  // Pendentes: chave conferida no trust store (CHAVE ALTERADA → nunca);
+  // entrega automática só a VERIFICADOS ou aprovados; os demais voltam em
+  // awaitingApproval para a interface pedir a decisão.
+  const distribute = async (room) => {
+    const out = { delivered: [], awaitingApproval: [] };
+    if (!hasCurrentKey(room)) return out;
+    const res = await pendingOf(room);
+    if (!res) return out;
+    const roomKey = (await roomKeysFor(room))[res.version];
+    if (!roomKey) return out;
+    for (const pending of res.pending) {
+      if (!pending.keys || isKicked(room, pending.userId)) continue;
+      await observe(pending.userId, pending.keys);
+      const trust = e2ee.trustState(vault.trust, pending.userId, pending.keys);
+      if (trust === "changed") continue;
+      if (trust === "verified" || approved.has(`${room}:${pending.userId}`)) {
+        await deliverTo(room, res.version, roomKey, pending);
+        out.delivered.push(pending.userId);
+      } else {
+        out.awaitingApproval.push({ userId: pending.userId, name: pending.name, fingerprint: vault.trust.peers[pending.userId].fingerprint, trust });
+      }
+    }
+    return out;
+  };
+
+  const approve = async (room, userId) => {
+    if (!hasCurrentKey(room)) throw new ClientError("NO_KEY", "você não tem a chave atual desta sala");
+    const res = await pendingOf(room);
+    const pending = res?.pending.find((p) => p.userId === userId);
+    if (!pending?.keys) throw new ClientError("NOT_PENDING", "este usuário não está aguardando a chave");
+    if (isKicked(room, userId)) throw new ClientError("KICKED", "você removeu este usuário desta sala");
+    await observe(userId, pending.keys);
+    if (e2ee.trustState(vault.trust, userId, pending.keys) === "changed") throw new ClientError("KEY_CHANGED", "CHAVE ALTERADA: confira o número de segurança antes");
+    approved.add(`${room}:${userId}`);
+    await deliverTo(room, res.version, (await roomKeysFor(room))[res.version], pending);
+  };
+
+  // Quem entra numa rotação: eu e quem está VERIFICADO, ou NÃO VERIFICADO e
+  // aprovado nesta sala. Os demais ficam de fora e voltam a ser pendentes.
+  const rotationRecipients = async (room) => {
+    const list = await members(room);
+    const ids = new Set(list.map((m) => m.id));
+    for (const key of [...approved]) {
+      const [r, u] = key.split(":").map(Number);
+      if (r === room && !ids.has(u)) approved.delete(key);
+    }
+    const recipients = [{ userId: me.id, keyEpoch, ecdhPub: vault.pub.ecdhPub }];
+    const left = [];
+    for (const m of list) {
+      if (m.id === me.id) continue;
+      const res = isKicked(room, m.id) ? null : await api("get", `/keys/${m.id}`);
+      if (!res || res.status !== 200) {
+        left.push(m.id);
+        continue;
+      }
+      await observe(m.id, res.body);
+      const trust = e2ee.trustState(vault.trust, m.id, res.body);
+      if (trust === "verified" || (trust === "unverified" && approved.has(`${room}:${m.id}`))) {
+        recipients.push({ userId: m.id, keyEpoch: res.body.keyEpoch, ecdhPub: res.body.ecdhPub });
+      } else left.push(m.id);
+    }
+    return { recipients, left };
+  };
+
+  // Chave NOVA de getRandomValues (nunca derivada da anterior), compromisso
+  // e wraps assinados por mim, e o MESMO nome assinado pelo dono recifrado
+  // com a chave nova (null se não há um válido). 409 STALE_MEMBERSHIP →
+  // monta de novo; outro 409 = outro membro rotacionou antes.
+  const rotate = async (room, { attempts = 3, expectVersion } = {}) => {
+    const got = await ensureRoomKey(room);
+    if (expectVersion !== undefined && currentVersion.get(room) !== expectVersion) return { rotated: false, reason: "concurrent" };
+    if (!got.ok) throw new ClientError("NO_KEY", "você não tem a chave atual desta sala");
+    const { namePayload } = await roomEntry(room);
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const version = currentVersion.get(room) + 1;
+      const { recipients, left } = await rotationRecipients(room);
+      const roomKey = await e2ee.generateRoomKey();
+      const ctx = { roomId: room, version };
+      const commitment = await e2ee.commitRoomKey({ ...ctx, roomKey, creatorEcdsaKey: vault.identity.ecdsa.privateKey });
+      const wraps = [];
+      for (const r of recipients) {
+        const wrap = await e2ee.wrapRoomKey({ ...ctx, roomKey, senderId: me.id, recipientId: r.userId, recipientEcdhPub: r.ecdhPub, senderEcdsaKey: vault.identity.ecdsa.privateKey });
+        wraps.push({ recipientId: r.userId, recipientKeyEpoch: r.keyEpoch, wrap });
+      }
+      const nameEnv = namePayload ? await e2ee.encryptRoomName({ roomKey, roomId: room, kv: version, payload: namePayload }) : null;
+      const res = await api("post", `/rooms/${room}/keys/rotate`, { version, ...commitment, wraps, nameEnv });
+      if (res.status === 201) {
+        await storeRoomKey(room, version, roomKey, (current) => ({ creator: current?.creator, version }));
+        currentVersion.set(room, version);
+        rotationRequired.set(room, false);
+        return { rotated: true, version, left };
+      }
+      if (res.status === 409 && res.body?.code === "STALE_MEMBERSHIP") continue;
+      if (res.status === 409) {
+        await ensureRoomKey(room);
+        return { rotated: false, reason: "concurrent" };
+      }
+      throw new ClientError(`HTTP_${res.status}`, "o servidor recusou a troca da chave");
+    }
+    return { rotated: false, reason: "stale" };
+  };
+
+  // ROTATION_PENDING: quem tem a chave tenta depois de 0 a 2 s aleatórios
+  // (menos colisão entre membros); se a versão subiu nesse tempo, outro fez.
+  const autoRotate = async (room, { maxDelayMs = 2000 } = {}) => {
+    const seen = currentVersion.get(room);
+    if (!hasCurrentKey(room)) return { rotated: false, reason: "no-key" };
+    const [x] = globalThis.crypto.getRandomValues(new Uint16Array(1));
+    await new Promise((resolve) => setTimeout(resolve, Math.floor((x / 65536) * maxDelayMs)));
+    return rotate(room, { expectVersion: seen });
+  };
+
+  // --- composição da sala e ajustes do dono (C1, C2) --------------------------
+
+  // Remover: o servidor bane e troca o convite (devolvido uma vez); o
+  // removido fica no cofre e nunca volta a receber a chave deste cliente.
+  // Quem chama rotaciona em seguida (ou o ROTATION_PENDING o faz).
+  const kick = async (room, userId) => {
+    const removed = expect(await api("delete", `/rooms/${room}/members/${userId}`), 200);
+    approved.delete(`${room}:${userId}`);
+    await vault.updateState((s) => ({ ...s, kicked: { ...s.kicked, [room]: [...new Set([...(s.kicked[room] ?? []), userId])] } }));
+    return { invite: removed.invite };
+  };
+
+  const leave = async (room) => {
+    const res = await api("post", `/rooms/${room}/leave`);
+    if (res.status === 409 && res.body?.code === "OWNER_MUST_TRANSFER") throw new ClientError("OWNER_MUST_TRANSFER", "transfira o cargo de dono antes de sair");
+    return expect(res, 200);
+  };
+
+  const transferOwner = async (room, userId) => {
+    const res = await api("post", `/rooms/${room}/owner`, { userId });
+    if (res.status === 409) throw new ClientError("TARGET_NO_KEY", "o novo dono precisa ter a chave atual da sala");
+    return expect(res, 200);
+  };
+
+  const rotateInvite = async (room) => expect(await api("post", `/rooms/${room}/invite/rotate`), 200).invite;
+  const bans = async (room) => expect(await api("get", `/rooms/${room}/bans`), 200).bans;
+  const unban = async (room, userId) => expect(await api("delete", `/rooms/${room}/bans/${userId}`), 204);
+
+  const setRetention = async (room, retentionSeconds) => {
+    const res = await api("put", `/rooms/${room}/retention`, { retentionSeconds });
+    if (res.status === 400) throw new ClientError("BAD_RETENTION", "retenção inválida");
+    return expect(res, 200).retentionSeconds;
+  };
+
+  // Só o dono: seq acima do maior visto (nextRoomNameSeq limita o que um
+  // seq não verificado pode adiantar), assinado e cifrado com a chave atual.
+  const signAndPublishName = async (room, name, info) => {
+    await ensureRoomKey(room);
+    const version = currentVersion.get(room);
+    const roomKey = (await roomKeysFor(room))[version];
+    if (!roomKey) throw new ClientError("NO_KEY", "você não tem a chave atual desta sala");
+    const seq = e2ee.nextRoomNameSeq(state().roomNames[room]?.seq, info.seenSeq);
+    const payload = await e2ee.signRoomName({ roomId: room, seq, ownerId: me.id, name, ownerEcdsaKey: vault.identity.ecdsa.privateKey });
+    const res = await api("put", `/rooms/${room}/name`, { nameEnv: await e2ee.encryptRoomName({ roomKey, roomId: room, kv: version, payload }) });
+    if (res.status === 409 && res.body?.code === "ROTATION_PENDING") throw new ClientError("ROTATION_PENDING", "a chave precisa ser trocada antes");
+    expect(res, 200);
+    await vault.updateState((s) => ({ ...s, roomNames: { ...s.roomNames, [room]: payload } }));
+  };
+
+  const rename = async (room, name) => signAndPublishName(room, name, await roomEntry(room));
+
+  // Quem virou dono re-assina o último nome verificado com seq + 1 (o do dono
+  // anterior deixa de valer para os outros). true se re-assinou.
+  const ensureOwnerSignature = async (room) => {
+    const info = await roomEntry(room);
+    if (info.ownerId !== me.id || info.namePayload?.ownerId === me.id) return false;
+    const last = state().roomNames[room];
+    if (!last) return false;
+    await signAndPublishName(room, last.name, info);
+    return true;
+  };
 
   // --- mensagens ------------------------------------------------------------
 
@@ -313,6 +529,22 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
     listRooms,
     describeRoom,
     members,
+    safety,
+    confirm,
+    distribute,
+    approve,
+    rotate,
+    autoRotate,
+    kick,
+    leave,
+    transferOwner,
+    rotateInvite,
+    bans,
+    unban,
+    setRetention,
+    rename,
+    ensureOwnerSignature,
+    isKicked,
     encrypt,
     accept,
     history,
