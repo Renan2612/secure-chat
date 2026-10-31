@@ -209,12 +209,16 @@ describe("ganchos de teste do verify-e2ee.sh (desligados por padrão)", () => {
   const { testHooksFromEnv, createTestClock, TEST_VALUE } = require("../../helpers/testHooks");
   const { purgeIntervalFromEnv } = require("../../helpers/purge");
 
-  test("só o valor exato liga; sem variável, tudo desligado", () => {
-    expect(testHooksFromEnv({})).toEqual({ testClock: false, skipPurge: false });
+  test("só o valor exato liga, e só em NODE_ENV=test; sem variável, tudo desligado", () => {
+    expect(testHooksFromEnv({ NODE_ENV: "test" })).toEqual({ testClock: false, skipPurge: false });
     for (const value of ["1", "true", "sim", `${TEST_VALUE} `]) {
-      expect(testHooksFromEnv({ E2EE_TEST_CLOCK: value, E2EE_TEST_SKIP_PURGE: value })).toEqual({ testClock: false, skipPurge: false });
+      expect(testHooksFromEnv({ NODE_ENV: "test", E2EE_TEST_CLOCK: value, E2EE_TEST_SKIP_PURGE: value })).toEqual({ testClock: false, skipPurge: false });
     }
-    expect(testHooksFromEnv({ E2EE_TEST_CLOCK: TEST_VALUE, E2EE_TEST_SKIP_PURGE: TEST_VALUE })).toEqual({ testClock: true, skipPurge: true });
+    expect(testHooksFromEnv({ NODE_ENV: "test", E2EE_TEST_CLOCK: TEST_VALUE, E2EE_TEST_SKIP_PURGE: TEST_VALUE })).toEqual({ testClock: true, skipPurge: true });
+    // Etapa 6: fora de NODE_ENV=test, nem o valor exato liga (as flags só
+    // valem em teste; produção recusa subir — backend/config/testFlags.js).
+    expect(testHooksFromEnv({ NODE_ENV: "production", E2EE_TEST_CLOCK: TEST_VALUE, E2EE_TEST_SKIP_PURGE: TEST_VALUE })).toEqual({ testClock: false, skipPurge: false });
+    expect(testHooksFromEnv({ E2EE_TEST_CLOCK: TEST_VALUE, E2EE_TEST_SKIP_PURGE: TEST_VALUE })).toEqual({ testClock: false, skipPurge: false });
   });
 
   test("o relógio de teste só anda com advance()", () => {
