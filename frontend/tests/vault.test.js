@@ -99,6 +99,15 @@ describe("desbloquear", () => {
     await expect(unlockVault({ userId: 1, passphrase: PASS })).rejects.toMatchObject({ code: "TRUST_MISMATCH" });
   });
 
+  test("ATAQUE (achado da revisão do 24773f2): estado de OUTRO cofre (mesma senha) no lugar deste → recusa", async () => {
+    (await createVault({ userId: 1, passphrase: PASS, loginPassword: LOGIN })).lock();
+    const other = await createVault({ userId: 2, passphrase: PASS, loginPassword: LOGIN });
+    await other.saveState({ ...other.state, roomKeys: { 9: { 1: "AQID" } } });
+    other.lock();
+    await rawRecords(1, { ...(await rawRecords(1)), state: (await rawRecords(2)).state });
+    await expect(unlockVault({ userId: 1, passphrase: PASS })).rejects.toMatchObject({ code: "STATE_MISMATCH" });
+  });
+
   test("trust store apagado: TOFU reiniciado COM aviso (trustReset), como no ws-client", async () => {
     (await createVault({ userId: 1, passphrase: PASS, loginPassword: LOGIN })).lock();
     const { trust, ...rest } = await rawRecords(1);
