@@ -102,9 +102,16 @@ describe("desbloquear", () => {
   test("ATAQUE (achado da revisão do 24773f2): estado de OUTRO cofre (mesma senha) no lugar deste → recusa", async () => {
     (await createVault({ userId: 1, passphrase: PASS, loginPassword: LOGIN })).lock();
     const other = await createVault({ userId: 2, passphrase: PASS, loginPassword: LOGIN });
-    await other.saveState({ ...other.state, roomKeys: { 9: { 1: "AQID" } } });
+    await other.updateState((st) => ({ ...st, roomKeys: { 9: { 1: "AQID" } } }));
     other.lock();
     await rawRecords(1, { ...(await rawRecords(1)), state: (await rawRecords(2)).state });
+    await expect(unlockVault({ userId: 1, passphrase: PASS })).rejects.toMatchObject({ code: "STATE_MISMATCH" });
+  });
+
+  test("ATAQUE (revisão do 1b0296e): estado SEM vaultId não herda o id deste cofre → recusa", async () => {
+    (await createVault({ userId: 1, passphrase: PASS, loginPassword: LOGIN })).lock();
+    const unbound = await e2ee.sealJson(PASS, { v: 1, roomKeys: { 9: { 1: "AQID" } }, rooms: {}, roomNames: {}, kicked: {} });
+    await rawRecords(1, { ...(await rawRecords(1)), state: unbound });
     await expect(unlockVault({ userId: 1, passphrase: PASS })).rejects.toMatchObject({ code: "STATE_MISMATCH" });
   });
 
@@ -124,14 +131,31 @@ describe("desbloquear", () => {
 describe("estado e trust store", () => {
   test("gravar o estado (chave de sala, nome verificado com seq) e o trust store; reabrir devolve tudo", async () => {
     const vault = await createVault({ userId: 1, passphrase: PASS, loginPassword: LOGIN });
-    await vault.saveState({ ...vault.state, roomKeys: { 5: { 1: "AQID" } }, roomNames: { 5: { name: "Sala", seq: 3, ownerId: 1, sig: "x" } } });
-    const pinned = await e2ee.observeKeys(vault.trust, 2, (await e2ee.exportPublicKeys(await e2ee.generateIdentity())));
-    await vault.saveTrust(pinned.store);
+    await vault.updateState((s) => ({ ...s, roomKeys: { 5: { 1: "AQID" } }, roomNames: { 5: { name: "Sala", seq: 3, ownerId: 1, sig: "x" } } }));
+    const keys = await e2ee.exportPublicKeys(await e2ee.generateIdentity());
+    await vault.updateTrust(async (t) => (await e2ee.observeKeys(t, 2, keys)).store);
     vault.lock();
     const again = await unlockVault({ userId: 1, passphrase: PASS });
     expect(again.state.roomKeys).toEqual({ 5: { 1: "AQID" } });
     expect(again.state.roomNames[5].seq).toBe(3);
     expect(Object.keys(again.trust.peers)).toEqual(["2"]);
+    again.lock();
+  });
+
+  test("ATAQUE (revisão do b64b45f): atualizações SIMULTÂNEAS não se perdem (pinos de segurança)", async () => {
+    const vault = await createVault({ userId: 1, passphrase: PASS, loginPassword: LOGIN });
+    const id = await e2ee.exportPublicKeys(await e2ee.generateIdentity());
+    await Promise.all([
+      vault.updateState((s) => ({ ...s, rooms: { ...s.rooms, 5: { creator: 2, version: 3 } } })),
+      vault.updateState((s) => ({ ...s, roomNames: { ...s.roomNames, 5: { name: "x", seq: 9, ownerId: 2, sig: "s" } } })),
+      vault.updateTrust(async (t) => (await e2ee.observeKeys(t, 2, id)).store),
+      vault.updateTrust(async (t) => (await e2ee.observeKeys(t, 3, id)).store),
+    ]);
+    vault.lock();
+    const again = await unlockVault({ userId: 1, passphrase: PASS });
+    expect(again.state.rooms[5]).toEqual({ creator: 2, version: 3 });
+    expect(again.state.roomNames[5].seq).toBe(9);
+    expect(Object.keys(again.trust.peers).sort()).toEqual(["2", "3"]);
     again.lock();
   });
 
@@ -141,7 +165,7 @@ describe("estado e trust store", () => {
     expect(vault.locked).toBe(true);
     expect(vault.identity).toBeNull();
     expect(vault.state).toBeNull();
-    await expect(vault.saveState({})).rejects.toBeInstanceOf(VaultError);
+    await expect(vault.updateState((x) => x)).rejects.toBeInstanceOf(VaultError);
   });
 });
 

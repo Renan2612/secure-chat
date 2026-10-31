@@ -109,15 +109,14 @@ describe("chave da sala (servidor adversário)", () => {
   test("ATAQUE: o servidor rebaixa a versão abaixo da já vista → recusado", async () => {
     await bobsRoom();
     await world.client.ensureRoomKey(ROOM);
-    await world.vault.saveState({ ...world.vault.state, rooms: { [ROOM]: { creator: BOB, version: 3 } } });
+    await world.vault.updateState((st) => ({ ...st, rooms: { [ROOM]: { creator: BOB, version: 3 } } }));
     expect(await world.client.ensureRoomKey(ROOM)).toMatchObject({ ok: false, reason: "VERSION_ROLLBACK" });
   });
 
   test("ATAQUE: o servidor troca o criador da v1 depois de fixado → recusado", async () => {
     await bobsRoom();
     await world.client.ensureRoomKey(ROOM);
-    const state = world.vault.state;
-    await world.vault.saveState({ ...state, roomKeys: {} });
+    await world.vault.updateState((st) => ({ ...st, roomKeys: {} }));
     world.keys.versions[0].createdBy = MALLORY;
     expect(await world.client.ensureRoomKey(ROOM)).toMatchObject({ ok: false });
     expect(world.client.hasCurrentKey(ROOM)).toBe(false);
@@ -136,6 +135,14 @@ describe("chave da sala (servidor adversário)", () => {
     expect(Object.keys(world.vault.state.roomKeys[ROOM])).toEqual(["1"]);
     expect(v1).toBeDefined();
   });
+});
+
+test("ATAQUE (revisão do b64b45f): ensureRoomKey simultâneo para a mesma sala roda uma vez só (sem pino perdido)", async () => {
+  await bobsRoom();
+  const results = await Promise.all([world.client.ensureRoomKey(ROOM), world.client.ensureRoomKey(ROOM), world.client.ensureRoomKey(ROOM)]);
+  expect(results.every((r) => r.ok)).toBe(true);
+  expect(world.api.calls.filter((c) => c.path === `/rooms/${ROOM}/keys` && c.method === "get")).toHaveLength(1);
+  expect(world.vault.state.rooms[ROOM]).toEqual({ creator: BOB, version: 1 });
 });
 
 describe("mensagens", () => {

@@ -39,8 +39,31 @@ export const deleteVault = (userId) => idbDelete(RECORDS.map((r) => keyOf(userId
 
 // O cofre aberto. A senha de cifragem fica na memória até o lock (é preciso
 // selar de novo a cada mudança de estado); lock() apaga tudo.
+// Mudanças por FUNÇÃO (updateState(s => próximo), updateTrust(t => próximo)),
+// uma de cada vez, sempre sobre o último estado gravado (achado da
+// revisão): duas operações simultâneas que partissem da mesma cópia
+// apagariam uma a outra — e o que se perde são pinos de segurança (versão
+// fixada, maior seq do nome, chave fixada de um contato).
 const openedVault = ({ userId, vaultId, passphrase, identity, pub, state, trust, trustReset }) => {
   let secret = passphrase;
+  let queue = Promise.resolve();
+  // Enfileira; o updater recebe o valor atual e devolve o próximo (devolver
+  // o mesmo objeto = nada a gravar).
+  const serially = (field, record, updater) => {
+    const run = queue.then(async () => {
+      if (vault.locked) throw new VaultError("LOCKED", "cofre bloqueado");
+      const current = vault[field];
+      let next = await updater(current);
+      if (next === current) return current;
+      if (field === "state") next = { ...next, vaultId }; // sempre amarrado a ESTE cofre
+      // Grava ANTES de trocar a memória: se falhar, nada fica "valendo só nesta aba".
+      await idbPutMany([[keyOf(userId, record), await e2ee.sealJson(secret, next)]]);
+      vault[field] = next;
+      return next;
+    });
+    queue = run.catch(() => {});
+    return run;
+  };
   const vault = {
     userId,
     identity,
@@ -49,19 +72,8 @@ const openedVault = ({ userId, vaultId, passphrase, identity, pub, state, trust,
     trust,
     trustReset,
     locked: false,
-    // Grava ANTES de trocar a memória: se a gravação falhar, nada fica
-    // "valendo só nesta aba".
-    async saveState(next) {
-      if (vault.locked) throw new VaultError("LOCKED", "cofre bloqueado");
-      const bound = { ...next, vaultId }; // sempre amarrado a ESTE cofre
-      await idbPutMany([[keyOf(userId, "state"), await e2ee.sealJson(secret, bound)]]);
-      vault.state = bound;
-    },
-    async saveTrust(next) {
-      if (vault.locked) throw new VaultError("LOCKED", "cofre bloqueado");
-      await idbPutMany([[keyOf(userId, "trust"), await e2ee.sealJson(secret, next)]]);
-      vault.trust = next;
-    },
+    updateState: (updater) => serially("state", "state", updater),
+    updateTrust: (updater) => serially("trust", "trust", updater),
     lock() {
       secret = null;
       Object.assign(vault, { identity: null, state: null, trust: null, locked: true });
@@ -100,9 +112,15 @@ export const unlockVault = async ({ userId, passphrase }) => {
   if (opened.userId !== userId) throw new VaultError("WRONG_USER", "este cofre é de outra conta");
   const vaultId = opened.trustStoreId;
   const sealedState = await idbGet(keyOf(userId, "state"));
-  const state = sealedState ? { ...emptyState(vaultId), ...(await e2ee.openJson(passphrase, sealedState)) } : emptyState(vaultId);
-  if (state.vaultId !== vaultId) {
-    throw new VaultError("STATE_MISMATCH", "o estado das salas deste navegador não pertence a este cofre; nada foi alterado");
+  let state = emptyState(vaultId);
+  if (sealedState) {
+    // O id é conferido no registro DECIFRADO, antes de mesclar com os
+    // padrões: um registro sem vaultId não herda o deste cofre (revisão).
+    const raw = await e2ee.openJson(passphrase, sealedState);
+    if (raw?.vaultId !== vaultId) {
+      throw new VaultError("STATE_MISMATCH", "o estado das salas deste navegador não pertence a este cofre; nada foi alterado");
+    }
+    state = { ...state, ...raw };
   }
   const sealedTrust = await idbGet(keyOf(userId, "trust"));
   let trust;

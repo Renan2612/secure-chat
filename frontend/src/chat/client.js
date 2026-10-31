@@ -64,10 +64,14 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
       if (res.status === 404) return null;
       pub = expect(res, 200);
     }
-    const r = await e2ee.observeKeys(vault.trust, userId, pub);
-    if (r.status !== "MATCH") await vault.saveTrust(r.store);
-    if (r.status === "CHANGED") onNotice({ kind: "KEY_CHANGED", userId });
-    return r.status;
+    let status;
+    await vault.updateTrust(async (trust) => {
+      const r = await e2ee.observeKeys(trust, userId, pub);
+      status = r.status;
+      return r.status === "MATCH" ? trust : r.store;
+    });
+    if (status === "CHANGED") onNotice({ kind: "KEY_CHANGED", userId });
+    return status;
   };
 
   const senderKeyFor = async (userId) => {
@@ -103,14 +107,15 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
     return Boolean(version && state().roomKeys[room]?.[version]);
   };
 
+  // pin(atual) → o que fica fixado da sala, calculado sobre o estado MAIS
+  // RECENTE (nunca sobre uma cópia antiga: vault.updateState é serial).
   const storeRoomKey = async (room, version, roomKey, pin) => {
     const raw = await exportRoomKey(roomKey);
-    const s = state();
-    await vault.saveState({
+    await vault.updateState((s) => ({
       ...s,
       roomKeys: { ...s.roomKeys, [room]: { ...s.roomKeys[room], [version]: raw } },
-      rooms: { ...s.rooms, [room]: pin },
-    });
+      rooms: { ...s.rooms, [room]: pin(s.rooms[room]) },
+    }));
   };
 
   // Abre e guarda UM wrap. false se não conferir; um wrap da versão atual
@@ -146,14 +151,22 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
       }
       return false;
     }
-    const creator = pinned?.creator ?? (wrap.version === 1 ? info.createdBy : undefined);
-    await storeRoomKey(room, wrap.version, roomKey, { creator, version: Math.max(wrap.version, pinned?.version ?? 0) });
+    await storeRoomKey(room, wrap.version, roomKey, (current) => ({
+      creator: current?.creator ?? (wrap.version === 1 ? info.createdBy : undefined),
+      version: Math.max(wrap.version, current?.version ?? 0),
+    }));
     return true;
   };
 
   // Garante a chave atual da sala e abre as versões que faltam (o histórico
   // de antes de uma rotação continua legível). { ok, sender?, reason? }
-  const ensureRoomKey = async (room) => {
+  // Chamadas simultâneas para a mesma sala compartilham UMA execução.
+  const inflight = new Map();
+  const ensureRoomKey = (room) => {
+    if (!inflight.has(room)) inflight.set(room, ensureRoomKeyOnce(room).finally(() => inflight.delete(room)));
+    return inflight.get(room);
+  };
+  const ensureRoomKeyOnce = async (room) => {
     const keysState = expect(await api("get", `/rooms/${room}/keys`), 200);
     const pinned = state().rooms[room];
     if (pinned && keysState.currentVersion < pinned.version) {
@@ -190,8 +203,8 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
     const payload = await e2ee.signRoomName({ roomId, seq: 1, ownerId: me.id, name, ownerEcdsaKey: vault.identity.ecdsa.privateKey });
     const nameEnv = await e2ee.encryptRoomName({ roomKey, roomId, kv: 1, payload });
     expect(await api("post", `/rooms/${roomId}/keys`, { version: 1, wrap, ...commitment, nameEnv }), 201);
-    await storeRoomKey(roomId, 1, roomKey, { creator: me.id, version: 1 });
-    await vault.saveState({ ...state(), roomNames: { ...state().roomNames, [roomId]: payload } });
+    await storeRoomKey(roomId, 1, roomKey, () => ({ creator: me.id, version: 1 }));
+    await vault.updateState((s) => ({ ...s, roomNames: { ...s.roomNames, [roomId]: payload } }));
     currentVersion.set(roomId, 1);
     // O convite só aparece aqui, uma vez: quem chama mostra e não guarda.
     return { id: roomId, invite: created.key };
@@ -220,7 +233,12 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
       ownerEcdsaPub: await ownerKeyFor(entry.ownerId),
       last: state().roomNames[entry.id] ?? null,
     });
-    if (opened.remember) await vault.saveState({ ...state(), roomNames: { ...state().roomNames, [entry.id]: opened.remember } });
+    if (opened.remember) {
+      // Só sobe o seq: outra operação simultânea pode já ter guardado um maior.
+      await vault.updateState((s) =>
+        (s.roomNames[entry.id]?.seq ?? 0) >= opened.remember.seq ? s : { ...s, roomNames: { ...s.roomNames, [entry.id]: opened.remember } }
+      );
+    }
     return {
       id: entry.id,
       name: opened.name,
