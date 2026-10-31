@@ -257,6 +257,10 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
     return out;
   };
 
+  // Membros da sala (id e nome de exibição): o nome é dado do servidor, só
+  // exibido como TEXTO.
+  const members = async (room) => expect(await api("get", `/roomUsers/${room}`), 200);
+
   // --- mensagens ------------------------------------------------------------
 
   const receiver = e2ee.createReceiver({ roomKeysFor, senderKeyFor });
@@ -308,6 +312,7 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
     joinRoom,
     listRooms,
     describeRoom,
+    members,
     encrypt,
     accept,
     history,

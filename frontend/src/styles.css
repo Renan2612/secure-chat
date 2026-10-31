@@ -1,0 +1,158 @@
+/* Tokens do design (B-D6). Fontes do sistema: nada externo. Nenhum estilo
+   inline (a CSP só permite style-src 'self'). */
+:root {
+  --fundo: #0e1014;
+  --lateral: #13161c;
+  --superficie: #181c24;
+  --superficie-2: #1f242e;
+  --linha: #2a303c;
+  --texto: #e8eaee;
+  --texto-suave: #8f98a8;
+  --acento: #3ddc97;
+  --acento-escuro: #15332a;
+  --sobre-acento: #06130c;
+  --alerta: #f5b94a;
+  --alerta-escuro: #2e2511;
+  --perigo: #ff6b6b;
+  --raio-cartao: 20px;
+  --raio-campo: 10px;
+  --raio-balao: 14px;
+  --raio-pilula: 999px;
+  --lateral-largura: 300px;
+  color-scheme: dark;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--texto);
+  background: var(--fundo);
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+h1 { font-size: 1.25rem; margin: 0 0 12px; }
+h2 { font-size: 1.05rem; margin: 0 0 10px; }
+p { margin: 0 0 10px; }
+code { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+
+.center { display: grid; place-items: center; min-height: 100%; padding: 24px; }
+.card {
+  width: min(420px, 100%);
+  background: var(--superficie);
+  border: 1px solid var(--linha);
+  border-radius: var(--raio-cartao);
+  padding: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+label { display: flex; flex-direction: column; gap: 6px; color: var(--texto-suave); font-size: 0.9rem; }
+label.check { flex-direction: row; align-items: center; color: var(--texto); }
+input, textarea {
+  font: inherit;
+  color: var(--texto);
+  background: var(--superficie-2);
+  border: 1px solid var(--linha);
+  border-radius: var(--raio-campo);
+  padding: 10px 12px;
+}
+textarea { resize: vertical; min-height: 44px; }
+input:focus-visible, textarea:focus-visible, button:focus-visible {
+  outline: 2px solid var(--acento);
+  outline-offset: 2px;
+}
+
+button {
+  font: inherit;
+  color: var(--texto);
+  background: var(--superficie-2);
+  border: 1px solid var(--linha);
+  border-radius: var(--raio-campo);
+  padding: 9px 14px;
+  cursor: pointer;
+}
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.primary { background: var(--acento); color: var(--sobre-acento); border-color: var(--acento); font-weight: 600; }
+button.link { background: none; border: none; color: var(--acento); padding: 4px 0; text-align: left; }
+
+.muted { color: var(--texto-suave); }
+.small { font-size: 0.85rem; }
+.error { color: var(--perigo); }
+.warning { background: var(--alerta-escuro); color: var(--alerta); border-radius: var(--raio-campo); padding: 10px 12px; }
+.banner { margin: 12px 20px 0; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.chip {
+  display: inline-block;
+  border-radius: var(--raio-pilula);
+  padding: 2px 10px;
+  font-size: 0.8rem;
+  background: var(--superficie-2);
+  color: var(--texto-suave);
+}
+.chip.ok { background: var(--acento-escuro); color: var(--acento); }
+.chip.warn { background: var(--alerta-escuro); color: var(--alerta); }
+
+/* Desktop: lateral de 300 px + conversa. */
+.layout { display: grid; grid-template-columns: var(--lateral-largura) 1fr; height: 100%; }
+.side {
+  background: var(--lateral);
+  border-right: 1px solid var(--linha);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px;
+  overflow-y: auto;
+}
+.whoami { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.sidebar { display: flex; flex-direction: column; gap: 10px; flex: 1; }
+.rooms { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.room { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 8px; background: none; border-color: transparent; text-align: left; }
+.room.active { background: var(--superficie-2); border-color: var(--linha); }
+.room > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.dialog {
+  background: var(--superficie);
+  border: 1px solid var(--linha);
+  border-radius: var(--raio-cartao);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.invite { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0; }
+.invite dt { color: var(--texto-suave); }
+.invite dd { margin: 0; }
+
+.main { display: flex; flex-direction: column; min-height: 0; }
+.chat { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.chat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--linha);
+  background: var(--superficie);
+}
+.chat-header h1 { margin: 0; overflow-wrap: anywhere; }
+.badges { display: flex; gap: 6px; flex-wrap: wrap; }
+.messages { flex: 1; overflow-y: auto; padding: 16px 20px; }
+.messages ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.bubble {
+  max-width: min(640px, 80%);
+  align-self: flex-start;
+  background: var(--superficie-2);
+  border-radius: var(--raio-balao);
+  padding: 10px 14px;
+}
+.bubble.mine { align-self: flex-end; background: var(--acento-escuro); }
+.bubble .meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 0.8rem; }
+.bubble .author { font-weight: 600; }
+/* Texto da mensagem: só texto, com as quebras de linha que o autor digitou. */
+.bubble .text { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.bubble .marker { color: var(--texto-suave); }
+.composer { display: flex; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--linha); background: var(--superficie); }
+.composer textarea { flex: 1; }
