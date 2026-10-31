@@ -1,0 +1,9 @@
+# Contexto de build na RAIZ (só o frontend usa: ele precisa de shared/e2ee).
+# Lista de permissões: nada entra além do necessário — nem .env, nem
+# certificados, nem node_modules do host, nem o dist local.
+*
+!shared/e2ee/
+!frontend/
+frontend/node_modules
+frontend/dist
+frontend/tests

@@ -157,7 +157,7 @@ export default function Chat({ client, ws, events, me, room, onRoomsChanged }) {
         )}
         <ol aria-live="polite">
           {messages.items.map((item) => (
-            <Message key={item.key} item={item} author={members[item.from] ?? t.userFallback(item.from)} />
+            <Message key={item.key} item={item} author={t.authorLabel(members[item.from], item.from)} />
           ))}
         </ol>
       </div>

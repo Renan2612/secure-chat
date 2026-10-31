@@ -1,6 +1,6 @@
 # Proxy reverso e terminador de TLS do secure-chat (Etapa 4a).
 # Única origem pública: https://{$PUBLIC_HOST} (padrão: localhost)
-#   /       → página estática provisória (proxy/site)
+#   /       → frontend (frontend/dist, volume frontend_dist somente leitura)
 #   /api/*  → backend, SEM o prefixo /api (o Express não conhece /api)
 #   /ws     → backend, WebSocket (o caminho é mantido)
 # Política e decisões: docs/04-tls-e-proxy.md.
@@ -60,14 +60,25 @@ https://{$PUBLIC_HOST:localhost} {
 		reverse_proxy backend:8000
 	}
 
-	# Página estática provisória (prova de origem única). Cabeçalhos de
-	# conteúdo só aqui: as respostas da API já os recebem do helmet.
+	# Frontend (Etapa 5, B5): o build do Vite, servido de um volume somente
+	# leitura. CSP restritiva: só scripts, estilos, imagens e fontes da
+	# própria origem (nada inline: o build não gera), conexões só com a
+	# própria origem e o wss dela, sem <base>, sem frames, sem plugins.
+	# index.html sem cache (pega o build novo na hora); assets com hash no
+	# nome são imutáveis. Cabeçalhos de conteúdo só aqui: as respostas da
+	# API já os recebem do helmet.
 	handle {
 		header {
+			Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' wss://{$PUBLIC_HOST:localhost}; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'"
 			X-Content-Type-Options nosniff
 			Referrer-Policy no-referrer
-			Content-Security-Policy "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+			Cross-Origin-Opener-Policy same-origin
+			Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
 		}
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		@pages not path /assets/*
+		header @pages Cache-Control "no-cache"
 		root * /srv
 		file_server
 	}

@@ -76,6 +76,24 @@ services:
       db:
         condition: service_healthy
 
+  # Build do frontend (Etapa 5, B5): multi-estágio com npm ci; ao subir,
+  # publica o dist num volume e sai. O proxy monta esse volume SOMENTE
+  # LEITURA. Sem rede e sem privilégios: só copia arquivos.
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    restart: "no"
+    logging: *logging
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - frontend_dist:/out
+
   proxy:
     # Versão fixada por tag E digest (a tag sozinha pode ser republicada).
     image: caddy:2.11.7-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
@@ -88,7 +106,7 @@ services:
       - "127.0.0.1:443:443"
     volumes:
       - ./proxy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./proxy/site:/srv:ro
+      - frontend_dist:/srv:ro
       # CA local, certificados e chaves privadas do Caddy: em volume, nunca
       # no repositório (scripts/export-ca.sh exporta só o certificado raiz).
       - caddy_data:/data
@@ -106,6 +124,8 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+      frontend:
+        condition: service_completed_successfully
 
 networks:
   # internal: true → sem rota para fora; nada nesta rede é publicável no host.
@@ -115,5 +135,6 @@ networks:
 
 volumes:
   db_data:
+  frontend_dist:
   caddy_data:
   caddy_config:

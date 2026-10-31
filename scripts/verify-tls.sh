@@ -98,7 +98,7 @@ check "http://$HOST/ → ${code:-?} ${location:-?} (esperado 308 para https://$H
 
 section "HTTPS, certificado e cabeçalhos"
 status_of() { [ -s "$1" ] && awk 'NR==1{print $2}' "$1"; }
-curl -s -D "$TMP/h_root" -o /dev/null --cacert "$CA" "$BASE/"
+curl -s -D "$TMP/h_root" -o "$TMP/index.html" --cacert "$CA" "$BASE/"
 check "$BASE/ responde 200 com o certificado verificado pela CA local" test "$(status_of "$TMP/h_root")" = "200"
 curl -s -D "$TMP/h_api" -o /dev/null --cacert "$CA" "$BASE/api/health"
 check "$BASE/api/health responde 200 (prefixo /api removido pelo proxy)" test "$(status_of "$TMP/h_api")" = "200"
@@ -109,17 +109,43 @@ api_hsts() { header_has "$HSTS" "$TMP/h_api" && hsts_once "$TMP/h_api"; }
 check "HSTS na API, exatamente um cabeçalho (sem duplicar com o backend)" api_hsts
 no_server() { [ -s "$TMP/h_root" ] && [ -s "$TMP/h_api" ] && ! grep -qi '^server:' "$TMP/h_root" "$TMP/h_api"; }
 check "sem cabeçalho Server" no_server
-static_headers() { header_has "^content-security-policy: default-src 'none'" "$1" && header_has '^x-content-type-options: nosniff' "$1" && header_has '^referrer-policy:' "$1"; }
-check "página estática com CSP, nosniff e Referrer-Policy" static_headers "$TMP/h_root"
+static_headers() { header_has '^x-content-type-options: nosniff' "$1" && header_has '^referrer-policy: no-referrer' "$1"; }
+check "página com nosniff e Referrer-Policy" static_headers "$TMP/h_root"
+
+section "Frontend (Etapa 5, B5): CSP, cache e nada inline"
+CSP_EXPECTED="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' wss://$HOST; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'"
+csp_of() { grep -i '^content-security-policy:' "$1" | head -n 1 | sed -E 's/^[^:]+: *//' | tr -d '\r'; }
+check "CSP do frontend exatamente a política restritiva do plano" test "$(csp_of "$TMP/h_root")" = "$CSP_EXPECTED"
+csp_once() { [ "$(grep -ci '^content-security-policy:' "$TMP/h_root")" = "1" ]; }
+check "um único cabeçalho CSP na página" csp_once
+check "index.html sem cache (Cache-Control: no-cache)" header_has '^cache-control: no-cache' "$TMP/h_root"
+check "o / serve o app (div#root e script de /assets/)" grep -qE '<div id="root"></div>.*|<script type="module" crossorigin src="/assets/' "$TMP/index.html"
+# Todo <script> tem src (nenhum inline); nenhum atributo style= nem handler
+# on*= (com espaço antes: "content=" de uma <meta> não conta); sem javascript:.
+no_inline() {
+  [ -s "$TMP/index.html" ] && [ "$(grep -oiE '<script[^>]*>' "$TMP/index.html" | grep -vc ' src=')" = 0 ] &&
+    ! grep -qiE '<script[^>]*>[^<]+</script>|[[:space:]](style|on[a-z]+)=|javascript:' "$TMP/index.html"
+}
+check "index.html sem script inline, sem style= e sem handlers on*= (todo <script> tem src)" no_inline
+ASSET="$(grep -oE '/assets/[A-Za-z0-9._-]+\.js' "$TMP/index.html" | head -n 1)"
+curl -s -D "$TMP/h_asset" -o "$TMP/asset.js" --cacert "$CA" "$BASE${ASSET:-/assets/nao-existe.js}"
+check "asset com hash ($ASSET): 200 e Cache-Control imutável de 1 ano" header_has '^cache-control: public, max-age=31536000, immutable' "$TMP/h_asset"
+check "asset com o tipo de JavaScript" header_has '^content-type: text/javascript' "$TMP/h_asset"
+curl -s -D "$TMP/h_404" -o /dev/null --cacert "$CA" "$BASE/assets/nao-existe.js"
+check "asset inexistente → 404 (não cai no index)" test "$(status_of "$TMP/h_404")" = "404"
+check "o build não traz eval nem new Function" bash -c '! grep -qE "\beval\(|new Function\(" "$0"' "$TMP/asset.js"
 curl -s -o /dev/null "$BASE/" 2>/dev/null; rc=$?
 check "sem a CA local, o certificado é recusado (curl código $rc; esperado 60, falha de verificação)" test "$rc" = "60"
 
 section "Cookie de sessão"
 printf '{"email":"%s","password":"%s","name":"verify-tls"}' "$EMAIL" "$PASSWORD" >"$TMP/register.json"
 printf '{"email":"%s","password":"%s"}' "$EMAIL" "$PASSWORD" >"$TMP/login.json"
-reg=$(curl -s -o /dev/null -w '%{http_code}' --cacert "$CA" -H 'Content-Type: application/json' -d @"$TMP/register.json" "$BASE/api/register")
+# Etapa 5 (A2, CSRF): POST só com o Origin da própria origem.
+reg=$(curl -s -o /dev/null -w '%{http_code}' --cacert "$CA" -H 'Content-Type: application/json' -H "Origin: $BASE" -d @"$TMP/register.json" "$BASE/api/register")
 check "cadastro do usuário temporário (201)" test "$reg" = "201"
-curl -s -D "$TMP/h_login" -o /dev/null -c "$JAR" --cacert "$CA" -H 'Content-Type: application/json' -d @"$TMP/login.json" "$BASE/api/login"
+curl -s -D "$TMP/h_login" -o /dev/null -c "$JAR" --cacert "$CA" -H 'Content-Type: application/json' -H "Origin: $BASE" -d @"$TMP/login.json" "$BASE/api/login"
+csrf=$(curl -s -o /dev/null -w '%{http_code}' --cacert "$CA" -H 'Content-Type: application/json' -H "Origin: https://site-malicioso.example" -d @"$TMP/login.json" "$BASE/api/login")
+check "login com Origin de outro site recusado (CSRF, $csrf; esperado 403)" test "$csrf" = "403"
 set_cookie="$(grep -i '^set-cookie: sid=' "$TMP/h_login" 2>/dev/null | tr -d '\r')"
 check "login 200" test "$(status_of "$TMP/h_login")" = "200"
 check "Set-Cookie sid com Secure"   has '; Secure' "$set_cookie"
@@ -181,7 +207,7 @@ check "TLS 1.2 só com suítes CBC ou sem ECDHE: o servidor recusa (alerta hands
 
 section "X-Forwarded-For forjado não muda o balde do rate limit"
 probe() { # status e RateLimit-Remaining de um /register inválido (400, mas conta no limite)
-  curl -s -o /dev/null -D - --cacert "$CA" -H "X-Forwarded-For: $1" -H 'Content-Type: application/json' -d '{}' "$BASE/api/register" \
+  curl -s -o /dev/null -D - --cacert "$CA" -H "X-Forwarded-For: $1" -H 'Content-Type: application/json' -H "Origin: $BASE" -d '{}' "$BASE/api/register" \
     | tr -d '\r' | awk 'NR==1{s=$2} tolower($1)=="ratelimit-remaining:"{r=$2} END{print s, r}'
 }
 read -r s1 r1 < <(probe "1.2.3.4")

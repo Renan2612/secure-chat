@@ -73,7 +73,10 @@ export const t = {
   composer: "Escreva uma mensagem",
   send: "Enviar",
   you: "Você",
-  userFallback: (id) => `Usuário ${id}`,
+  // O nome de exibição é escolhido pelo próprio usuário (dado do servidor):
+  // dois podem ter o mesmo. O id vai sempre junto; quem é quem de verdade é
+  // o selo de verificação (chave fixada + número de segurança).
+  authorLabel: (name, id) => (name ? `${name} · #${id}` : `Usuário #${id}`),
   verified: "verificado",
   unverified: "não verificado",
   invalidMessage: "mensagem inválida",
