@@ -1,0 +1,64 @@
+# Sobe o projeto ORIGINAL (asafebxd/MessageWebApp), PROPOSITALMENTE
+# vulnerável, só para a comparação "antes e depois" da Etapa 6. Nunca faz
+# parte da stack final. O código do original NÃO é vendorizado: é clonado em
+# .cache/ no SHA fixado (docs/09) e montado somente leitura. Nenhum arquivo
+# do original é alterado; o que ele precisa para subir vem só por ENV
+# (nomes das variáveis definidos pelo próprio original: serverport,
+# urlclient, key1, DB_* — onde DB_NAME é o USUÁRIO do Postgres).
+#
+# Isolamento (regra de segurança da etapa): só a API é publicada, e apenas
+# em 127.0.0.1:18000 (porta diferente das da stack final). O banco não
+# publica porta. Nome de projeto próprio (secure-chat-original): o `down -v`
+# da limpeza nunca toca nos volumes da stack final.
+name: secure-chat-original
+
+services:
+  db-orig:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: ${ORIG_DB_PASSWORD:?defina ORIG_DB_PASSWORD}
+    networks: [orig-interna]
+    tmpfs:
+      - /var/lib/postgresql/data   # descartável: some quando o contêiner para
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  api-orig:
+    # Imagem efêmera construída do clone (original.Dockerfile); o código do
+    # original não é alterado, só copiado. Não é enviada a registry.
+    build:
+      context: ../../.cache/MessageWebApp
+      dockerfile: ../../scripts/compare/original.Dockerfile
+    image: secure-chat-original-api:local
+    environment:
+      serverport: "8000"
+      urlclient: ${ORIG_CLIENT_URL:-http://localhost:13000}
+      key1: ${ORIG_SESSION_KEY:?defina ORIG_SESSION_KEY}
+      DB_NAME: postgres
+      DB_HOST: db-orig
+      DB_DATABASE: messagewebapp
+      DB_PASSWORD: ${ORIG_DB_PASSWORD:?defina ORIG_DB_PASSWORD}
+      DB_PORT: "5432"
+    # npm install no arranque (deps antigas; bcrypt 5.1.0 tem binário pronto
+    # para o Node 16, sem compilar). Depois sobe o server do original sem o
+    # nodemon (que não está nas deps de produção).
+    ports:
+      - "127.0.0.1:18000:8000"
+    networks: [orig-interna, orig-borda]
+    depends_on:
+      db-orig:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://127.0.0.1:8000/rooms',r=>process.exit(0)).on('error',()=>process.exit(1))\""]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 10s
+
+networks:
+  orig-interna:
+    internal: true
+  orig-borda: {}

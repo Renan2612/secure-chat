@@ -16,3 +16,7 @@ caddy_config/
 *.key
 *.pem
 *.crt
+
+# Etapa 6: clone do original (não vendorizado) e evidências (capturas, matriz gerada)
+.cache/
+evidencias/

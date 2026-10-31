@@ -34,4 +34,7 @@ if (testClock) {
 if (skipPurge) {
   console.error("[PERIGO] E2EE_TEST_SKIP_PURGE definido: as mensagens expiradas NÃO são apagadas do banco (só para a mutação do verify-e2ee.sh)");
 }
+if (process.env.TEST_SKIP_ROOM_MEMBER) {
+  console.error("[PERIGO] TEST_SKIP_ROOM_MEMBER definido: a autorização por sala está DESLIGADA (só para a mutação (i) do attack-matrix.sh)");
+}
 server.listen(PORT, () => console.log(`Server is running on port ${PORT}`));

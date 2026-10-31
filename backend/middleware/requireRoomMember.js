@@ -5,6 +5,13 @@
 // Deve rodar depois do requireAuth (depende de req.session.userId).
 const pool = require("../db");
 
+// SÓ PARA A MUTAÇÃO (i) do scripts/compare/attack-matrix.sh: com este valor
+// EXATO, a checagem de pertencimento à sala é pulada (quebra a autorização
+// de propósito, para provar que a matriz percebe). Nunca ativa por padrão; o
+// server.js avisa no log ao subir. Mesma convenção dos outros E2EE_TEST_*.
+const SKIP_VALUE = "inseguro-so-para-teste";
+const skipForTest = () => process.env.TEST_SKIP_ROOM_MEMBER === SKIP_VALUE;
+
 const roomIdFrom = (req) => {
   const raw = req.params.id ?? req.params.room ?? req.body?.room;
   const id = Number(raw);
@@ -12,6 +19,7 @@ const roomIdFrom = (req) => {
 };
 
 const requireRoomMember = async (req, res, next) => {
+  if (skipForTest()) return next();
   const roomId = roomIdFrom(req);
   if (roomId === null) {
     return res.status(400).json({ message: "Requisição inválida" });

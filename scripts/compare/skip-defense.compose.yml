@@ -1,0 +1,9 @@
+# MUTAÇÃO (i) do attack-matrix.sh: sobe a STACK FINAL com a autorização por
+# sala DESLIGADA (TEST_SKIP_ROOM_MEMBER). Serve só para provar que a matriz
+# percebe uma defesa ausente (o ataque "ler sala alheia" passa a funcionar e
+# a asserção da versão final falha → saída 1). NUNCA use fora disso; o
+# backend avisa no log ao subir. Aplicado por cima do docker-compose.yml.
+services:
+  backend:
+    environment:
+      TEST_SKIP_ROOM_MEMBER: inseguro-so-para-teste
