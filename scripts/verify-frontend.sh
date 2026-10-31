@@ -141,6 +141,11 @@ section "src: nada de HTML montado a partir de texto"
 html_sinks() { grep -rnE 'innerHTML|outerHTML|insertAdjacentHTML|document\.write|dangerouslySetInnerHTML' "$FE/src"; }
 check "src sem innerHTML, outerHTML, insertAdjacentHTML, document.write nem dangerouslySetInnerHTML" none html_sinks
 
+# Em CI (sem Docker) pula a parte que precisa do proxy no ar.
+if [ -n "${NO_PROXY_CHECK:-}" ]; then
+  echo
+  echo "== Proxy no ar: CSP servida (PULADO: NO_PROXY_CHECK)"
+else
 section "Proxy no ar: CSP servida"
 CA="$TMP/ca.crt"
 if scripts/export-ca.sh "$CA" >/dev/null 2>&1; then
@@ -151,6 +156,8 @@ if scripts/export-ca.sh "$CA" >/dev/null 2>&1; then
   check "CSP servida = a do plano" test "$csp" = "$CSP_EXPECTED"
 else
   ko "não foi possível exportar a CA (a stack está no ar? docker compose --env-file backend/.env up --build -d)"
+fi
+
 fi
 
 echo

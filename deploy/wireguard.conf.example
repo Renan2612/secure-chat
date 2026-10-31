@@ -1,0 +1,21 @@
+# WireGuard (Etapa 6, B3) — OPCIONAL, SÓ MODELO com PLACEHOLDERS.
+# Nenhuma chave real e nenhum IP real estão neste arquivo, de propósito.
+# Use para administrar o host por uma rede privada (ex.: SSH e a porta do
+# banco só acessíveis pela VPN), em vez de expô-los à internet.
+#
+# Gere as chaves LOCALMENTE (nunca comite chave nenhuma):
+#   umask 077
+#   wg genkey | tee servidor.key | wg pubkey > servidor.pub
+#   wg genkey | tee admin.key    | wg pubkey > admin.pub
+# Depois substitua os <PLACEHOLDERS> abaixo pelos valores gerados.
+
+[Interface]
+# Chave PRIVADA do servidor (do arquivo servidor.key). NÃO comitar.
+PrivateKey = <CHAVE_PRIVADA_DO_SERVIDOR>
+Address    = 10.0.0.1/24          # <-- escolha a sua faixa privada
+ListenPort = 51820
+
+[Peer]
+# Admin (laptop). PublicKey = conteúdo de admin.pub.
+PublicKey  = <CHAVE_PUBLICA_DO_ADMIN>
+AllowedIPs = 10.0.0.2/32          # <-- IP do admin na VPN

@@ -30,6 +30,21 @@ Decisões tomadas sozinho (registradas):
 - Item 8b (CSWSH) no original é reportado conforme observado: o `socket.io`
   aplica o CORS dele no handshake.
 
+## Parte B — implantação e endurecimento
+
+Feito:
+- [x] Acréscimo: flags SÓ DE TESTE (`TEST_SKIP_ROOM_MEMBER`, `E2EE_TEST_*`) só valem em `NODE_ENV=test`; backend RECUSA subir em `NODE_ENV=production` com qualquer uma definida (`backend/config/testFlags.js`, `assertSafe` no `createApp`); teste em `backend/tests/testFlags.test.js`; os overrides que as usam passaram a subir em `NODE_ENV=test`
+- [x] B1 endurecimento no `docker-compose.yml`: raiz somente leitura + tmpfs, `cap_drop ALL` (proxy readiciona só NET_BIND_SERVICE; db só as capacidades para baixar a root→postgres), `no-new-privileges`, backend como usuário `node`, `mem_limit`/`cpus`/`pids_limit`. Stack segue saudável e servindo 200
+- [x] B2 perfil de produção: `docker-compose.prod.yml` (portas 80/443 em 0.0.0.0, só neste perfil) + `proxy/Caddyfile.prod` (domínio por `DOMAIN`, Let's Encrypt por `ACME_EMAIL`, HSTS com preload). Validado por `docker compose config` e `caddy validate`; NÃO subido na internet
+- [x] B3 `deploy/`: `nftables.conf` e `ufw.sh` (só 80/443 + SSH restrito), `check-firewall.sh` (confere 8000/5432 fechadas, sem sudo), `wireguard.conf.example` (só placeholders), `host-checklist.md` (updates, SSH, backups cifrados com retenção, rotação de segredos)
+- [x] B4 `.github/workflows/ci.yml`: push/PR, `permissions: contents: read`, sem secrets, sem `pull_request_target`; Postgres como serviço; `npm ci`/`npm test`/`npm audit --omit=dev` (backend e frontend); `verify-frontend.sh` com `NO_PROXY_CHECK` (sem Docker); checagem de lockfiles. Actions fixadas por tag (limite dos SHAs em docs/08). NÃO executado
+- [x] B5 `scripts/verify-hardening.sh`: confere B1 por `docker inspect`, 8000/5432 não publicadas, só 127.0.0.1:80/443 no dev, e a sintaxe do perfil de produção; mutação `publish-db` sai com 1
+- [x] verify-hardening.sh, verify-tls.sh e verify-e2ee.sh: saída 0 cada
+
+Decisões tomadas sozinho (registradas):
+- As flags de teste passaram a exigir `NODE_ENV=test`; por isso os overrides de `verify-e2ee.sh` e a mutação (i) do `attack-matrix.sh` agora sobem o backend em `NODE_ENV=test` (onde as flags valem). Efeito colateral aceito: nesse modo o cookie de sessão perde o `Secure` (a mutação (i) pode marcar também o item de cookie).
+- `mem_limit`/`cpus`/`pids_limit` de topo em vez de `deploy.resources` (o Compose v2 fora de swarm honra os de topo e recusa misturar com `pids_limit`).
+- Limites: db 512M, backend 256M, proxy 128M, frontend 256M; pids 256 (64 no frontend).
+
 Pendente:
-- [ ] Parte B (endurecimento, perfil de produção, deploy/, CI, verify-hardening)
 - [ ] Parte C (docs 08/09, atualizar 00/01/README, fechamento com review + simplifier)

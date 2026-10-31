@@ -1,0 +1,80 @@
+# Integração contínua (Etapa 6, B4). Sem segredos, só leitura do repositório,
+# sem pull_request_target (que rodaria com o token de escrita do alvo). As
+# actions são fixadas por tag de versão exata; a nota sobre SHAs está em
+# docs/08. NÃO roda a stack Docker nem toca na internet.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lockfiles:
+    name: lockfiles só com registry.npmjs.org
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: nenhum resolved fora de registry.npmjs.org
+        run: |
+          bad=0
+          for lock in backend/package-lock.json frontend/package-lock.json attacks/package-lock.json; do
+            n=$(grep -o '"resolved": "[^"]*' "$lock" | grep -vc '"resolved": "https://registry.npmjs.org/' || true)
+            echo "$lock: $n fora de registry.npmjs.org"
+            [ "$n" = 0 ] || bad=1
+          done
+          exit "$bad"
+
+  backend:
+    name: backend (test + audit)
+    runs-on: ubuntu-24.04
+    services:
+      db:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres_test
+          POSTGRES_DB: secure_chat_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d secure_chat_test"
+          --health-interval 2s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: npm ci
+        working-directory: backend
+        run: npm ci --no-fund
+      - name: npm test
+        working-directory: backend
+        run: npm test
+      - name: npm audit (produção)
+        working-directory: backend
+        run: npm audit --omit=dev
+
+  frontend:
+    name: frontend (test + audit + verify)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: npm ci
+        working-directory: frontend
+        run: npm ci --no-fund
+      - name: npm test
+        working-directory: frontend
+        run: npm test
+      - name: npm audit (produção)
+        working-directory: frontend
+        run: npm audit --omit=dev
+      - name: verify-frontend (sem Docker)
+        env:
+          NO_PROXY_CHECK: "1"
+        run: scripts/verify-frontend.sh

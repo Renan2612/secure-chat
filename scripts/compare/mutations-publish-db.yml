@@ -1,0 +1,6 @@
+# MUTAÇÃO do verify-hardening.sh (B5): publica a porta do Postgres no host.
+# Deve fazer o verify-hardening sair com 1. NUNCA use em produção.
+services:
+  db:
+    ports:
+      - "127.0.0.1:5432:5432"

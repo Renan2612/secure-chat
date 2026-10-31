@@ -1,0 +1,32 @@
+# Perfil de PRODUÇÃO (Etapa 6, B2) — override do docker-compose.yml.
+# Uso (NÃO executado neste projeto; ver docs/08):
+#   DOMAIN=chat.exemplo.com ACME_EMAIL=ops@exemplo.com \
+#     docker compose --env-file backend/.env -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Diferenças em relação ao desenvolvimento:
+#   - o proxy publica 80 e 443 em 0.0.0.0 (exposto à internet), não em 127.0.0.1;
+#   - usa proxy/Caddyfile.prod: HTTPS automático (Let's Encrypt) para {$DOMAIN},
+#     com o e-mail {$ACME_EMAIL}; HSTS com preload;
+#   - o backend aprende a origem pública pelo domínio real.
+# Todo o endurecimento do docker-compose.yml (read_only, cap_drop, limites)
+# continua valendo. Valide sem subir: `docker compose ... config` e
+# `caddy validate` (scripts/verify-hardening.sh).
+services:
+  backend:
+    environment:
+      CLIENT_URL: https://${DOMAIN:?defina DOMAIN no perfil de produção}
+
+  proxy:
+    environment:
+      DOMAIN: ${DOMAIN:?defina DOMAIN no perfil de produção}
+      ACME_EMAIL: ${ACME_EMAIL:?defina ACME_EMAIL no perfil de produção}
+    # !override: troca a lista inteira (não acumula com as portas de 127.0.0.1
+    # do desenvolvimento, que causariam conflito de bind).
+    ports: !override
+      - "80:80"
+      - "443:443"
+    volumes: !override
+      - ./proxy/Caddyfile.prod:/etc/caddy/Caddyfile:ro
+      - frontend_dist:/srv:ro
+      - caddy_data:/data
+      - caddy_config:/config
