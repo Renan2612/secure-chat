@@ -242,19 +242,27 @@ if (cfg.final?.api) {
     const msgA = await request("GET", `${api}/messages/${roomId}`, { caPath, jar: a.jar, timeoutMs: MT });
     const usersA = await request("GET", `${api}/roomUsers/${roomId}`, { caPath, jar: a.jar, timeoutMs: MT });
     const msgB = await request("GET", `${api}/messages/${roomId}`, { caPath, jar: b.jar, timeoutMs: MT });
-    const blocked = msgA.status === 403 && usersA.status === 403;
+    // Só é "bloqueado" se o não-membro é barrado (403/403) E o controle
+    // positivo passa: o dono (membro) lê a própria sala (200). Sem o
+    // positivo, uma falha de setup que barrasse todo mundo passaria.
+    const control = roomId !== undefined && msgB.status === 200;
+    const blocked = control && msgA.status === 403 && usersA.status === 403;
     record(3, "Ler sala alheia sem ser membro", "final", false, !blocked,
-      `controle positivo: o dono (membro) lê a própria sala (status ${msgB.status})`,
-      `não-membro GET /messages=${msgA.status}, GET /roomUsers=${usersA.status}`);
+      `o dono (membro) lê a própria sala (status ${msgB.status}); não-membro é barrado`,
+      `controle=${control ? "ok" : "FALHOU"}; não-membro GET /messages=${msgA.status}, GET /roomUsers=${usersA.status}`);
   }
 
   // 4. Upgrade do /ws sem sessão é recusado; com sessão, abre (controle +).
   {
     const anon = await wsUpgrade(ws, { origin, caPath }); // Origin válido, sem cookie → cai na checagem de sessão (401)
     const authed = await wsUpgrade(ws, { cookie: a.jar.header(), origin, caPath });
-    record(4, "Ouvinte anônimo no WebSocket", "final", false, anon.open,
-      `controle positivo: com sessão o upgrade abre (open=${authed.open})`,
-      `sem sessão (Origin válido): open=${anon.open}, status=${anon.status}`);
+    // "vulnerável" só se o anônimo entrou; "bloqueado" EXIGE que o controle
+    // positivo passe (com sessão o upgrade abre) — senão um /ws derrubado,
+    // que recusa todos, passaria como defesa.
+    const vuln = anon.open ? true : authed.open ? false : null; // positivo falhou → inconclusivo
+    record(4, "Ouvinte anônimo no WebSocket", "final", false, vuln,
+      `com sessão o upgrade abre (open=${authed.open}); sem sessão é recusado`,
+      `sem sessão (Origin válido): open=${anon.open}, status=${anon.status}; controle authed.open=${authed.open}`);
   }
 
   // 5. checkUserExists removido.
@@ -264,28 +272,45 @@ if (cfg.final?.api) {
       "a rota checkUserExists foi removida (404)", `status=${r.status}`);
   }
 
-  // 6. joinRooms exige a chave de convite.
+  // 6. joinRooms exige a chave de convite: a chave ERRADA é recusada (403),
+  // mas a CERTA deixa entrar (controle positivo) — senão "recusa tudo"
+  // (ou uma sala inexistente) passaria como se o convite fosse conferido.
   {
     const created = asJson(await request("POST", `${api}/createRoom`, { headers: { Origin: origin }, body: {}, caPath, jar: b.jar, timeoutMs: MT }));
     const roomId = created?.id;
+    const invite = created?.key;
     const wrong = await request("POST", `${api}/joinRooms`, { headers: { Origin: origin }, body: { idRoom: roomId, key: "chave-errada" }, caPath, jar: a.jar, timeoutMs: MT });
-    record(6, "Entrar em sala sem a chave de convite", "final", false, wrong.status === 200,
-      "convite inválido é recusado (403, resposta genérica)", `status=${wrong.status}`);
+    const right = await request("POST", `${api}/joinRooms`, { headers: { Origin: origin }, body: { idRoom: roomId, key: invite }, caPath, jar: a.jar, timeoutMs: MT });
+    const control = roomId !== undefined && right.status === 200; // o convite certo entra
+    const vuln = wrong.status === 200 ? true : control ? false : null;
+    record(6, "Entrar em sala sem a chave de convite", "final", false, vuln,
+      `o convite certo entra (status ${right.status}); o errado é recusado`,
+      `chave errada=${wrong.status}, chave certa=${right.status}, controle=${control ? "ok" : "FALHOU"}`);
   }
 
   // 8a. CSRF: POST com Origin de outro site é recusado (415/403).
   {
     const r = await request("POST", `${api}/login`, { headers: { Origin: evil }, body: { email: a.email, password: a.password }, caPath, timeoutMs: MT });
     const ok = await request("POST", `${api}/login`, { headers: { Origin: origin }, body: { email: a.email, password: a.password }, caPath, jar: new Jar(), timeoutMs: MT });
-    record("8a", "CSRF (POST com Origin de outro site)", "final", false, r.status < 400,
-      `controle positivo: com o Origin certo o login responde ${ok.status}`, `login com Origin de outro site => ${r.status}`);
+    // Bloqueado só se o Origin de outro site é recusado (403) E o controle
+    // positivo passa: o mesmo login com o Origin certo responde 200.
+    const control = ok.status === 200;
+    const vuln = r.status < 400 ? true : control ? false : null;
+    record("8a", "CSRF (POST com Origin de outro site)", "final", false, vuln,
+      `com o Origin certo o login responde ${ok.status}; de outro site é recusado`,
+      `Origin de outro site => ${r.status}; controle (Origin certo) => ${ok.status}`);
   }
 
-  // 8b. CSWSH: /ws com Origin de outro site é recusado mesmo com sessão.
+  // 8b. CSWSH: /ws com Origin de outro site é recusado mesmo com sessão; o
+  // controle positivo (mesma sessão, Origin certo) abre — senão um /ws
+  // derrubado passaria como "Origin conferido".
   {
     const r = await wsUpgrade(ws, { cookie: a.jar.header(), origin: evil, caPath });
-    record("8b", "CSWSH (WebSocket com Origin de outro site)", "final", false, r.open,
-      "o upgrade confere o Origin antes da sessão", `open=${r.open}, status=${r.status}`);
+    const control = await wsUpgrade(ws, { cookie: a.jar.header(), origin, caPath });
+    const vuln = r.open ? true : control.open ? false : null;
+    record("8b", "CSWSH (WebSocket com Origin de outro site)", "final", false, vuln,
+      `com o Origin certo o upgrade abre (open=${control.open}); de outro site é recusado`,
+      `Origin de outro site: open=${r.open}, status=${r.status}; controle open=${control.open}`);
   }
 
   // 9. Força bruta: aparece 429 (feita por ÚLTIMO: gasta o limite por IP).
@@ -303,7 +328,8 @@ if (cfg.final?.api) {
   // 10. Flags do cookie de sessão (sid).
   {
     const f = flags(a.setCookies, "sid");
-    const blocked = f.present && f.secure && f.httpOnly && Boolean(f.sameSite);
+    const strongSameSite = f.sameSite && /^(lax|strict)$/i.test(f.sameSite); // None não protege contra CSRF
+    const blocked = f.present && f.secure && f.httpOnly && strongSameSite;
     record(10, "Flags do cookie de sessão", "final", false, !blocked,
       "sid com Secure, HttpOnly e SameSite", `present=${f.present} secure=${f.secure} httpOnly=${f.httpOnly} sameSite=${f.sameSite}`);
   }

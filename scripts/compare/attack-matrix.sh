@@ -28,6 +28,14 @@ FINAL_API="$FINAL_ORIGIN/api"
 FINAL_HOST="$(host_of "$FINAL_ORIGIN")"
 FINAL_WS="wss://$FINAL_HOST/ws"
 
+# Na mutação (ii), exercita ANTES a trava do cliente Node (defesa em
+# profundidade): com um alvo não-local, matrix.js tem de sair com 3 por
+# conta própria. Sem isto, só a trava bash abaixo seria testada.
+if [ "$MUTATION" = nonlocal-target ]; then
+  printf '{"final":{"api":"%s","ws":"%s"}}' "$FINAL_API" "$FINAL_WS" | node attacks/matrix.js >/dev/null 2>&1
+  if [ "$?" = 3 ]; then echo "trava do cliente Node (matrix.js) recusou o alvo não-local (saída 3)"; else echo "FALHA: matrix.js NÃO recusou o alvo não-local" >&2; exit 1; fi
+fi
+
 # TRAVA: alvo não-local aborta aqui, antes de subir nada ou atacar.
 assert_local_targets "$ORIG_API" "$FINAL_ORIGIN" "$FINAL_WS"
 
@@ -49,7 +57,9 @@ cleanup() {
   local rc=$?
   trap - EXIT INT TERM HUP
   # Apaga do banco FINAL tudo o que a matriz criou (usuários atk-/snf-).
-  psql_final >/dev/null 2>&1 <<'SQL' || true
+  # ON_ERROR_STOP=1 + aviso: uma limpeza que falha não pode passar calada
+  # (deixaria usuários/salas de teste no banco).
+  if ! psql_final >/dev/null 2>"$TMP/cleanup.err" <<'SQL'
 WITH u AS (SELECT id FROM users WHERE email LIKE 'atk-%@example.invalid' OR email LIKE 'snf-%@example.invalid'),
      r AS (SELECT id AS room FROM rooms WHERE created_by IN (SELECT id FROM u) OR owner_id IN (SELECT id FROM u)
            UNION SELECT room FROM rooms_users WHERE user_id IN (SELECT id FROM u))
@@ -63,7 +73,13 @@ DELETE FROM user_keys WHERE user_id IN (SELECT id FROM users WHERE email LIKE 'a
 DELETE FROM user_sessions WHERE (sess->>'userId')::int IN (SELECT id FROM users WHERE email LIKE 'atk-%@example.invalid' OR email LIKE 'snf-%@example.invalid');
 DELETE FROM users WHERE email LIKE 'atk-%@example.invalid' OR email LIKE 'snf-%@example.invalid';
 SQL
-  scripts/compare/stop-original.sh >/dev/null 2>&1 || true
+  then :; else
+    echo "AVISO: a limpeza do banco final falhou; podem ter ficado usuários atk-/snf- (remova à mão):" >&2
+    sed 's/^/  | /' "$TMP/cleanup.err" >&2
+  fi
+  if ! scripts/compare/stop-original.sh >/dev/null 2>"$TMP/stop.err"; then
+    echo "AVISO: o teardown da stack do original falhou; ela pode ter ficado de pé em 127.0.0.1:18000" >&2
+  fi
   rm -rf "$TMP"
   exit "$rc"
 }
@@ -92,7 +108,11 @@ fi
 
 # Recria o backend para zerar o rate limit em memória (reexecuções): sem
 # isso, o 429 de uma execução anterior barraria o login dos ataques.
-"${COMPOSE_FINAL[@]}" up -d --force-recreate --wait --wait-timeout 60 backend >/dev/null 2>&1 || true
+if ! "${COMPOSE_FINAL[@]}" up -d --force-recreate --wait --wait-timeout 60 backend >/dev/null 2>"$TMP/recreate.err"; then
+  echo "erro: não foi possível recriar o backend (reset do rate limit). Log:" >&2
+  sed 's/^/  | /' "$TMP/recreate.err" >&2
+  exit 1
+fi
 
 # ---------- Ataques HTTP/WebSocket (itens 2–11h), via cliente Node ----------
 echo "== Ataques HTTP/WebSocket"
@@ -193,19 +213,32 @@ fi
 if [ "$SNIFFABLE" = 1 ]; then
   CAP_FINAL="$OUT/sniff-final-externo.pcapng"
   start_sniff "$IFACE" "tcp port 443" 8 "$CAP_FINAL"; sleep 1.5
-  # repete o login algumas vezes para garantir tráfego na janela de captura
+  # Faz o login com a senha-marcador e EXIGE que a requisição tenha chegado
+  # ao servidor (resposta HTTP real) DENTRO da janela de captura. Sem essa
+  # prova, "senha ausente" seria falso: a senha poderia nunca ter trafegado
+  # (CA errada, backend fora, login fora da janela) e só os handshakes
+  # entrariam na captura. Guarda o maior status visto.
+  LOGIN_STATUS=0
   for _ in 1 2 3; do
-    curl -s --max-time 5 -o /dev/null --cacert "$CA" -H 'Content-Type: application/json' -H "Origin: $FINAL_ORIGIN" \
-      -d "{\"email\":\"$SNF_EMAIL\",\"password\":\"$MARK_PW\"}" "$FINAL_API/login" || true
+    st=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' --cacert "$CA" -H 'Content-Type: application/json' -H "Origin: $FINAL_ORIGIN" \
+      -d "{\"email\":\"$SNF_EMAIL\",\"password\":\"$MARK_PW\"}" "$FINAL_API/login" 2>/dev/null || echo 000)
+    # 200 (ok), 401 (senha errada) ou 429 (limite) provam que os BYTES da
+    # senha trafegaram (cifrados) até o servidor.
+    case "$st" in 200|401|429) LOGIN_STATUS=$st ;; esac
   done
   wait "$SNIFF_PID" 2>/dev/null
   tshark -r "$CAP_FINAL" -T fields -e data -e text 2>/dev/null >"$TMP/cap-final.txt"
   # Procura nos BYTES crus da captura (prova mais forte da AUSÊNCIA): com TLS
   # a senha não pode aparecer nem no texto nem nos bytes.
   PW_F=$(cat "$CAP_FINAL" "$TMP/cap-final.txt" | node scripts/lib/find-plaintext.js "$MARK_PW" >/dev/null 2>&1; echo $?)
+  # Autoteste do detector: ele ACHA a senha num canal em claro (senão PW_F=10
+  # seria um bug do detector, não ausência real).
+  SELFTEST=$(printf '%s' "$MARK_PW" | node scripts/lib/find-plaintext.js "$MARK_PW" >/dev/null 2>&1; echo $?)
   PKTS=$(tshark -r "$CAP_FINAL" 2>/dev/null | wc -l)
-  if [ "$PW_F" = 10 ] && [ "${PKTS:-0}" -gt 0 ]; then
-    emit 1 "Escuta de rede (sniffing), externo 443" final bloqueado bloqueado "a senha NÃO aparece mesmo com $PKTS pacotes capturados: o TLS cifra na borda" "pacotes=$PKTS, senha=ausente ($CAP_FINAL)"
+  if [ "$LOGIN_STATUS" = 0 ] || [ "$SELFTEST" != 0 ]; then
+    emit 1 "Escuta de rede (sniffing), externo 443" final bloqueado inconclusivo "o login com a senha não chegou ao servidor na janela (status=$LOGIN_STATUS) ou o detector falhou (selfteste=$SELFTEST): sem isso 'ausente' não prova nada" "pacotes=$PKTS"
+  elif [ "$PW_F" = 10 ] && [ "${PKTS:-0}" -gt 0 ]; then
+    emit 1 "Escuta de rede (sniffing), externo 443" final bloqueado bloqueado "a senha trafegou (login respondeu $LOGIN_STATUS) e NÃO aparece nos $PKTS pacotes: o TLS cifra na borda" "pacotes=$PKTS, senha=ausente, login=$LOGIN_STATUS ($CAP_FINAL)"
   elif [ "${PKTS:-0}" = 0 ]; then
     emit 1 "Escuta de rede (sniffing), externo 443" final bloqueado inconclusivo "a captura ficou vazia (0 pacotes)" "pacotes=0"
   elif [ "$PW_F" = 0 ]; then

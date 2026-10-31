@@ -41,6 +41,10 @@ describe("honored (flag só tem efeito em NODE_ENV=test e com o valor exato)", (
   test("test + valor errado → false", () => {
     expect(honored("TEST_SKIP_ROOM_MEMBER", "vx", { NODE_ENV: "test", TEST_SKIP_ROOM_MEMBER: "outro" })).toBe(false);
   });
+  test("dev (NODE_ENV indefinido) + valor exato → false (só vale em test)", () => {
+    expect(honored("TEST_SKIP_ROOM_MEMBER", "vx", { TEST_SKIP_ROOM_MEMBER: "vx" })).toBe(false);
+    expect(honored("TEST_SKIP_ROOM_MEMBER", "vx", { NODE_ENV: "development", TEST_SKIP_ROOM_MEMBER: "vx" })).toBe(false);
+  });
 });
 
 describe("createApp recusa boot em produção com flag de teste", () => {

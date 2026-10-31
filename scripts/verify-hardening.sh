@@ -25,11 +25,18 @@ check() { local d="$1"; shift; if "$@"; then ok "$d"; else ko "$d"; fi; }
 section() { printf '\n== %s\n' "$*"; }
 
 command -v docker >/dev/null || { echo "erro: docker não encontrado" >&2; exit 2; }
+TMP_ERR="$(mktemp)"; trap 'rm -f "$TMP_ERR"' EXIT
 
 if [ -n "$MUTATION" ]; then
   echo "  (MUTAÇÃO ATIVA: $MUTATION — esperado: falhar)"
   # Recria a stack com a mutação para que a inspeção veja o estado mutado.
-  timeout 120 "${COMPOSE[@]}" "${EXTRA[@]}" up -d --wait >/dev/null 2>&1 || true
+  # Fatal se não aplicar: sem o estado mutado, a prova da mutação viraria um
+  # falso-negativo (o db ficaria sem a porta e o script "passaria").
+  if ! timeout 120 "${COMPOSE[@]}" "${EXTRA[@]}" up -d --force-recreate --wait >/dev/null 2>"$TMP_ERR"; then
+    echo "erro: não foi possível aplicar a mutação $MUTATION (a prova dela não pôde ser exercida)" >&2
+    sed 's/^/  | /' "$TMP_ERR" >&2 2>/dev/null || true
+    exit 2
+  fi
 fi
 
 if [ -z "$("${COMPOSE[@]}" ps -q db 2>/dev/null)" ]; then
@@ -89,8 +96,14 @@ prod_config_ok() {
 check "docker compose config do perfil de produção é válido" prod_config_ok
 # O perfil de produção publica em 0.0.0.0 (e não em 127.0.0.1).
 prod_ports_public() {
+  # Confere no bloco de portas do proxy: existe published "443" E nenhum
+  # host_ip 127.0.0.1 ali (ausência de 127.0.0.1 no arquivo inteiro não
+  # bastaria — poderia não publicar nada, ou ter 127.0.0.1 noutro lugar).
   local cfg; cfg="$(DOMAIN=chat.exemplo.com ACME_EMAIL=ops@exemplo.com "${COMPOSE[@]}" -f docker-compose.yml -f docker-compose.prod.yml config 2>/dev/null)"
-  ! echo "$cfg" | grep -q '127.0.0.1'
+  local ports; ports="$(printf '%s' "$cfg" | sed -n '/^    ports:/,/^    [a-z]/p')"
+  printf '%s' "$ports" | grep -q 'published: "443"' &&
+    printf '%s' "$ports" | grep -q 'published: "80"' &&
+    ! printf '%s' "$ports" | grep -q '127.0.0.1'
 }
 check "produção publica em 0.0.0.0 (sem 127.0.0.1)" prod_ports_public
 caddy_prod_ok() {

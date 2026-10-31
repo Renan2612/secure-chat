@@ -44,8 +44,14 @@ if ! "${COMPOSE[@]}" up -d --wait --wait-timeout 60 db-orig >/dev/null 2>&1; the
 fi
 # Aplica o schema do PRÓPRIO original (CREATE DATABASE messagewebapp + \c +
 # tabelas), rodado como superusuário no banco default. Nada é alterado.
-if ! "${COMPOSE[@]}" exec -T db-orig psql -v ON_ERROR_STOP=0 -U postgres -q < "$CLONE/database/migrations.sql" >/dev/null 2>&1; then
-  echo "erro: não foi possível aplicar o esquema do original" >&2; exit 1
+# ON_ERROR_STOP=0 porque, numa reexecução com o banco já criado, o
+# CREATE DATABASE falha (já existe) e o resto deve seguir; por isso NÃO dá
+# para confiar no código de saída do psql — confere-se explicitamente, logo
+# abaixo, que a tabela `messages` passou a existir.
+"${COMPOSE[@]}" exec -T db-orig psql -v ON_ERROR_STOP=0 -U postgres -q < "$CLONE/database/migrations.sql" >/dev/null 2>&1 || true
+HAS_TABLE="$("${COMPOSE[@]}" exec -T db-orig psql -U postgres -d messagewebapp -qAt -c "SELECT to_regclass('public.messages') IS NOT NULL" 2>/dev/null | tr -d '[:space:]')"
+if [ "$HAS_TABLE" != "t" ]; then
+  echo "erro: o esquema do original não foi aplicado (tabela messages ausente)" >&2; exit 1
 fi
 echo "esquema do original aplicado (banco messagewebapp)"
 
