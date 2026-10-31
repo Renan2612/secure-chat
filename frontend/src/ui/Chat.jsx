@@ -65,6 +65,7 @@ export default function Chat({ client, ws, events, me, room, onRoomsChanged, onO
   const roomId = room.id;
   const current = useRef(roomId);
   current.current = roomId;
+  const hadKey = useRef(false);
 
   const receive = useCallback(
     async (packet) => {
@@ -96,6 +97,10 @@ export default function Chat({ client, ws, events, me, room, onRoomsChanged, onO
   const refreshKey = useCallback(async () => {
     const got = await client.ensureRoomKey(roomId);
     if (current.current !== roomId) return;
+    // Chave nova em mãos: o nome da sala (cifrado com ela) passa a ser
+    // legível; a lista é recarregada para decifrá-lo e conferir a assinatura.
+    if (got.ok && !hadKey.current) onRoomsChanged();
+    hadKey.current = got.ok;
     setKeyState(got.ok ? "ok" : "waiting");
     if (got.ok) {
       await rotateIfNeeded();
@@ -103,7 +108,7 @@ export default function Chat({ client, ws, events, me, room, onRoomsChanged, onO
     }
     if (client.rotationRequired(roomId)) setNotice(got.ok ? t.rotationPending : t.roomLocked);
     else setNotice((n) => (n === t.rotationPending || n === t.roomLocked ? "" : n));
-  }, [client, roomId, rotateIfNeeded, distribute]);
+  }, [client, roomId, rotateIfNeeded, distribute, onRoomsChanged]);
 
   const loadHistory = useCallback(
     async (before) => {
