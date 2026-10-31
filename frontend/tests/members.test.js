@@ -202,3 +202,61 @@ describe("revisão C7", () => {
     expect(w.renamed).toBeUndefined();
   });
 });
+
+// Achados da revisão de falhas silenciosas (C7): falhar FECHADO.
+describe("revisão C7: falhas silenciosas", () => {
+  test("ATAQUE: o diretório falha (500) ao conferir um membro → 'unchecked' (o envio deve bloquear), não o selo antigo", async () => {
+    await verify(w.bob);
+    const realGet = w.directory[2];
+    w.directory[2] = undefined;
+    const failing = createClient({
+      api: async (method, path, body) => (path === "/keys/2" ? { status: 500, body: null } : api(method, path, body)),
+      me: { id: ME, name: "eu" },
+      vault: w.vault,
+    });
+    await expect(failing.observe(2)).rejects.toThrow();
+    expect(failing.trustOf(2)).toBe("unchecked");
+    w.directory[2] = realGet;
+  });
+
+  test("CHAVE ALTERADA detectada mas o cofre não grava → continua 'changed' na memória e avisa", async () => {
+    await w.client.observe(2);
+    w.directory[2] = await user(2);
+    const notices = [];
+    const realUpdate = w.vault.updateTrust;
+    const vault = Object.create(w.vault);
+    vault.updateTrust = async (updater) => {
+      await updater(w.vault.trust);
+      throw new Error("cota do IndexedDB");
+    };
+    const client = createClient({ api, me: { id: ME, name: "eu" }, vault, onNotice: (n) => notices.push(n) });
+    await expect(client.observe(2)).rejects.toThrow();
+    expect(client.trustOf(2)).toBe("changed");
+    expect(notices.map((n) => n.kind)).toEqual(expect.arrayContaining(["KEY_CHANGED", "VAULT_WRITE_FAILED"]));
+    expect(w.vault.updateTrust).toBe(realUpdate);
+  });
+
+  test("remover com o cofre falhando: o servidor já removeu → devolve o convite, saved:false, e o removido fica bloqueado na memória", async () => {
+    await verify(w.bob);
+    const vault = Object.create(w.vault);
+    vault.updateState = async () => {
+      throw new Error("cota do IndexedDB");
+    };
+    const client = createClient({ api, me: { id: ME, name: "eu" }, vault });
+    const r = await client.kick(ROOM, 2);
+    expect(r).toEqual({ invite: "n".repeat(32), saved: false });
+    expect(client.isKicked(ROOM, 2)).toBe(true);
+  });
+
+  test("mensagem inválida e o diretório fora do ar: accept devolve 'invalid' (não lança, nada some)", async () => {
+    const failing = createClient({
+      api: async (method, path, body) => (path === "/keys/2" ? { status: 500, body: null } : api(method, path, body)),
+      me: { id: ME, name: "eu" },
+      vault: w.vault,
+    });
+    await failing.ensureRoomKey(ROOM);
+    await w.client.observe(2); // Bob fixado
+    const body = await e2ee.encryptMessage({ roomKey: w.roomKey, kv: 1, roomId: ROOM, senderId: 3, cid: "f", text: "forjada", senderEcdsaKey: w.carol.identity.ecdsa.privateKey });
+    expect((await failing.accept({ room: ROOM, from: 2, cid: "f", id: 1, ts: "t", body })).status).toBe("invalid");
+  });
+});

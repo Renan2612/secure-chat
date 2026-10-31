@@ -81,23 +81,34 @@ export default function App() {
     setUser(null);
   }, [api, lock]);
 
+  // Nunca rejeita: uma falha vira aviso (os selos ficariam velhos em silêncio).
   const refreshRooms = useCallback(async () => {
-    if (session) setRooms(await session.client.listRooms());
+    if (!session) return;
+    try {
+      setRooms(await session.client.listRooms());
+    } catch {
+      setNotice(t.roomsError);
+    }
   }, [session]);
 
   // Cofre aberto → cliente E2EE, chaves públicas no diretório, /ws.
   const unlocked = async (opened) => {
     loginPassword.current = null; // não precisa mais (o cofre já existe)
-    setNotice(opened.trustReset ? t.trustReset : "");
-    const client = createClient({ api, me: user, vault: opened });
+    // O aviso de trust store reiniciado só vem UMA vez (o cofre já gravou o
+    // novo): nenhum outro aviso pode apagá-lo (revisão C7).
+    const reset = opened.trustReset ? `${t.trustReset} ` : "";
+    setNotice(reset);
+    const events = createEvents();
+    // Avisos de segurança do cliente (rollback, criador trocado, CHAVE
+    // ALTERADA, cofre sem gravar...) vão para a tela, nunca para o vazio.
+    const client = createClient({ api, me: user, vault: opened, onNotice: (notice) => events.emit({ type: "notice", notice }) });
     try {
       await client.registerKeys();
     } catch (err) {
       opened.lock();
-      setNotice(KEYS_ERROR[err.code] ?? t.genericError);
+      setNotice(`${reset}${KEYS_ERROR[err.code] ?? t.genericError}`);
       return;
     }
-    const events = createEvents();
     const ws = new WsSession({
       url: `wss://${window.location.host}/ws`,
       onEvent: (event) => {
@@ -105,10 +116,18 @@ export default function App() {
         events.emit(event);
       },
     });
+    // Aviso sem sala (cofre que não gravou): faixa geral.
+    events.on((event) => {
+      if (event.type === "notice" && event.notice.kind === "VAULT_WRITE_FAILED") setNotice(t.notices.VAULT_WRITE_FAILED);
+    });
     ws.connect();
     setVault(opened);
     setSession({ client, ws, events });
-    setRooms(await client.listRooms());
+    try {
+      setRooms(await client.listRooms());
+    } catch {
+      setNotice(`${reset}${t.roomsError}`);
+    }
   };
 
   // Sessão encerrada no servidor (logout em outra aba, expirou): volta ao login.

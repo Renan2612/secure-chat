@@ -58,6 +58,8 @@ const openedVault = ({ userId, vaultId, passphrase, identity, pub, state, trust,
       if (field === "state") next = { ...next, vaultId }; // sempre amarrado a ESTE cofre
       // Grava ANTES de trocar a memória: se falhar, nada fica "valendo só nesta aba".
       await idbPutMany([[keyOf(userId, record), await e2ee.sealJson(secret, next)]]);
+      // Bloqueado durante a gravação: não devolve o estado à memória.
+      if (vault.locked) throw new VaultError("LOCKED", "cofre bloqueado");
       vault[field] = next;
       return next;
     });

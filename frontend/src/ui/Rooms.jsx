@@ -16,6 +16,7 @@ function CreateRoom({ client, onCreated, onClose }) {
   const [busy, setBusy] = useState(false);
   const [created, setCreated] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState(false);
   const size = bytes(name.trim());
   const tooLong = size > MAX;
 
@@ -45,11 +46,12 @@ function CreateRoom({ client, onCreated, onClose }) {
           <dd><code>{created.invite}</code></dd>
         </dl>
         <div className="row">
-          <button type="button" onClick={() => navigator.clipboard.writeText(`${created.id} ${created.invite}`).then(() => setCopied(true), () => {})}>
+          <button type="button" onClick={() => navigator.clipboard.writeText(`${created.id} ${created.invite}`).then(() => setCopied(true), () => setCopyError(true))}>
             {copied ? t.copied : t.copy}
           </button>
           <button type="button" className="primary" onClick={() => onCreated(created.id)}>{t.done}</button>
         </div>
+        {copyError && <p className="error" role="alert">{t.copyFailed}</p>}
       </div>
     );
   }

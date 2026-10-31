@@ -36,6 +36,12 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
   const rotationRequired = new Map();
   const imported = new Map(); // `${sala}:${versão}` → CryptoKey
   let keyEpoch = null;
+  // Falhar FECHADO (revisão C7): quem não deu para conferir (diretório fora
+  // do ar, cofre sem gravar) fica "unchecked"; uma CHAVE ALTERADA que o
+  // cofre não gravou continua "changed" na memória desta aba.
+  const unchecked = new Set();
+  const memChanged = new Set();
+  const memKicked = new Set(); // `${sala}:${userId}` removidos cujo registro no cofre falhou
 
   const state = () => vault.state;
 
@@ -58,24 +64,40 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
 
   // Busca a chave do usuário no diretório e passa pelo TOFU; null = sem chave.
   const observe = async (userId, keys) => {
-    let pub = keys;
-    if (!pub) {
-      const res = await api("get", `/keys/${userId}`);
-      if (res.status === 404) return null;
-      pub = expect(res, 200);
-    }
     let status;
-    await vault.updateTrust(async (trust) => {
-      const r = await e2ee.observeKeys(trust, userId, pub);
-      status = r.status;
-      return r.status === "MATCH" ? trust : r.store;
-    });
+    try {
+      let pub = keys;
+      if (!pub) {
+        const res = await api("get", `/keys/${userId}`);
+        if (res.status === 404) {
+          unchecked.delete(userId);
+          return null;
+        }
+        pub = expect(res, 200);
+      }
+      await vault.updateTrust(async (trust) => {
+        const r = await e2ee.observeKeys(trust, userId, pub);
+        status = r.status;
+        return r.status === "MATCH" ? trust : r.store;
+      });
+    } catch (err) {
+      if (status === "CHANGED") {
+        memChanged.add(userId);
+        onNotice({ kind: "KEY_CHANGED", userId });
+        onNotice({ kind: "VAULT_WRITE_FAILED" });
+      } else {
+        unchecked.add(userId);
+      }
+      throw err;
+    }
+    unchecked.delete(userId);
     if (status === "CHANGED") onNotice({ kind: "KEY_CHANGED", userId });
     return status;
   };
 
   const senderKeyFor = async (userId) => {
     if (userId === me.id) return { ecdsaPub: vault.pub.ecdsaPub, trust: "verified" };
+    if (memChanged.has(userId)) return { trust: "changed" };
     if (!vault.trust.peers[userId] && (await observe(userId)) === null) return { trust: "unknown" };
     const peer = vault.trust.peers[userId];
     if (peer.changed) return { trust: "changed" };
@@ -84,6 +106,8 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
 
   const trustOf = (userId) => {
     if (userId === me.id) return "verified";
+    if (memChanged.has(userId)) return "changed";
+    if (unchecked.has(userId)) return "unchecked";
     const peer = vault.trust.peers[userId];
     if (!peer) return "unknown";
     if (peer.changed) return "changed";
@@ -255,7 +279,15 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
   const listRooms = async () => {
     const rooms = expect(await api("get", "/rooms"), 200);
     const out = [];
-    for (const entry of rooms) out.push(await describeRoom(entry));
+    for (const entry of rooms) {
+      // Uma sala que não deu para conferir não derruba a lista: aparece como
+      // "nome não verificado" (nameError), sem nome.
+      try {
+        out.push(await describeRoom(entry));
+      } catch {
+        out.push({ id: entry.id, name: null, nameVerified: false, nameTampered: false, nameError: true, namePayload: null, seenSeq: null, ownerId: entry.ownerId, retentionSeconds: entry.retentionSeconds ?? null, unread: Number(entry.nummessages ?? 0) });
+      }
+    }
     return out;
   };
 
@@ -290,7 +322,7 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
   // Aprovações explícitas (/approve), só nesta aba: valem para a entrega e
   // para a próxima rotação, e caem quando a pessoa deixa de ser membro.
   const approved = new Set();
-  const isKicked = (room, userId) => (state().kicked[room] ?? []).includes(userId);
+  const isKicked = (room, userId) => memKicked.has(`${room}:${userId}`) || (state().kicked[room] ?? []).includes(userId);
 
   const pendingOf = async (room) => {
     const res = await api("get", `/rooms/${room}/keys/pending`);
@@ -423,8 +455,16 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
   const kick = async (room, userId) => {
     const removed = expect(await api("delete", `/rooms/${room}/members/${userId}`), 200);
     approved.delete(`${room}:${userId}`);
-    await vault.updateState((s) => ({ ...s, kicked: { ...s.kicked, [room]: [...new Set([...(s.kicked[room] ?? []), userId])] } }));
-    return { invite: removed.invite };
+    // O servidor JÁ removeu: daqui para baixo nada pode esconder o convite
+    // novo. Se o cofre não gravar, o bloqueio vale na memória desta aba.
+    memKicked.add(`${room}:${userId}`);
+    try {
+      await vault.updateState((s) => ({ ...s, kicked: { ...s.kicked, [room]: [...new Set([...(s.kicked[room] ?? []), userId])] } }));
+      return { invite: removed.invite, saved: true };
+    } catch {
+      onNotice({ kind: "VAULT_WRITE_FAILED" });
+      return { invite: removed.invite, saved: false };
+    }
   };
 
   const leave = async (room) => {
@@ -496,8 +536,11 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
       await ensureRoomKey(packet.room);
       result = await receiver.accept(packet);
     }
-    if (result.status === "invalid" && packet.from !== me.id && (await observe(packet.from)) === "CHANGED") {
-      return { status: "untrusted", trust: "changed" };
+    if (result.status === "invalid" && packet.from !== me.id) {
+      // Conferir de novo o diretório é só para explicar MELHOR a recusa:
+      // se falhar, a mensagem continua "inválida" (nunca some).
+      const status = await observe(packet.from).catch(() => null);
+      if (status === "CHANGED") return { status: "untrusted", trust: "changed" };
     }
     return result;
   };
@@ -524,6 +567,8 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
     hasCurrentKey,
     currentVersion: (room) => currentVersion.get(room),
     rotationRequired: (room) => rotationRequired.get(room) === true,
+    // ROTATION_PENDING recebido: bloqueia o envio já, antes de reler o servidor.
+    markRotationRequired: (room) => rotationRequired.set(room, true),
     createRoom,
     joinRoom,
     listRooms,

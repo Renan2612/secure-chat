@@ -29,6 +29,7 @@ function Message({ item, author, nowMs }) {
   if (item.status === "invalid") body = <em className="marker">{t.invalidMessage}</em>;
   else if (item.status === "no_key") body = <em className="marker">{t.noKeyMessage}</em>;
   else if (item.status === "untrusted") body = <em className="marker">{t.untrustedMessage}</em>;
+  else if (item.status === "error") body = <em className="marker">{t.messageError}</em>;
   else body = <p className="text">{item.text}</p>;
   const state =
     item.status === "sending" ? t.sending : item.status === "failed" ? `${t.failed}: ${t.sendErrors[item.reason] ?? t.genericError}` : "";
@@ -54,6 +55,7 @@ export default function Chat({ client, ws, events, me, room, onRoomsChanged, onO
   const [messages, dispatch] = useReducer(messagesReducer, initialMessages);
   const [keyState, setKeyState] = useState("loading"); // loading | ok | waiting | removed
   const [notice, setNotice] = useState("");
+  const [alert, setAlert] = useState(""); // aviso de segurança (faixa vermelha)
   const [members, setMembers] = useState({});
   const [changed, setChanged] = useState([]); // membros com CHAVE ALTERADA
   const [pending, setPending] = useState([]); // aguardando aprovação
@@ -67,9 +69,16 @@ export default function Chat({ client, ws, events, me, room, onRoomsChanged, onO
   current.current = roomId;
   const hadKey = useRef(false);
 
+  // Uma falha ao conferir NÃO faz a mensagem sumir: vira o marcador
+  // "não pôde ser conferida", sem texto (revisão C7).
   const receive = useCallback(
     async (packet) => {
-      const result = await client.accept(packet);
+      let result;
+      try {
+        result = await client.accept(packet);
+      } catch {
+        result = { status: "error" };
+      }
       if (current.current === packet.room) dispatch({ type: "received", me: me.id, packet, result });
     },
     [client, me.id]
@@ -80,7 +89,9 @@ export default function Chat({ client, ws, events, me, room, onRoomsChanged, onO
     for (const m of list) if (m.id !== me.id) await client.observe(m.id).catch(() => null);
     if (current.current !== roomId) return;
     setMembers(Object.fromEntries(list.map((m) => [m.id, m.name])));
-    setChanged(list.filter((m) => m.id !== me.id && client.trustOf(m.id) === "changed"));
+    // CHAVE ALTERADA e "não conferido" (diretório ou cofre falharam) bloqueiam
+    // o envio: falha fechada (revisão C7).
+    setChanged(list.filter((m) => m.id !== me.id && ["changed", "unchecked"].includes(client.trustOf(m.id))).map((m) => ({ ...m, trust: client.trustOf(m.id) })));
   }, [client, roomId, me.id]);
 
   const distribute = useCallback(async () => {
@@ -90,8 +101,13 @@ export default function Chat({ client, ws, events, me, room, onRoomsChanged, onO
 
   const rotateIfNeeded = useCallback(async () => {
     if (!client.rotationRequired(roomId)) return;
-    const r = await client.autoRotate(roomId);
-    if (r.rotated) setNotice(r.left.length ? `${t.rotated(r.version)} ${t.rotatedLeft(r.left)}` : t.rotated(r.version));
+    try {
+      const r = await client.autoRotate(roomId);
+      if (r.rotated) setNotice(r.left.length ? `${t.rotated(r.version)} ${t.rotatedLeft(r.left)}` : t.rotated(r.version));
+      else if (r.reason === "stale") setNotice(t.rotateStale);
+    } catch {
+      setNotice(t.rotateFailed);
+    }
   }, [client, roomId]);
 
   const refreshKey = useCallback(async () => {
@@ -101,7 +117,8 @@ export default function Chat({ client, ws, events, me, room, onRoomsChanged, onO
     // legível; a lista é recarregada para decifrá-lo e conferir a assinatura.
     if (got.ok && !hadKey.current) onRoomsChanged();
     hadKey.current = got.ok;
-    setKeyState(got.ok ? "ok" : "waiting");
+    // Versão rebaixada: é ataque, não espera (o aviso vem pelo onNotice).
+    setKeyState(got.ok ? "ok" : got.reason === "VERSION_ROLLBACK" ? "refused" : "waiting");
     if (got.ok) {
       await rotateIfNeeded();
       await distribute();
@@ -120,6 +137,18 @@ export default function Chat({ client, ws, events, me, room, onRoomsChanged, onO
     [client, roomId, me.id]
   );
 
+  // Dono que ainda não assinou o nome (acabou de assumir) re-assina; sem um
+  // nome verificado para re-assinar, pede para renomear.
+  const resignIfOwner = useCallback(async () => {
+    if (room.ownerId !== me.id) return;
+    if (await client.ensureOwnerSignature(roomId)) {
+      setNotice(t.resigned);
+      onRoomsChanged();
+    } else if (room.name === null) {
+      setNotice(t.resignNoName);
+    }
+  }, [client, roomId, room.ownerId, room.name, me.id, onRoomsChanged]);
+
   // Troca de sala: zera a memória, busca a chave, inscreve e carrega.
   useEffect(() => {
     dispatch({ type: "reset" });
@@ -127,30 +156,46 @@ export default function Chat({ client, ws, events, me, room, onRoomsChanged, onO
     setNotice("");
     setPending([]);
     ws.subscribe(roomId);
+    // Passos independentes: a falha de um não esconde os outros.
+    const step = (fn, message = t.genericError) =>
+      fn().catch(() => {
+        if (current.current === roomId) setNotice(message);
+      });
     (async () => {
-      try {
-        if (await client.ensureOwnerSignature(roomId).catch(() => false)) onRoomsChanged();
-        await refreshMembers();
-        await refreshKey();
-        await loadHistory();
-      } catch {
-        if (current.current === roomId) setNotice(t.genericError);
-      }
+      await step(resignIfOwner, t.resignFailed);
+      await step(refreshMembers);
+      await step(refreshKey);
+      await step(() => loadHistory());
     })();
     return () => ws.unsubscribe(roomId);
-  }, [roomId, ws, client, refreshKey, refreshMembers, loadHistory, onRoomsChanged]);
+    // Só ao trocar de sala (as funções acima dependem só de roomId e client).
+  }, [roomId, ws, client]);
 
   // Eventos do /ws desta sala.
   useEffect(
     () =>
       events.on((event) => {
-        if (event.type === "deliver" && event.packet.room === roomId) receive(event.packet).catch(() => {});
+        if (event.type === "deliver" && event.packet.room === roomId) receive(event.packet);
+        if (event.type === "notice") {
+          const { notice } = event;
+          if (notice.kind === "KEY_CHANGED") refreshMembers().catch(() => {});
+          if (notice.room !== roomId) return;
+          const text = notice.kind === "ROTATED_BY_UNVERIFIED" ? t.notices.ROTATED_BY_UNVERIFIED(t.authorLabel(members[notice.userId], notice.userId)) : t.notices[notice.kind];
+          if (text) setAlert(text);
+          return;
+        }
+        if (event.type === "error" && event.packet.ref === `sub-${roomId}`) {
+          setKeyState("removed");
+          setNotice(t.subscribeRefused);
+          return;
+        }
         if (event.type !== "room" || event.packet.room !== roomId) return;
         const { kind } = event.packet;
         const soft = (p) => p.catch(() => setNotice(t.genericError));
         if (kind === "KEY_READY" || kind === "KEY_ROTATED") soft(refreshKey());
         if (kind === "KEY_PENDING") soft(distribute().then(refreshMembers));
         if (kind === "ROTATION_PENDING") {
+          client.markRotationRequired(roomId); // bloqueia o envio já
           setNotice(t.rotationPending);
           soft(refreshKey());
         }
@@ -159,11 +204,14 @@ export default function Chat({ client, ws, events, me, room, onRoomsChanged, onO
           setNotice(t.removed);
         }
         if (kind === "OWNER_CHANGED" && event.packet.ownerId === me.id) {
-          soft(client.ensureOwnerSignature(roomId).then((done) => done && setNotice(t.resigned)));
+          client
+            .ensureOwnerSignature(roomId)
+            .then((done) => setNotice(done ? t.resigned : t.resignNoName))
+            .catch(() => setNotice(t.resignFailed));
         }
         if (["RENAMED", "OWNER_CHANGED", "RETENTION_CHANGED", "KEY_ROTATED"].includes(kind)) onRoomsChanged();
       }),
-    [events, roomId, receive, refreshKey, refreshMembers, distribute, onRoomsChanged, client, me.id]
+    [events, roomId, receive, refreshKey, refreshMembers, distribute, onRoomsChanged, client, me.id, members]
   );
 
   // Relógio da tela: contagem regressiva e remoção das vencidas da memória.
@@ -199,7 +247,10 @@ export default function Chat({ client, ws, events, me, room, onRoomsChanged, onO
       dispatch({ type: "acked", me: me.id, cid, id: ack.id, ts: ack.ts });
     } catch (err) {
       dispatch({ type: "failed", me: me.id, cid, code: err.code ?? "ERROR" });
-      if (err.code === "ROTATION_PENDING") refreshKey().catch(() => {});
+      if (err.code === "ROTATION_PENDING") {
+        client.markRotationRequired(roomId);
+        refreshKey().catch(() => setNotice(t.rotateFailed));
+      }
     }
   };
 
@@ -219,9 +270,11 @@ export default function Chat({ client, ws, events, me, room, onRoomsChanged, onO
           </div>
         </header>
         {room.nameTampered && <p className="warning banner" role="alert">{t.nameTampered}</p>}
+        {alert && <p className="danger banner" role="alert">{alert}</p>}
+        {keyState === "refused" && !alert && <p className="danger banner" role="alert">{t.notices.VERSION_ROLLBACK}</p>}
         {changed.map((m) => (
           <p key={m.id} className="danger banner" role="alert">
-            {t.keyChangedBlock(t.authorLabel(m.name, m.id))}{" "}
+            {m.trust === "unchecked" ? t.keyUncheckedBlock(t.authorLabel(m.name, m.id)) : t.keyChangedBlock(t.authorLabel(m.name, m.id))}{" "}
             <button type="button" onClick={() => setPanel(true)}>{t.review}</button>
           </p>
         ))}

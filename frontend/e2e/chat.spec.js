@@ -41,6 +41,9 @@ test("fluxo completo com dois navegadores: sala, aprovação, mensagens, verific
   const bob = await bobCtx.newPage();
   watch(alice, logs.alice);
   watch(bob, logs.bob);
+  // Relógio controlável só na página do Bob (corre normalmente até ser
+  // adiantado): prova que a efêmera SAI da tela ao vencer.
+  await bob.clock.install();
 
   await signUp(alice, "Alice");
   await signUp(bob, "Bob");
@@ -105,6 +108,28 @@ test("fluxo completo com dois navegadores: sala, aprovação, mensagens, verific
   await alice.getByLabel("Escreva uma mensagem").fill("some em breve");
   await alice.getByRole("button", { name: "Enviar" }).click();
   await expect(bob.locator(".bubble", { hasText: "some em breve" }).getByText(/some em \d+ min \d{2} s/)).toBeVisible({ timeout: 15000 });
+  await bob.clock.fastForward("03:00");
+  await expect(bob.getByText("some em breve")).toHaveCount(0, { timeout: 10000 });
+  await expect(bob.getByText("olá da Bob")).toBeVisible(); // a não efêmera continua
+
+  // Recarregar: sessão retomada pelo /me, cofre desbloqueado, histórico
+  // decifrado no navegador; e o botão Bloquear tira as chaves da memória.
+  await alice.reload();
+  await expect(alice.getByRole("heading", { name: "Desbloquear o cofre" })).toBeVisible({ timeout: 15000 });
+  await alice.getByLabel("Senha de cifragem", { exact: true }).fill(PASS);
+  await alice.getByRole("button", { name: "Desbloquear" }).click();
+  await expect(alice.getByRole("heading", { name: ROOM })).toBeVisible({ timeout: 20000 });
+  await expect(alice.getByText("olá da Bob")).toBeVisible({ timeout: 15000 }); // veio do histórico
+  await alice.getByRole("button", { name: "Bloquear" }).click();
+  await expect(alice.getByRole("heading", { name: "Desbloquear o cofre" })).toBeVisible();
+  await expect(alice.getByText("olá da Bob")).toHaveCount(0);
+  await alice.getByLabel("Senha de cifragem", { exact: true }).fill("senha-errada-de-cifragem");
+  await alice.getByRole("button", { name: "Desbloquear" }).click();
+  await expect(alice.getByText(/Senha de cifragem errada/)).toBeVisible({ timeout: 15000 });
+  await alice.getByLabel("Senha de cifragem", { exact: true }).fill(PASS);
+  await alice.getByRole("button", { name: "Desbloquear" }).click();
+  await expect(alice.getByRole("heading", { name: ROOM })).toBeVisible({ timeout: 20000 });
+  await alice.getByRole("button", { name: "Membros e ajustes" }).click();
 
   // Nada em localStorage/sessionStorage; o IndexedDB não tem texto claro.
   for (const page of [alice, bob]) {

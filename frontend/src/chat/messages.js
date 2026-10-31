@@ -9,7 +9,7 @@
 // pela legítima de mesmo (remetente, cid).
 export const initialMessages = Object.freeze({ items: [] });
 
-const STATUS_OF = { invalid: "invalid", missing_key: "no_key", untrusted: "untrusted" };
+const STATUS_OF = { invalid: "invalid", missing_key: "no_key", untrusted: "untrusted", error: "error" };
 
 const sortItems = (items) =>
   [...items].sort((a, b) => {

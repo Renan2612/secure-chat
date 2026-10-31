@@ -11,7 +11,10 @@ const db = () => {
       const req = indexedDB.open(DB_NAME, 1);
       req.onupgradeneeded = () => req.result.createObjectStore(STORE);
       req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
+      req.onerror = () => {
+        opening = null; // a próxima chamada tenta abrir de novo (sem isso, tudo falharia até recarregar)
+        reject(req.error);
+      };
     });
   }
   return opening;

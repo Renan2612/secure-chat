@@ -9,7 +9,7 @@ import { t } from "../strings.js";
 const MAX_NAME = e2ee.MAX_ROOM_NAME_BYTES;
 const RETENTION_OPTIONS = [null, 60, 3600, 86400, 604800];
 const retentionLabel = (s) => (s === null ? t.retentionOff : t.ttlOptions[{ 60: "1min", 3600: "1h", 86400: "24h", 604800: "7d" }[s]] ?? `${s} s`);
-const TRUST_CHIP = { verified: "chip ok", unverified: "chip warn", changed: "chip danger", unknown: "chip" };
+const TRUST_CHIP = { verified: "chip ok", unverified: "chip warn", changed: "chip danger", unknown: "chip", unchecked: "chip danger" };
 
 function Safety({ client, member, onConfirmed }) {
   const [shown, setShown] = useState(null);
@@ -26,7 +26,13 @@ function Safety({ client, member, onConfirmed }) {
       <button
         type="button"
         className="primary"
-        onClick={() => client.confirm(member.id, shown.fingerprint).then(onConfirmed, () => setError(t.genericError))}
+        onClick={() =>
+          client.confirm(member.id, shown.fingerprint).then(onConfirmed, () => {
+            // A chave mudou entre a exibição e o clique: mostra o número NOVO.
+            setError(t.fingerprintChanged);
+            client.safety(member.id).then(setShown, () => setError(t.genericError));
+          })
+        }
       >
         {t.markVerified}
       </button>
@@ -100,10 +106,14 @@ export default function Members({ client, me, room, pending, onChanged, onNotice
                       onClick={() =>
                         window.confirm(t.confirmRemove(label(m))) &&
                         run(async () => {
-                          const { invite } = await client.kick(room.id, m.id);
+                          const { invite, saved } = await client.kick(room.id, m.id);
                           setSecret(`${t.removedInvite} ${invite}`);
-                          const r = await client.rotate(room.id);
-                          if (r.rotated) onNotice(r.left.length ? `${t.rotated(r.version)} ${t.rotatedLeft(r.left)}` : t.rotated(r.version));
+                          if (!saved) onNotice(t.kickNotSaved);
+                          // Rotaciona SEMPRE depois de remover (o removido tem a chave atual).
+                          const r = await client.rotate(room.id).catch(() => null);
+                          if (!r) onNotice(t.rotateFailed);
+                          else if (r.rotated) onNotice(r.left.length ? `${t.rotated(r.version)} ${t.rotatedLeft(r.left)}` : t.rotated(r.version));
+                          else if (r.reason === "stale") onNotice(t.rotateStale);
                         })
                       }
                     >
@@ -123,7 +133,7 @@ export default function Members({ client, me, room, pending, onChanged, onNotice
                 onConfirmed={() => {
                   setOpen(null);
                   load().catch(() => {});
-                  client.distribute(room.id).catch(() => {});
+                  client.distribute(room.id).catch(() => onNotice(t.genericError));
                 }}
               />
             )}

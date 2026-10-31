@@ -184,3 +184,11 @@ test("nada de localStorage, sessionStorage nem document.cookie no código do fro
     expect({ file, found: /localStorage|sessionStorage|document\.cookie/.test(readFileSync(file, "utf8")) }).toEqual({ file, found: false });
   }
 });
+
+test("revisão C7: bloquear no meio de uma gravação não devolve o estado à memória do cofre bloqueado", async () => {
+  const vault = await createVault({ userId: 1, passphrase: PASS, loginPassword: LOGIN });
+  const writing = vault.updateState((s) => ({ ...s, roomKeys: { 5: { 1: "AQID" } } }));
+  vault.lock();
+  await expect(writing).rejects.toBeInstanceOf(VaultError);
+  expect(vault.state).toBeNull();
+});
