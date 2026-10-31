@@ -56,4 +56,17 @@ Feito:
 - [x] C6 docs/07-frontend.md e atualizações em 00, 01, 03, 05, 06 e README
 
 Pendente:
-- [ ] C7 fechamento: review-pr (tests errors) e code-simplifier uma vez; npm test e audit nos dois; up --build; verify-tls, verify-e2ee, verify-frontend; stack derrubada; banco limpo
+- [x] C7 review-pr (tests, errors): 12 lacunas de teste (10 cobertas com teste que falha por mutação; histórico, bloqueio e efêmera saindo da tela no e2e) e 12 falhas silenciosas (corrigidas as de 1 a 10 e parte da 12: avisos de segurança na tela, falha fechada ao não conferir, mensagem nunca some, remoção sem perder o convite nem o bloqueio)
+- [x] C7 code-simplifier uma vez (mudanças locais e equivalentes)
+- [x] C7 npm test: backend 765 passaram, 1 pulado; frontend 86 passaram. npm audit --omit=dev: 0 vulnerabilidades nos dois
+- [x] C7 docker compose --env-file backend/.env up --build: saída 0
+- [x] C7 verify-tls.sh: saída 0
+- [x] C7 verify-e2ee.sh: saída 0. Antes falhou 1 controle positivo: o campo `text` do tshark corta em 240 caracteres e, com ids maiores, o ct ficava de fora; o script agora usa `websocket.payload.text`
+- [x] C7 verify-frontend.sh: saída 0 (e as 4 mutações saem com 1); npm run e2e: 1 passou
+- [x] Stack derrubada sem `-v`; banco sem dados de teste (0 em todas as tabelas)
+
+Pendente / para o grupo:
+- [ ] Achado 11 da revisão (baixo): `openRoomName` não diz POR QUE um nome não foi verificado (assinatura inválida, sem chave, dono não confiável); a exibição é segura, mas o primeiro contato com uma sala forjada não gera alerta. Mudaria o núcleo `shared/e2ee`
+- [ ] verify-frontend.sh: um erro do próprio grep (código 2) seria lido como "nada achado"; hoje a prova "dist tem o index.html e os assets" cobre o caso de arquivo ausente
+- [ ] Lista de membros e cargo de dono assinados (o servidor ainda pode afirmar quem é o dono) — limite em docs/06 §4.6
+- [ ] Teste manual no Firefox feito pelo usuário: aguardando achados, se houver
