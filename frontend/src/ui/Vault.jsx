@@ -73,6 +73,8 @@ export default function Vault({ user, loginPassword, notice, onUnlocked, onLogou
               <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} required minLength={10} autoComplete="off" />
             </label>
             <p className="muted small">{t.passphraseRule}</p>
+            {/* Acréscimo (b): a comparação só é possível na mesma carga de página do login. */}
+            {loginPassword === null && <p className="warning small" role="note">{t.passphraseUnchecked}</p>}
             <label className="check">
               <input type="checkbox" checked={understood} onChange={(e) => setUnderstood(e.target.checked)} />
               {t.vaultUnderstood}

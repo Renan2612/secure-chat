@@ -46,6 +46,7 @@ export default function App() {
   const [selected, setSelected] = useState(roomFromHash());
   const [status, setStatus] = useState("connecting");
   const [notice, setNotice] = useState("");
+  const [drawer, setDrawer] = useState(false); // celular: lateral como gaveta
 
   useEffect(() => {
     api("get", "/me").then(
@@ -135,7 +136,16 @@ export default function App() {
 
   const select = (roomId) => {
     window.location.hash = `#/sala/${roomId}`;
+    setDrawer(false);
   };
+
+  // Esc fecha a gaveta das salas (teclado).
+  useEffect(() => {
+    if (!drawer) return undefined;
+    const onKey = (e) => e.key === "Escape" && setDrawer(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [drawer]);
 
   if (user === undefined) return <main className="center"><p>{t.loading}</p></main>;
   if (user === null) {
@@ -154,8 +164,9 @@ export default function App() {
   }
   const room = rooms.find((r) => r.id === selected);
   return (
-    <div className="layout">
-      <aside className="side">
+    <div className={drawer ? "layout drawer-open" : "layout"}>
+      <aside className="side" id="rooms-drawer">
+        <button type="button" className="mobile-only" onClick={() => setDrawer(false)}>{t.closeRooms}</button>
         <div className="whoami">
           <strong>{user.name}</strong>
           <span className={status === "ready" ? "chip ok" : "chip warn"} role="status">{t.status[status] ?? status}</span>
@@ -167,11 +178,24 @@ export default function App() {
         </div>
       </aside>
       <main className="main">
+        {status === "reconnecting" && <p className="warning banner" role="status">{t.reconnectingBanner}</p>}
         {notice && <p className="warning banner" role="status">{notice}</p>}
         {room ? (
-          <Chat key={room.id} client={session.client} ws={session.ws} events={session.events} me={user} room={room} onRoomsChanged={refreshRooms} />
+          <Chat
+            key={room.id}
+            client={session.client}
+            ws={session.ws}
+            events={session.events}
+            me={user}
+            room={room}
+            onRoomsChanged={refreshRooms}
+            onOpenRooms={() => setDrawer(true)}
+          />
         ) : (
-          <p className="center muted">{t.selectRoom}</p>
+          <div className="center">
+            <button type="button" className="mobile-only" onClick={() => setDrawer(true)}>{t.openRooms}</button>
+            <p className="muted">{t.selectRoom}</p>
+          </div>
         )}
       </main>
     </div>
