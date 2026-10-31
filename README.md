@@ -1,5 +1,7 @@
 # Secure Chat — Projeto de Redes
 
+<img src="docs/img/logo-secure-chat.png" alt="Secure Chat — cadeado estilizado, logo do projeto" width="120" />
+
 Chat em tempo real com foco em segurança e privacidade, desenvolvido para a
 disciplina de Redes (Engenharia de Software). O backend parte de um fork
 saneado de [asafebxd/MessageWebApp](https://github.com/asafebxd/MessageWebApp)
@@ -18,7 +20,7 @@ saneado de [asafebxd/MessageWebApp](https://github.com/asafebxd/MessageWebApp)
 - [x] **Etapa 4b-2** — E2EE: composição da sala (sair, remover, transferir o dono, trocar a chave) ([`docs/05-e2ee.md`](docs/05-e2ee.md) §11)
 - [x] **Etapa 5, Parte A** — Privacidade: mensagens efêmeras e retenção, nome da sala cifrado e assinado pelo dono, CSRF, banimentos, logs e metadados ([`docs/06-privacidade.md`](docs/06-privacidade.md), [`docs/05-e2ee.md`](docs/05-e2ee.md) §12)
 - [x] **Etapa 5, Partes B e C** — Frontend com E2EE no navegador ([`docs/07-frontend.md`](docs/07-frontend.md); andamento em [`docs/status-5.md`](docs/status-5.md))
-- [ ] Etapa 6 — Infraestrutura e validação
+- [x] **Etapa 6** — Validação comparativa (matriz de ataques), endurecimento e implantação ([`docs/09-validacao-comparativa.md`](docs/09-validacao-comparativa.md), [`docs/08-implantacao.md`](docs/08-implantacao.md))
 - [ ] Etapa 7 — Entrega
 
 > **Importante**: desde a Etapa 4a, tudo passa por uma **origem única
@@ -42,14 +44,22 @@ secure-chat/
 │   ├── 04-tls-e-proxy.md         # Etapa 4a — TLS, proxy e origem única
 │   ├── 05-e2ee.md                # Etapas 4b-1, 4b-2 e 5 — criptografia ponta a ponta e troca da chave
 │   ├── 06-privacidade.md         # Etapa 5 — efêmeras, nome cifrado, CSRF, metadados e logs
-│   └── 07-frontend.md            # Etapa 5 — frontend: arquitetura, chaves, CSP, limites
+│   ├── 07-frontend.md            # Etapa 5 — frontend: arquitetura, chaves, CSP, limites
+│   ├── 08-implantacao.md         # Etapa 6 — produção, endurecimento, firewall, backups
+│   └── 09-validacao-comparativa.md # Etapa 6 — matriz "antes e depois" e limitações
 ├── proxy/
-│   └── Caddyfile                 # proxy reverso, política TLS, CSP do frontend
+│   ├── Caddyfile                 # proxy reverso, política TLS, CSP do frontend
+│   └── Caddyfile.prod            # perfil de produção (domínio + Let's Encrypt)
 ├── scripts/
 │   ├── export-ca.sh              # exporta a raiz da CA local do Caddy
 │   ├── verify-tls.sh             # provas da Etapa 4a contra a stack no ar
 │   ├── verify-e2ee.sh            # provas das Etapas 4b-1, 4b-2 e 5 (E2EE, rotação, efêmeras, nome, logs)
-│   └── verify-frontend.sh        # provas do frontend (build, dist, src, dependências, CSP)
+│   ├── verify-frontend.sh        # provas do frontend (build, dist, src, dependências, CSP)
+│   ├── verify-hardening.sh       # Etapa 6 — endurecimento dos contêineres e portas
+│   └── compare/                  # Etapa 6 — stack do original e matriz de ataques
+├── attacks/                       # Etapa 6 — cliente de ataque (socket.io-client, ws)
+├── deploy/                        # Etapa 6 — modelos: firewall, WireGuard, checklist (NÃO aplicados)
+├── docker-compose.prod.yml        # Etapa 6 — perfil de produção (override)
 ├── shared/e2ee/                   # núcleo E2EE isomórfico (Node, ws-client e navegador)
 ├── frontend/                      # React + Vite: src/, tests/ (vitest), e2e/ (Playwright), Dockerfile
 ├── backend/
@@ -179,6 +189,23 @@ npm run e2e                              # ponta a ponta com navegador real
 cd .. && scripts/verify-frontend.sh      # build, dist, src, dependências, CSP
 ```
 
+### Provas contra a stack no ar (Etapa 6)
+
+Com a stack final de pé (`docker compose --env-file backend/.env up --build -d`)
+e o grupo `wireshark` ativo na sessão (para o `dumpcap`, sem sudo):
+
+```bash
+scripts/verify-tls.sh                 # TLS, origem única, cabeçalhos
+scripts/verify-e2ee.sh                # E2EE, rotação, efêmeras, nome, logs
+scripts/verify-frontend.sh            # frontend: build, dist, CSP servida
+scripts/verify-hardening.sh           # endurecimento dos contêineres e portas
+scripts/compare/attack-matrix.sh      # matriz "antes e depois" (sobe e derruba o original)
+```
+
+A `attack-matrix.sh` só mira `127.0.0.1`/`localhost`; grava
+`evidencias/etapa6/matriz.{md,json}` (não versionadas) e sai com 1 se
+qualquer defesa da versão final falhar.
+
 ## Atribuição
 
 Backend baseado em [asafebxd/MessageWebApp](https://github.com/asafebxd/MessageWebApp)
@@ -190,6 +217,9 @@ conforme o modelo de ameaças e o roteiro de etapas da disciplina.
 - [Modelo de ameaças](docs/00-modelo-ameacas.md)
 - [Linha de base de segurança (antes/depois)](docs/01-baseline-seguranca.md)
 - [Criptografia ponta a ponta (Etapas 4b-1, 4b-2 e 5)](docs/05-e2ee.md)
+- [Implantação e endurecimento (Etapa 6)](docs/08-implantacao.md)
+- [Validação comparativa — matriz "antes e depois" (Etapa 6)](docs/09-validacao-comparativa.md)
+- [Frontend com E2EE (Etapa 5)](docs/07-frontend.md)
 - [Privacidade (Etapa 5)](docs/06-privacidade.md) — **o schema mudou de novo** (envelope v2, nome cifrado): recrie o banco. Só o volume do banco, mantendo a CA local: `docker compose --env-file backend/.env down && docker volume rm secure-chat_db_data`; ou tudo (`down -v`, que também apaga a CA: depois `scripts/export-ca.sh` e importe de novo)
 - [Autenticação e autorização (Etapa 2)](docs/02-autenticacao-autorizacao.md)
 - [Protocolo de tempo real (Etapa 3)](docs/03-protocolo.md)

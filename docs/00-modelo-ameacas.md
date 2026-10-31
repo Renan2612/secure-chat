@@ -109,6 +109,24 @@ vez de prometer algo que não entregamos.
 4. **Admin do servidor lendo o banco**: mostrar o conteúdo da tabela
    `messages` antes (texto claro) e depois (ciphertext) da Etapa 4.
 
+### O que cada controle cobre (demonstrado na Etapa 6)
+
+Os quatro casos acima foram demonstrados na matriz comparativa
+([`09-validacao-comparativa.md`](09-validacao-comparativa.md), 13/13 defesas
+da versão final confirmadas). Mapa controle → ameaça:
+
+| Controle | Ameaça que cobre | Não cobre |
+|---|---|---|
+| TLS no proxy (Etapa 4a) | rede escutando entre cliente e servidor | o trecho proxy→backend (TLS termina no proxy); metadados |
+| E2EE: envelope cifrado + assinado (4b) | servidor/admin do banco lendo ou forjando o conteúdo | quem é o dono (afirmado pelo servidor); metadados; XSS com o cofre aberto |
+| Sessão no servidor + `requireAuth`/`requireRoomMember` (2, 3) | passar-se por outro, ler sala alheia (IDOR), socket anônimo | nada além da autorização por sala e identidade |
+| Convite como hash + banimento (2, 4b-2) | entrar em sala sem convite; o removido voltar | — |
+| CSRF (Origin + JSON) e CSWSH (Origin no upgrade) (5) | ações forjadas de outro site; socket de outro site | — |
+| Rate limit no login (2) | força bruta de senha | força bruta distribuída por muitos IPs |
+| Cookie `sid` Secure/HttpOnly/SameSite (2, 4a) | roubo de sessão por JS ou por rede; CSRF via cookie | — |
+| Efêmeras + nome cifrado + logs sem dados (5) | retenção excessiva; nome da sala e metadados no banco/log | cópias/capturas de tela; relógio do cliente |
+| Endurecimento dos contêineres + firewall (6) | escapar do contêiner; alcançar backend/banco pelo host | o firewall de `deploy/` não foi aplicado nesta entrega |
+
 ## 7. O que precisa ser autoral (combinar com o professor)
 
 Pontos a confirmar com o professor antes de seguir:

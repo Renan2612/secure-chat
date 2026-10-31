@@ -125,6 +125,25 @@ chaves públicas antigas no trust store e o frontend ([`05-e2ee.md`](05-e2ee.md)
 | M | Logs do Docker sem rotação; Postgres podia registrar valores; horários ao milissegundo | `json-file` 3 × 1 MB; Postgres sem comandos, conexões nem DETAIL; `dt_message`/`ts` só com o minuto; inventário em `docs/06-privacidade.md` | `backend/tests/privacyLogs.test.js`, `scripts/verify-e2ee.sh` (logs dos contêineres) |
 | N | Banimentos sem gestão | `GET /rooms/:id/bans` e `DELETE /rooms/:id/bans/:userId` (só o dono) | `backend/tests/roomSettings.test.js` |
 
+## Resolvido na Etapa 6 — validação comparativa e endurecimento
+
+Não introduz vulnerabilidade nova: **comprova** que as correções A–N
+resistem a ataques e **endurece** a implantação. A prova central é a matriz
+"antes e depois" (original propositalmente vulnerável × stack final), em
+[`09-validacao-comparativa.md`](09-validacao-comparativa.md).
+
+| # | Item | O que foi feito | Prova |
+|---|---|---|---|
+| O | Faltava uma prova comparativa de que as defesas funcionam | Matriz de 11 ataques contra o original e a final, com asserção por alvo e controle positivo; 13/13 defesas da final confirmadas | `scripts/compare/attack-matrix.sh` (saída 1 se uma defesa da final falhar); mutações `skip-defense` e `nonlocal-target` |
+| P | Contêineres sem endurecimento | Raiz somente leitura + tmpfs, `cap_drop ALL` (proxy só NET_BIND_SERVICE; db só o mínimo para baixar a postgres), `no-new-privileges`, backend como usuário `node`, limites de memória/CPU/PIDs | `scripts/verify-hardening.sh` (mutação `publish-db` sai com 1) |
+| Q | Sem perfil de produção nem modelos de implantação | `docker-compose.prod.yml` + `Caddyfile.prod` (Let's Encrypt por domínio), `deploy/` (firewall nftables/ufw, WireGuard só placeholders, checklist de host), CI sem segredos | `caddy validate` + `docker compose config`; `docs/08-implantacao.md` |
+| R | Flags SÓ DE TESTE poderiam vazar para produção | Só valem em `NODE_ENV=test`; o backend recusa subir em produção com qualquer uma definida | `backend/tests/testFlags.test.js` |
+
+Limites honestos desta etapa (sem solução nesta entrega): o firewall e o
+WireGuard de `deploy/` são modelos **nunca aplicados** (sem host/sudo); o
+Let's Encrypt só foi validado por sintaxe; as GitHub Actions estão fixadas
+por **tag**, não por SHA. Detalhes em [`08-implantacao.md`](08-implantacao.md).
+
 ## Pendente — propositalmente NÃO corrigido ainda
 
 Estes problemas são o núcleo das próximas etapas e foram deixados como estão
