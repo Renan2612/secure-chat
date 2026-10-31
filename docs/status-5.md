@@ -43,9 +43,17 @@ Feito:
 - [x] Suíte completa: backend 765 passaram, 1 pulado; frontend 61 passaram
 - [x] Stack derrubada sem `-v`; banco sem dados de teste
 
-Pendente (Parte C):
-- [ ] As telas ainda não rodaram num navegador real: o Playwright pede o Chrome em /opt (sudo). Tentar no C5; senão, checklist manual
-- [ ] C4: o bundle tem URLs só como texto (namespaces XML/SVG e o endereço das mensagens de erro do React): a verificação "dist sem URL externa" precisa tratá-las
-- [ ] Sem a senha de login (sessão retomada por /me), a criação do cofre não consegue recusar senha de cifragem igual à de login
-- [ ] Rollback dos três registros do cofre juntos não é detectado (limite, como no keystore do Node) — documentar no docs/07
-- [ ] Parte C (frontend completo, revisão, code-simplifier, verificação final)
+Itens da Parte B resolvidos na Parte C: navegador real (C5), URLs no bundle (C4), senha igual à de login (aviso, docs/07), rollback do cofre (docs/07).
+
+## Parte C — frontend completo
+
+Feito:
+- [x] C1 cliente: número de segurança (12 × 5) e confirmação só da chave exibida; entrega automática só a verificados, aprovação explícita para os demais, CHAVE ALTERADA e removidos nunca; rotação com chave nova e o mesmo nome assinado (ou null); remover, sair, transferir, convite, banimentos, renomear, re-assinatura do novo dono
+- [x] C1–C3 interface: painel de membros e ajustes, bloqueio visível de CHAVE ALTERADA, rotação automática no ROTATION_PENDING, sala travada, removido, reconectando; C2 seletor de expiração limitado pela retenção e contagem regressiva; C3 gaveta no celular (390 px), Esc, foco visível, aria-live, textos PT-BR num arquivo
+- [x] Acréscimo (b): senha de cifragem igual à de login recusada na mesma carga de página; depois de recarregar, aviso claro (limite em docs/07 §7)
+- [x] C4 `scripts/verify-frontend.sh` (o que o navegador busca, tolerando textos de URL; nada inline; src sem HTML montado; versões fixas; lockfile; audit; CSP servida) e 4 mutações que saem com 1 (inline-script, external-script, inner-html, unpinned-dep)
+- [x] C5 vitest (cofre, paridade, cliente, membros, /ws, redutor) e ponta a ponta com Chromium real (Playwright, ~/.cache, sem sudo) contra a stack; achou e corrigiu o nome da sala que não aparecia ao receber a chave
+- [x] C6 docs/07-frontend.md e atualizações em 00, 01, 03, 05, 06 e README
+
+Pendente:
+- [ ] C7 fechamento: review-pr (tests errors) e code-simplifier uma vez; npm test e audit nos dois; up --build; verify-tls, verify-e2ee, verify-frontend; stack derrubada; banco limpo
