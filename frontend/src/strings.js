@@ -1,6 +1,7 @@
 // Todos os textos da interface, em PT-BR, num lugar só.
 export const t = {
   appName: "Secure Chat",
+  logoAlt: "Secure Chat — cadeado estilizado, logo do projeto",
   loading: "Carregando…",
   genericError: "Algo deu errado. Tente de novo.",
   // autenticação

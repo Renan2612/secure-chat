@@ -219,3 +219,14 @@ h3 { font-size: 0.95rem; margin: 12px 0 6px; }
 @media (prefers-reduced-motion: reduce) {
   .side { transition: none; }
 }
+
+/* Logo nas telas de entrada (Etapa 6, C). Tamanho pela folha de estilo,
+   nunca inline (a CSP proíbe style=""). O arquivo é servido da própria
+   origem (/logo-secure-chat.png). */
+.logo {
+  display: block;
+  width: 72px;
+  height: 72px;
+  margin: 0 auto 4px;
+  object-fit: contain;
+}

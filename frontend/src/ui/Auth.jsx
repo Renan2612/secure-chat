@@ -43,6 +43,7 @@ export default function Auth({ api, onLoggedIn }) {
   return (
     <main className="center">
       <form className="card" onSubmit={submit}>
+        <img className="logo" src="/logo-secure-chat.png" alt={t.logoAlt} />
         <h1>{register ? t.registerTitle : t.loginTitle}</h1>
         {register && (
           <label>

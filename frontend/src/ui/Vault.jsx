@@ -58,6 +58,7 @@ export default function Vault({ user, loginPassword, notice, onUnlocked, onLogou
   return (
     <main className="center">
       <form className="card" onSubmit={submit}>
+        <img className="logo" src="/logo-secure-chat.png" alt={t.logoAlt} />
         <h1>{exists ? t.vaultUnlockTitle : t.vaultCreateTitle}</h1>
         {notice && <p className="warning" role="status">{notice}</p>}
         <p className="muted">{t.vaultExplain}</p>
