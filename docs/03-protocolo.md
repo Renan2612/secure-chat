@@ -471,6 +471,10 @@ Ameaças **não** cobertas nesta etapa estão na §9.
 
 ## 10. Mudanças de contrato para o frontend
 
+> Desde a Etapa 5, o frontend existe (`frontend/`, [`07-frontend.md`](07-frontend.md))
+> e segue este contrato: `/ws` em `wss://` na mesma origem, `cid` aleatório
+> (`crypto.randomUUID`), reenvio pelo mesmo `cid` na reconexão.
+
 Complementa a §5 de [`02-autenticacao-autorizacao.md`](02-autenticacao-autorizacao.md).
 
 | Antes (Etapa 2) | Agora (Etapa 3) |

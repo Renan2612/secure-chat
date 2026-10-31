@@ -143,7 +143,7 @@ e 4a estão nas seções anteriores.
 | F | Mensagens armazenadas em texto claro no Postgres — o admin do banco lê tudo | `database/migrations.sql` | ✅ **Resolvido na Etapa 4b-1** |
 | G | Sem TLS — tráfego HTTP/WS em texto claro | infraestrutura | ✅ **Resolvido na Etapa 4a** |
 | H | Sessão assinada no cliente (cookie-session) sem possibilidade de revogação centralizada | `server.js` | ✅ **Resolvido na Etapa 2** |
-| I | Frontend React ainda não auditado | `frontend/` | Ainda pendente (fora do escopo das Etapas 3 e 4a) |
+| I | Frontend React ainda não auditado | `frontend/` | ✅ **Etapa 5**: frontend novo (React + Vite) com E2EE no navegador, CSP restritiva, render só em texto — [`07-frontend.md`](07-frontend.md); provas: `scripts/verify-frontend.sh`, `frontend/e2e/chat.spec.js` |
 
 ## Vulnerabilidades de dependências (`npm audit`)
 

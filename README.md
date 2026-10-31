@@ -17,7 +17,7 @@ saneado de [asafebxd/MessageWebApp](https://github.com/asafebxd/MessageWebApp)
 - [x] **Etapa 4b-1** — Criptografia ponta a ponta, núcleo ([`docs/05-e2ee.md`](docs/05-e2ee.md))
 - [x] **Etapa 4b-2** — E2EE: composição da sala (sair, remover, transferir o dono, trocar a chave) ([`docs/05-e2ee.md`](docs/05-e2ee.md) §11)
 - [x] **Etapa 5, Parte A** — Privacidade: mensagens efêmeras e retenção, nome da sala cifrado e assinado pelo dono, CSRF, banimentos, logs e metadados ([`docs/06-privacidade.md`](docs/06-privacidade.md), [`docs/05-e2ee.md`](docs/05-e2ee.md) §12)
-- [ ] Etapa 5, Partes B e C — Frontend com E2EE (plano em [`docs/plano-etapa5.md`](docs/plano-etapa5.md); andamento em [`docs/status-5.md`](docs/status-5.md))
+- [x] **Etapa 5, Partes B e C** — Frontend com E2EE no navegador ([`docs/07-frontend.md`](docs/07-frontend.md); andamento em [`docs/status-5.md`](docs/status-5.md))
 - [ ] Etapa 6 — Infraestrutura e validação
 - [ ] Etapa 7 — Entrega
 
@@ -40,14 +40,18 @@ secure-chat/
 │   ├── 02-autenticacao-autorizacao.md # Etapa 2
 │   ├── 03-protocolo.md           # Etapa 3 — especificação do protocolo
 │   ├── 04-tls-e-proxy.md         # Etapa 4a — TLS, proxy e origem única
-│   └── 05-e2ee.md                # Etapas 4b-1 e 4b-2 — criptografia ponta a ponta e troca da chave
+│   ├── 05-e2ee.md                # Etapas 4b-1, 4b-2 e 5 — criptografia ponta a ponta e troca da chave
+│   ├── 06-privacidade.md         # Etapa 5 — efêmeras, nome cifrado, CSRF, metadados e logs
+│   └── 07-frontend.md            # Etapa 5 — frontend: arquitetura, chaves, CSP, limites
 ├── proxy/
-│   ├── Caddyfile                 # proxy reverso + política TLS
-│   └── site/index.html           # página estática provisória (/)
+│   └── Caddyfile                 # proxy reverso, política TLS, CSP do frontend
 ├── scripts/
 │   ├── export-ca.sh              # exporta a raiz da CA local do Caddy
 │   ├── verify-tls.sh             # provas da Etapa 4a contra a stack no ar
-│   └── verify-e2ee.sh            # provas das Etapas 4b-1 e 4b-2 (E2EE, remoção e rotação) contra a stack no ar
+│   ├── verify-e2ee.sh            # provas das Etapas 4b-1, 4b-2 e 5 (E2EE, rotação, efêmeras, nome, logs)
+│   └── verify-frontend.sh        # provas do frontend (build, dist, src, dependências, CSP)
+├── shared/e2ee/                   # núcleo E2EE isomórfico (Node, ws-client e navegador)
+├── frontend/                      # React + Vite: src/, tests/ (vitest), e2e/ (Playwright), Dockerfile
 ├── backend/
 │   ├── server.js                  # ponto de entrada (sobe o createServer)
 │   ├── createServer.js            # HTTP (Express) + tempo real (/ws), mesma sessão
@@ -72,9 +76,17 @@ secure-chat/
 └── .gitignore
 ```
 
-O frontend React do projeto original ainda não foi incorporado nem
-auditado; ao incorporá-lo, ele precisa seguir o contrato da
-[Etapa 3](docs/03-protocolo.md#10-mudanças-de-contrato-para-o-frontend).
+O frontend React do projeto original não foi reaproveitado: o `frontend/`
+é novo (Etapa 5) e segue o contrato da
+[Etapa 3](docs/03-protocolo.md#10-mudanças-de-contrato-para-o-frontend) e as
+regras de E2EE do `ws-client`.
+
+**Como abrir no navegador:** suba a stack (abaixo), exporte a CA local com
+`scripts/export-ca.sh certs/caddy-local-root.crt`, importe esse certificado
+no navegador como autoridade (passo a passo em
+[`docs/07-frontend.md`](docs/07-frontend.md) §1) e abra `https://localhost`.
+Crie a conta, depois o cofre (senha de cifragem DIFERENTE da de login; não
+há recuperação).
 
 ## Como rodar
 
@@ -160,6 +172,11 @@ protocolo) contra um Postgres de teste separado:
 docker compose -f docker-compose.test.yml up -d --wait
 cd backend
 npm test
+cd ../frontend && npm ci && npm test     # vitest: cofre, paridade, cliente, /ws
+# com a stack no ar:
+npx playwright install chromium          # uma vez, sem sudo (~/.cache)
+npm run e2e                              # ponta a ponta com navegador real
+cd .. && scripts/verify-frontend.sh      # build, dist, src, dependências, CSP
 ```
 
 ## Atribuição

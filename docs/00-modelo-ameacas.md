@@ -46,6 +46,17 @@ conteúdo das conversas, e a rede não deve expor nada em trânsito.
 | **Metadados (quem fala com quem, quando)** | Parcialmente — ver limitação abaixo | Minimizar logs, reduzir o que fica em claro nas tabelas. |
 | **Pertencimento às salas** | Outro usuário malicioso | Toda rota de leitura/escrita verifica se o usuário é membro da sala (Etapa 2). |
 
+### Situação na Etapa 5 (privacidade e frontend)
+
+A [Etapa 5](06-privacidade.md) acrescenta mensagens efêmeras com expiração
+assinada, retenção por sala, o nome da sala cifrado e assinado pelo dono,
+CSRF e redução de metadados; o [frontend](07-frontend.md) leva a E2EE ao
+navegador (cofre selado no IndexedDB, chaves privadas não extraíveis, CSP
+restritiva). **Ator novo no modelo:** o código do cliente web vem do
+servidor — um servidor malicioso pode servir JavaScript que lê o que o
+usuário decifra; XSS e extensões do navegador também comprometem a E2EE
+enquanto o cofre está aberto ([`07-frontend.md`](07-frontend.md) §7).
+
 ### Situação na Etapa 4b-1 (E2EE, núcleo)
 
 Com a [Etapa 4b-1](05-e2ee.md), estes ativos passam a estar protegidos
