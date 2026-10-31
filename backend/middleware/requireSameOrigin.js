@@ -36,7 +36,9 @@ const requireSameOrigin = (allowedOrigin = process.env.CLIENT_URL) => {
     }
     const declared = req.get("Content-Type");
     const hasBody = Number(req.get("Content-Length") ?? 0) > 0 || req.get("Transfer-Encoding") !== undefined;
-    if ((hasBody || declared !== undefined) && !(declared !== undefined && isJson(declared))) {
+    // Sem Content-Type só passa sem corpo; com ele, tem de ser JSON.
+    const refused = declared === undefined ? hasBody : !isJson(declared);
+    if (refused) {
       return res.status(415).json({ message: "Use Content-Type: application/json" });
     }
     return next();

@@ -19,6 +19,13 @@ const sortItems = (items) =>
     return a.id - b.id;
   });
 
+// Status de uma entrega aceita: a própria mensagem fica "confirmed" (ou
+// mantém o "failed"); a de outro membro é "ok".
+const acceptedStatus = (item) => {
+  if (!item?.mine) return "ok";
+  return item.status === "failed" ? "failed" : "confirmed";
+};
+
 const upsert = (state, key, make) => {
   const existing = state.items.find((i) => i.key === key);
   const next = make(existing);
@@ -53,7 +60,7 @@ export const messagesReducer = (state, action) => {
       if (result.status === "ok") {
         return upsert(state, key, (item) => ({
           ...base,
-          status: item?.mine && item.status !== "failed" ? "confirmed" : item?.mine ? item.status : "ok",
+          status: acceptedStatus(item),
           text: result.text,
           verified: result.verified,
           exp: result.exp,

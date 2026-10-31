@@ -24,15 +24,25 @@ const remaining = (seconds) => {
   return `${Math.floor(s / 86400)} d ${Math.floor((s % 86400) / 3600)} h`;
 };
 
+// Status sem texto: só o marcador, nunca conteúdo.
+const MARKERS = { invalid: t.invalidMessage, no_key: t.noKeyMessage, untrusted: t.untrustedMessage, error: t.messageError };
+
+const sendState = (item) => {
+  if (item.status === "sending") return t.sending;
+  if (item.status === "failed") return `${t.failed}: ${t.sendErrors[item.reason] ?? t.genericError}`;
+  return "";
+};
+
+// Versão rebaixada: é ataque, não espera (o aviso vem pelo onNotice).
+const keyStateOf = (got) => {
+  if (got.ok) return "ok";
+  return got.reason === "VERSION_ROLLBACK" ? "refused" : "waiting";
+};
+
 function Message({ item, author, nowMs }) {
-  let body;
-  if (item.status === "invalid") body = <em className="marker">{t.invalidMessage}</em>;
-  else if (item.status === "no_key") body = <em className="marker">{t.noKeyMessage}</em>;
-  else if (item.status === "untrusted") body = <em className="marker">{t.untrustedMessage}</em>;
-  else if (item.status === "error") body = <em className="marker">{t.messageError}</em>;
-  else body = <p className="text">{item.text}</p>;
-  const state =
-    item.status === "sending" ? t.sending : item.status === "failed" ? `${t.failed}: ${t.sendErrors[item.reason] ?? t.genericError}` : "";
+  const marker = MARKERS[item.status];
+  const body = marker ? <em className="marker">{marker}</em> : <p className="text">{item.text}</p>;
+  const state = sendState(item);
   return (
     <li className={item.mine ? "bubble mine" : "bubble"}>
       <div className="meta">
@@ -91,7 +101,12 @@ export default function Chat({ client, ws, events, me, room, onRoomsChanged, onO
     setMembers(Object.fromEntries(list.map((m) => [m.id, m.name])));
     // CHAVE ALTERADA e "não conferido" (diretório ou cofre falharam) bloqueiam
     // o envio: falha fechada (revisão C7).
-    setChanged(list.filter((m) => m.id !== me.id && ["changed", "unchecked"].includes(client.trustOf(m.id))).map((m) => ({ ...m, trust: client.trustOf(m.id) })));
+    setChanged(
+      list
+        .filter((m) => m.id !== me.id)
+        .map((m) => ({ ...m, trust: client.trustOf(m.id) }))
+        .filter((m) => m.trust === "changed" || m.trust === "unchecked")
+    );
   }, [client, roomId, me.id]);
 
   const distribute = useCallback(async () => {
@@ -117,8 +132,7 @@ export default function Chat({ client, ws, events, me, room, onRoomsChanged, onO
     // legível; a lista é recarregada para decifrá-lo e conferir a assinatura.
     if (got.ok && !hadKey.current) onRoomsChanged();
     hadKey.current = got.ok;
-    // Versão rebaixada: é ataque, não espera (o aviso vem pelo onNotice).
-    setKeyState(got.ok ? "ok" : got.reason === "VERSION_ROLLBACK" ? "refused" : "waiting");
+    setKeyState(keyStateOf(got));
     if (got.ok) {
       await rotateIfNeeded();
       await distribute();

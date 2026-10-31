@@ -246,6 +246,14 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
     return TRUSTED.has(owner.trust) ? owner.ecdsaPub : null;
   };
 
+  // Campos de uma entrada do GET /rooms que não dependem do nome.
+  const entryFields = (entry) => ({
+    id: entry.id,
+    ownerId: entry.ownerId,
+    retentionSeconds: entry.retentionSeconds ?? null,
+    unread: Number(entry.nummessages ?? 0),
+  });
+
   // Nome a exibir de uma entrada do GET /rooms (null → "Sala #id (nome não
   // verificado)"); o maior seq verificado vai para o cofre.
   const describeRoom = async (entry) => {
@@ -264,15 +272,12 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
       );
     }
     return {
-      id: entry.id,
+      ...entryFields(entry),
       name: opened.name,
       nameVerified: opened.verified,
       nameTampered: opened.tampered,
       namePayload: opened.payload,
       seenSeq: opened.seenSeq,
-      ownerId: entry.ownerId,
-      retentionSeconds: entry.retentionSeconds ?? null,
-      unread: Number(entry.nummessages ?? 0),
     };
   };
 
@@ -285,7 +290,7 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
       try {
         out.push(await describeRoom(entry));
       } catch {
-        out.push({ id: entry.id, name: null, nameVerified: false, nameTampered: false, nameError: true, namePayload: null, seenSeq: null, ownerId: entry.ownerId, retentionSeconds: entry.retentionSeconds ?? null, unread: Number(entry.nummessages ?? 0) });
+        out.push({ ...entryFields(entry), name: null, nameVerified: false, nameTampered: false, nameError: true, namePayload: null, seenSeq: null });
       }
     }
     return out;
@@ -394,7 +399,9 @@ export const createClient = ({ api, me, vault, onNotice = () => {} }) => {
       const trust = e2ee.trustState(vault.trust, m.id, res.body);
       if (trust === "verified" || (trust === "unverified" && approved.has(`${room}:${m.id}`))) {
         recipients.push({ userId: m.id, keyEpoch: res.body.keyEpoch, ecdhPub: res.body.ecdhPub });
-      } else left.push(m.id);
+      } else {
+        left.push(m.id);
+      }
     }
     return { recipients, left };
   };

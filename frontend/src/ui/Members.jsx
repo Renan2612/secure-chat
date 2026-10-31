@@ -8,7 +8,8 @@ import { t } from "../strings.js";
 
 const MAX_NAME = e2ee.MAX_ROOM_NAME_BYTES;
 const RETENTION_OPTIONS = [null, 60, 3600, 86400, 604800];
-const retentionLabel = (s) => (s === null ? t.retentionOff : t.ttlOptions[{ 60: "1min", 3600: "1h", 86400: "24h", 604800: "7d" }[s]] ?? `${s} s`);
+const RETENTION_PRESET = { 60: "1min", 3600: "1h", 86400: "24h", 604800: "7d" };
+const retentionLabel = (s) => (s === null ? t.retentionOff : t.ttlOptions[RETENTION_PRESET[s]] ?? `${s} s`);
 const TRUST_CHIP = { verified: "chip ok", unverified: "chip warn", changed: "chip danger", unknown: "chip", unchecked: "chip danger" };
 
 function Safety({ client, member, onConfirmed }) {
