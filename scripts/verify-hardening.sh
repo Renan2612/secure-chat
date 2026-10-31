@@ -89,17 +89,20 @@ check "proxy publica só em 127.0.0.1 (80 e 443), nada em 0.0.0.0" proxy_only_lo
 check "nenhuma publicação de 8000 ou 5432 no host" bash -c "! echo '$PUB' | grep -qE '(:8000|:5432)->'"
 
 section "Perfil de produção (sintaxe, sem subir)"
-prod_config_ok() {
+# Monta o compose do perfil de produção (as variáveis são só para a
+# interpolação da sintaxe; nada sobe).
+prod_config() {
   DOMAIN=chat.exemplo.com ACME_EMAIL=ops@exemplo.com \
-    "${COMPOSE[@]}" -f docker-compose.yml -f docker-compose.prod.yml config >/dev/null 2>&1
+    "${COMPOSE[@]}" -f docker-compose.yml -f docker-compose.prod.yml config
 }
+prod_config_ok() { prod_config >/dev/null 2>&1; }
 check "docker compose config do perfil de produção é válido" prod_config_ok
 # O perfil de produção publica em 0.0.0.0 (e não em 127.0.0.1).
 prod_ports_public() {
   # Confere no bloco de portas do proxy: existe published "443" E nenhum
   # host_ip 127.0.0.1 ali (ausência de 127.0.0.1 no arquivo inteiro não
   # bastaria — poderia não publicar nada, ou ter 127.0.0.1 noutro lugar).
-  local cfg; cfg="$(DOMAIN=chat.exemplo.com ACME_EMAIL=ops@exemplo.com "${COMPOSE[@]}" -f docker-compose.yml -f docker-compose.prod.yml config 2>/dev/null)"
+  local cfg; cfg="$(prod_config 2>/dev/null)"
   local ports; ports="$(printf '%s' "$cfg" | sed -n '/^    ports:/,/^    [a-z]/p')"
   printf '%s' "$ports" | grep -q 'published: "443"' &&
     printf '%s' "$ports" | grep -q 'published: "80"' &&

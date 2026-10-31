@@ -52,6 +52,7 @@ CA="$TMP/ca.crt"
 DB_USER="$(sed -n 's/^DB_USER=//p' backend/.env | tail -n1)"; DB_USER="${DB_USER:-postgres}"
 DB_NAME="$(sed -n 's/^DB_NAME=//p' backend/.env | tail -n1)"; DB_NAME="${DB_NAME:-secure_chat}"
 psql_final() { "${COMPOSE_FINAL[@]}" exec -T db psql -U "$DB_USER" -d "$DB_NAME" -qAt -v ON_ERROR_STOP=1 "$@"; }
+psql_orig() { docker compose -f scripts/compare/original.compose.yml exec -T db-orig psql -U postgres -d messagewebapp -qAt "$@"; }
 
 cleanup() {
   local rc=$?
@@ -134,8 +135,8 @@ node -e 'for (const r of JSON.parse(require("fs").readFileSync(process.argv[1],"
 
 # ---------- Item 7: banco legível ----------
 echo "== Banco de dados"
-ORIG_MSGS="$(docker compose -f scripts/compare/original.compose.yml exec -T db-orig psql -U postgres -d messagewebapp -qAt -c "SELECT count(*) FROM messages WHERE message LIKE 'SEGREDO-ORIG-%'" 2>/dev/null | tr -d '[:space:]')"
-ORIG_SAMPLE="$(docker compose -f scripts/compare/original.compose.yml exec -T db-orig psql -U postgres -d messagewebapp -qAt -c "SELECT message FROM messages WHERE message LIKE 'SEGREDO-ORIG-%' LIMIT 1" 2>/dev/null | tr -d '\r')"
+ORIG_MSGS="$(psql_orig -c "SELECT count(*) FROM messages WHERE message LIKE 'SEGREDO-ORIG-%'" 2>/dev/null | tr -d '[:space:]')"
+ORIG_SAMPLE="$(psql_orig -c "SELECT message FROM messages WHERE message LIKE 'SEGREDO-ORIG-%' LIMIT 1" 2>/dev/null | tr -d '\r')"
 if [ "${ORIG_MSGS:-0}" -ge 1 ] 2>/dev/null; then
   emit 7 "Banco legível (texto claro)" original vulneravel vulneravel \
     "a mensagem forjada aparece em claro na coluna messages.message" "mensagens em claro=${ORIG_MSGS}, exemplo=${ORIG_SAMPLE:0:24}…"

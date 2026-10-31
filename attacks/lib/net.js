@@ -26,7 +26,10 @@ export const request = (method, url, { headers = {}, body, caPath, timeoutMs = 5
     if (caPath) opts.ca = readFileSync(caPath);
     if (body !== undefined && !opts.headers["Content-Type"]) opts.headers["Content-Type"] = "application/json";
     if (jar && jar.header()) opts.headers.Cookie = jar.header();
-    const payload = body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body);
+    let payload;
+    if (body === undefined) payload = undefined;
+    else if (typeof body === "string") payload = body;
+    else payload = JSON.stringify(body);
     if (payload !== undefined) opts.headers["Content-Length"] = Buffer.byteLength(payload);
     const req = mod.request(u, opts, (res) => {
       let data = "";

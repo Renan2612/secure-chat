@@ -12,7 +12,11 @@ const rows = readFileSync(rowsPath, "utf8").trim().split("\n").filter(Boolean).m
 const ids = [...new Set(rows.map((r) => String(r.id)))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 const by = (id, alvo) => rows.find((r) => String(r.id) === id && r.alvo === alvo);
 
-const icon = (r) => (!r ? "—" : r.observado === "inconclusivo" ? "？" : r.ok ? "✓" : "✗");
+const icon = (r) => {
+  if (!r) return "—";
+  if (r.observado === "inconclusivo") return "？";
+  return r.ok ? "✓" : "✗";
+};
 const esc = (s) => String(s ?? "").replace(/\|/g, "\\|");
 
 let md = `# Matriz de ataques "antes e depois" — Etapa 6\n\n`;

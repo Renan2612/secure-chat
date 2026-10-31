@@ -40,7 +40,10 @@ const add = (r) => results.push(r);
 // vulneravel=true → o ataque funcionou. ok = observado bate com o esperado.
 const record = (id, titulo, alvo, esperaVuln, vulneravel, controle, detalhe) => {
   const esperado = esperaVuln ? "vulneravel" : "bloqueado";
-  const observado = vulneravel === null ? "inconclusivo" : vulneravel ? "vulneravel" : "bloqueado";
+  let observado;
+  if (vulneravel === null) observado = "inconclusivo";
+  else if (vulneravel) observado = "vulneravel";
+  else observado = "bloqueado";
   add({ id, titulo, alvo, esperado, observado, ok: observado === esperado, controle, detalhe });
 };
 
@@ -86,10 +89,9 @@ const flags = (setCookies, name) => {
 // --- socket.io (original) e ws (final) com timeout e limpeza --------------
 const socketIoReceives = (api, { origin } = {}) =>
   new Promise((resolve) => {
-    const opts = { transports: ["websocket"], reconnection: false, timeout: 3000, forceNew: true };
-    if (origin) opts.extraHeaders = { Origin: origin };
-    const listener = io(api, opts);
-    const sender = io(api, { transports: ["websocket"], reconnection: false, timeout: 3000, forceNew: true });
+    const base = { transports: ["websocket"], reconnection: false, timeout: 3000, forceNew: true };
+    const listener = io(api, origin ? { ...base, extraHeaders: { Origin: origin } } : { ...base });
+    const sender = io(api, { ...base });
     let done = false;
     const finish = (v) => { if (!done) { done = true; try { listener.close(); sender.close(); } catch {} resolve(v); } };
     const timer = setTimeout(() => finish({ received: false, reason: "timeout" }), 6000);
