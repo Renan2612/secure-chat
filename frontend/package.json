@@ -1,0 +1,25 @@
+{
+  "name": "secure-chat-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Frontend do secure-chat (Etapa 5): React + Vite, E2EE no navegador reutilizando shared/e2ee.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "6.1.2",
+    "fake-indexeddb": "6.2.7",
+    "vite": "8.3.5",
+    "vitest": "5.0.5"
+  }
+}

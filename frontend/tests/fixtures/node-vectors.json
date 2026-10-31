@@ -1,0 +1,17 @@
+{
+  "rawRoomKey": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+  "ecdsaPub": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEDkTnNGSBLkxaWa-UMS5KVvp393jJimS7glGNg3pKt-92bBUkasR-sJCfQNaJ1Dgr-jUCHujaoVg-RG5QEdRRXw",
+  "body": "{\"v\":2,\"kv\":1,\"iv\":\"qAT2PtVOa-JICmVa\",\"ct\":\"0EBPLyyPSCmIKE_7J8qKuhW2OirS0hnLcqjx5_ykorN3x8kxdMEBMJvDQnu8HUTv1rc4MgEO57tq8PcGxX6uW3XK9lnEVzK851nC9rIt9Y7bKonrwIJmz_kWfdojFjBwbk4goyrAO9YAdjIjS_y_YC8WY0FLtxNB0SSWz2atqbnP87Hb_yJ_kvkxLC09U-_V\",\"sig\":\"leLTZXvKslPlKFTdPruQasoW3X4aAUY7LgrOai1u5eWq1kAn9VHCaOyE6CwkH0MNhS13NaKakJLGq492wioy_w\",\"exp\":null}",
+  "nameEnv": "{\"v\":2,\"kv\":1,\"iv\":\"5nbBMQAUBoQvYWyo\",\"ct\":\"TWXdXfnCaTyH7InP_ZHUqWInzvT0CB68UtmnxCdmt-VOJ_vRiSNBNmxjo0XlE-f9mru6b7uRBkq7pkaaUh32yh6OOZcIAWiJ9HMOHozDOug6HqY4XGd54FeANyJugrZ0v1epOONNh-k-wUph03gwRWrVSevYQ2mcgzDPIP2z1SPd38PEJyaf2fc56fVWatVWtb5di8fELHoQOmxbxJO9kttCm5eym6NwK-9BdBtYpMj3-P-GObqEMMofMMsSaEgTXt_aKyP2KfIftE3v6ci0p5kNlFjHHJjAZGc2kprd3VSa0kDrCpIuAV_pe5AkEEFttO9GxC-B7WASjpDWSp14OcOdK1Xznx6YWx2dxog0tuo\"}",
+  "sealed": {
+    "format": "secure-chat-keystore",
+    "v": 1,
+    "kdf": {
+      "name": "PBKDF2-SHA-256",
+      "iterations": 600000,
+      "salt": "Yzc4Qh9A-GZAyXl6gE7K8g"
+    },
+    "iv": "QjqBt_8fU0pq-WSi",
+    "ct": "HvLy-T4TbXHSzJoEMY6zJoJfXFHAL-oJN9oW_m77eEQ-1ggHdOd2"
+  }
+}
