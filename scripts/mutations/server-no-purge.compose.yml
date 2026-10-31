@@ -6,4 +6,5 @@
 services:
   backend:
     environment:
+      NODE_ENV: test   # as flags SÓ DE TESTE só valem em NODE_ENV=test (backend/config/testFlags.js)
       E2EE_TEST_SKIP_PURGE: inseguro-so-para-teste

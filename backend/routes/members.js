@@ -26,8 +26,10 @@ const refuse = (status, message) => ({ status, body: { message } });
 // com este valor exato, o servidor deixa de exigir a rotação depois de uma
 // saída ou remoção (quebra a E2EE de propósito, para provar que o script
 // percebe). Nunca está ativa por padrão; o backend avisa no log ao subir.
+const { honored } = require("../config/testFlags");
 const SKIP_ROTATION_VALUE = "inseguro-so-para-teste";
-const skipRotationForTest = () => process.env.E2EE_TEST_SKIP_ROTATION === SKIP_ROTATION_VALUE;
+// Só tem efeito em NODE_ENV=test (config/testFlags.js).
+const skipRotationForTest = () => honored("E2EE_TEST_SKIP_ROTATION", SKIP_ROTATION_VALUE);
 
 const newInvite = () => crypto.randomBytes(16).toString("hex");
 

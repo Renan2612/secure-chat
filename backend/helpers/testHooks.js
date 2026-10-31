@@ -9,9 +9,12 @@
 const TEST_VALUE = "inseguro-so-para-teste";
 const TEST_CLOCK_STEP_MS = 60 * 60 * 1000;
 
+const { honored } = require("../config/testFlags");
+
+// Só em NODE_ENV=test (config/testFlags.js); em produção/dev, nada é honrado.
 const testHooksFromEnv = (env = process.env) => ({
-  testClock: env.E2EE_TEST_CLOCK === TEST_VALUE,
-  skipPurge: env.E2EE_TEST_SKIP_PURGE === TEST_VALUE,
+  testClock: honored("E2EE_TEST_CLOCK", TEST_VALUE, env),
+  skipPurge: honored("E2EE_TEST_SKIP_PURGE", TEST_VALUE, env),
 });
 
 // Relógio que só anda para a frente quando advance() é chamado.

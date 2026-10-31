@@ -22,6 +22,7 @@ const requireRoomMember = require("./middleware/requireRoomMember");
 const validate = require("./middleware/validate");
 const schemas = require("./validation/schemas");
 const { notFound, errorHandler } = require("./middleware/errorHandler");
+const { assertSafe } = require("./config/testFlags");
 const pool = require("./db");
 
 // Também verifica o banco: sem ele, toda rota útil falharia, e o
@@ -71,6 +72,9 @@ const createApp = ({
   // injetam outro.
   clock = systemClock,
 } = {}) => {
+  // Recusa subir em produção com qualquer flag SÓ DE TESTE definida.
+  assertSafe();
+
   const app = express();
 
   // Atrás de um proxy reverso (nginx, Traefik...) o Express só enxerga HTTP

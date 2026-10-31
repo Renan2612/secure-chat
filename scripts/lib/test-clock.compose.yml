@@ -7,4 +7,5 @@
 services:
   backend:
     environment:
+      NODE_ENV: test   # as flags SÓ DE TESTE só valem em NODE_ENV=test (backend/config/testFlags.js)
       E2EE_TEST_CLOCK: inseguro-so-para-teste

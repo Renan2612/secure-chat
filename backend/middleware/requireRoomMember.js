@@ -9,8 +9,10 @@ const pool = require("../db");
 // EXATO, a checagem de pertencimento à sala é pulada (quebra a autorização
 // de propósito, para provar que a matriz percebe). Nunca ativa por padrão; o
 // server.js avisa no log ao subir. Mesma convenção dos outros E2EE_TEST_*.
+const { honored } = require("../config/testFlags");
 const SKIP_VALUE = "inseguro-so-para-teste";
-const skipForTest = () => process.env.TEST_SKIP_ROOM_MEMBER === SKIP_VALUE;
+// Só tem efeito em NODE_ENV=test (config/testFlags.js).
+const skipForTest = () => honored("TEST_SKIP_ROOM_MEMBER", SKIP_VALUE);
 
 const roomIdFrom = (req) => {
   const raw = req.params.id ?? req.params.room ?? req.body?.room;
