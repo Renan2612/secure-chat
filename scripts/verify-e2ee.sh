@@ -328,7 +328,11 @@ wait "$carol_PID"; C_STATUS=$?
 kill -INT "$DUMPCAP" 2>/dev/null; wait "$DUMPCAP" 2>/dev/null
 PACKETS="$(tshark -r "$CAPTURE" 2>/dev/null | wc -l)"
 DROPPED="$(sed -nE 's#.*received/dropped on interface.*: [0-9]+/([0-9]+).*#\1#p' "$TMP/dumpcap.err" | head -n 1)"
-tshark -r "$CAPTURE" -d tcp.port==8000,http -T fields -e text 2>/dev/null >"$TMP/capture.txt"
+# Texto da captura: "text" (HTTP: upgrade e corpos da API) e
+# websocket.payload.text (os quadros WebSocket INTEIROS). Só o "text" não
+# basta: é o rótulo de exibição, cortado em 240 caracteres, e o ct de um
+# MSG_SEND começa perto disso (com ids maiores, ficava de fora da varredura).
+tshark -r "$CAPTURE" -d tcp.port==8000,http -T fields -e text -e websocket.payload.text 2>/dev/null >"$TMP/capture.txt"
 
 section "(b) cada cliente decifrou a mensagem do outro"
 check "Bob mostra a mensagem da Alice decifrada e assinada por ela" grep -qF "usuário ${A_ID:-?} [não verificado]: $MARK_A" "$TMP/bob.out"
