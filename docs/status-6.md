@@ -46,5 +46,22 @@ Decisões tomadas sozinho (registradas):
 - `mem_limit`/`cpus`/`pids_limit` de topo em vez de `deploy.resources` (o Compose v2 fora de swarm honra os de topo e recusa misturar com `pids_limit`).
 - Limites: db 512M, backend 256M, proxy 128M, frontend 256M; pids 256 (64 no frontend).
 
-Pendente:
-- [ ] Parte C (docs 08/09, atualizar 00/01/README, fechamento com review + simplifier)
+## Parte C — documentação e fechamento
+
+Feito:
+- [x] C1 `docs/08-implantacao.md`: topologia, endurecimento, perfil de produção, `deploy/` (firewall e WireGuard NUNCA aplicados), backups, rotação de segredos, o que não foi testado na internet; acréscimo (a): Actions por tag (não SHA) e HSTS sem preload como limites
+- [x] C2 `docs/09-validacao-comparativa.md`: metodologia, SHA do original, ajustes de boot, matriz "antes e depois" (13/13 na final), capturas; acréscimo (b): mutação (i) sobe em `NODE_ENV=test` (cookie sem Secure; não afeta produção) e CSWSH do original parcialmente coberto pelo CORS do Socket.IO
+- [x] C3 `docs/01` (itens O–R da Etapa 6), `docs/00` (o que cada controle cobre), README (logo, provas, scripts, links 08/09)
+- [x] Acréscimo (c): logo no README, favicon e topo das telas de login/cofre (alt descritivo, sem estilo inline, mesma origem); bundle JS/CSS inalterado; `verify-frontend.sh` segue passando
+- [x] Acréscimo (a): `preload` removido do HSTS do `Caddyfile.prod`
+- [x] C4 revisão (`pr-review-toolkit`: testes + falhas silenciosas) e code-simplifier UMA vez; correções aplicadas: controles positivos entram na asserção da matriz (itens 3,4,6,8a,8b), sniff-443 exige que a senha tenha trafegado, passos quebrados viram inconclusivo (não "bloqueado"), mutações fatais ao não aplicar, schema do original verificado, limpeza avisa ao falhar, trava de alvo do cliente Node exercitada
+
+Saídas reais do fechamento (acréscimo d):
+- backend `npm test`: 776 passaram, 1 pulado (e2e opcional); `npm audit --omit=dev`: 0 vulnerabilidades
+- frontend `npm test`: 86 passaram; `npm audit --omit=dev`: 0 vulnerabilidades; lockfiles (backend/frontend/attacks) só com registry.npmjs.org
+- `docker compose --env-file backend/.env up --build`: saúde OK (db, backend, proxy; frontend builder saiu 0)
+- `verify-tls.sh`, `verify-hardening.sh`, `verify-frontend.sh`, `verify-e2ee.sh`: saída 0 cada
+- `attack-matrix.sh`: saída 0, 13/13 defesas da final confirmadas
+- stack final e do original derrubadas (sem `-v` na final; volumes preservados); banco sem dados de teste
+
+Limites honestos (reforçados): firewall e WireGuard de `deploy/` NUNCA foram aplicados (sem host/sudo); Let's Encrypt só validado por sintaxe; Actions por tag, não SHA. Detalhes em `docs/08` §4 e §7, e `docs/09`.
