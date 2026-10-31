@@ -37,7 +37,12 @@ const api = async (method, path, body) => {
     w.rotated = body;
     return { status: 201, body: { room: ROOM, version: body.version } };
   }
-  if (method === "get" && path === "/rooms") return { status: 200, body: [{ id: ROOM, nameEnv: w.nameEnv, ownerId: ME, retentionSeconds: null, nummessages: "0" }] };
+  if (method === "get" && path === "/rooms") return { status: 200, body: [{ id: ROOM, nameEnv: w.nameEnv, ownerId: w.ownerId ?? ME, retentionSeconds: null, nummessages: "0" }] };
+  if (method === "put" && path === `/rooms/${ROOM}/name`) {
+    w.renamed = body;
+    w.nameEnv = body.nameEnv;
+    return { status: 200, body: { room: ROOM } };
+  }
   if (method === "delete" && path.startsWith(`/rooms/${ROOM}/members/`)) return { status: 200, body: { invite: "n".repeat(32) } };
   return { status: 404, body: null };
 };
@@ -141,5 +146,59 @@ describe("rotação", () => {
     w.nameEnv = await e2ee.encryptRoomName({ roomKey: w.roomKey, roomId: ROOM, kv: 1, payload: forged });
     await w.client.rotate(ROOM);
     expect(w.rotated.nameEnv).toBeNull();
+  });
+});
+
+// Achados da revisão de testes (C7).
+describe("revisão C7", () => {
+  test("ATAQUE: removido por mim e verificado, reposto pelo servidor entre os pendentes → nem distribute nem approve lhe entregam a chave", async () => {
+    await verify(w.bob);
+    await w.client.kick(ROOM, 2);
+    w.pending = [w.bob];
+    await w.client.distribute(ROOM);
+    await expect(w.client.approve(ROOM, 2)).rejects.toMatchObject({ code: "KICKED" });
+    expect(delivered()).toEqual([]);
+  });
+
+  test("ATAQUE: aprovação cai quando a pessoa sai; se o servidor a repõe, ela NÃO entra na rotação sem aprovar de novo", async () => {
+    w.pending = [w.carol];
+    await w.client.approve(ROOM, 3);
+    w.members = [{ id: ME, name: "eu" }]; // Carol saiu
+    await w.client.rotate(ROOM);
+    w.members = [{ id: ME, name: "eu" }, w.carol]; // o servidor a repõe
+    w.keys.currentVersion = 2;
+    const r = await w.client.rotate(ROOM);
+    expect(w.rotated.wraps.map((x) => x.recipientId)).toEqual([1]);
+    expect(r.left).toEqual([3]);
+  });
+
+  test("rename: seq acima do último verificado; um seq NÃO verificado lá no teto (não-dono) não trava o dono", async () => {
+    const mallory = await user(9);
+    const pushed = await e2ee.signRoomName({ roomId: ROOM, seq: 2147483646, ownerId: 9, name: "x", ownerEcdsaKey: mallory.identity.ecdsa.privateKey });
+    w.nameEnv = await e2ee.encryptRoomName({ roomKey: w.roomKey, roomId: ROOM, kv: 1, payload: pushed });
+    await w.client.rename(ROOM, "Nome novo");
+    const payload = await e2ee.decryptRoomName({ nameEnv: w.renamed.nameEnv, roomKeys: { 1: w.roomKey }, roomId: ROOM });
+    expect(payload).toMatchObject({ name: "Nome novo", seq: 2, ownerId: ME });
+    expect(await e2ee.verifyRoomName({ payload, roomId: ROOM, ownerEcdsaPub: w.vault.pub.ecdsaPub })).toBe(true);
+    expect(w.vault.state.roomNames[ROOM].seq).toBe(2);
+  });
+
+  test("novo dono re-assina o ÚLTIMO NOME VERIFICADO (do dono anterior) com seq + 1; se já é signatário, não faz nada", async () => {
+    // O Bob era o dono e assinou "Sala do Bob" (seq 3); agora o dono sou eu.
+    const prev = await e2ee.signRoomName({ roomId: ROOM, seq: 3, ownerId: 2, name: "Sala do Bob", ownerEcdsaKey: w.bob.identity.ecdsa.privateKey });
+    w.nameEnv = await e2ee.encryptRoomName({ roomKey: w.roomKey, roomId: ROOM, kv: 1, payload: prev });
+    await w.vault.updateState((s) => ({ ...s, roomNames: { [ROOM]: prev } }));
+    expect(await w.client.ensureOwnerSignature(ROOM)).toBe(true);
+    const payload = await e2ee.decryptRoomName({ nameEnv: w.renamed.nameEnv, roomKeys: { 1: w.roomKey }, roomId: ROOM });
+    expect(payload).toMatchObject({ name: "Sala do Bob", seq: 4, ownerId: ME });
+    w.renamed = null;
+    expect(await w.client.ensureOwnerSignature(ROOM)).toBe(false);
+    expect(w.renamed).toBeNull();
+  });
+
+  test("não sou o dono: ensureOwnerSignature não assina nada", async () => {
+    w.ownerId = 2;
+    expect(await w.client.ensureOwnerSignature(ROOM)).toBe(false);
+    expect(w.renamed).toBeUndefined();
   });
 });

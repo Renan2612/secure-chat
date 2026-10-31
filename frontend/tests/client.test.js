@@ -40,6 +40,8 @@ const fakeApi = (w) => {
     if (method === "get" && path === `/rooms/${ROOM}/keys`) return { status: 200, body: w.keys };
     if (method === "delete" && path === `/rooms/${ROOM}/keys/wraps/mine`) return { status: 204, body: null };
     if (method === "get" && path === "/rooms") return { status: 200, body: w.rooms };
+    if (method === "get" && path.startsWith(`/messages/${ROOM}?`)) return { status: 200, body: w.history ?? [] };
+    if (method === "post" && path === "/keys/reset") return { status: 200, body: { keyEpoch: 2 } };
     return { status: 404, body: null };
   };
   api.calls = calls;
@@ -133,7 +135,105 @@ describe("chave da sala (servidor adversário)", () => {
     world.keys.wraps.push({ version: 2, senderId: MALLORY, ...wrap });
     expect(await world.client.ensureRoomKey(ROOM)).toMatchObject({ ok: false });
     expect(Object.keys(world.vault.state.roomKeys[ROOM])).toEqual(["1"]);
-    expect(v1).toBeDefined();
+  });
+});
+
+// Achados da revisão de testes (C7): regras do cliente que só existem contra
+// o servidor adversário e que não tinham teste, ou cujo teste passava pelo
+// motivo errado.
+describe("revisão C7: pinos e regras do cliente", () => {
+  const verifyBob = async () => {
+    const shown = await world.client.safety(BOB);
+    await world.client.confirm(BOB, shown.fingerprint);
+  };
+  // v2 do Bob (verificado), com a chave escolhida.
+  const bobV2 = async (roomKey) => {
+    const ctx = { roomId: ROOM, version: 2 };
+    const wrap = await e2ee.wrapRoomKey({ ...ctx, roomKey, senderId: BOB, recipientId: ALICE, recipientEcdhPub: world.vault.pub.ecdhPub, senderEcdsaKey: world.bob.identity.ecdsa.privateKey });
+    world.keys.currentVersion = 2;
+    world.keys.versions.push({ version: 2, createdBy: BOB, ...(await e2ee.commitRoomKey({ ...ctx, roomKey, creatorEcdsaKey: world.bob.identity.ecdsa.privateKey })) });
+    world.keys.wraps.push({ version: 2, senderId: BOB, ...wrap });
+  };
+
+  test("v2 de autor VERIFICADO é aceita e o PRÓPRIO cliente sobe o pino; depois o servidor rebaixa → VERSION_ROLLBACK", async () => {
+    await bobsRoom();
+    await world.client.ensureRoomKey(ROOM);
+    await verifyBob();
+    await bobV2(await e2ee.generateRoomKey());
+    expect(await world.client.ensureRoomKey(ROOM)).toMatchObject({ ok: true, sender: BOB });
+    expect(world.vault.state.rooms[ROOM]).toEqual({ creator: BOB, version: 2 });
+    world.keys.currentVersion = 1;
+    expect(await world.client.ensureRoomKey(ROOM)).toMatchObject({ ok: false, reason: "VERSION_ROLLBACK" });
+  });
+
+  test("ATAQUE: o servidor fabrica uma v1 INTEIRA do Mallory (wrap e compromisso dele) depois de fixado o criador → CREATOR_CHANGED", async () => {
+    await bobsRoom();
+    await world.client.ensureRoomKey(ROOM);
+    const notices = [];
+    const client = createClient({ api: world.api, me: { id: ALICE, name: "alice" }, vault: world.vault, onNotice: (n) => notices.push(n) });
+    await world.vault.updateState((st) => ({ ...st, roomKeys: {} }));
+    const key = await e2ee.generateRoomKey();
+    const ctx = { roomId: ROOM, version: 1 };
+    const wrap = await e2ee.wrapRoomKey({ ...ctx, roomKey: key, senderId: MALLORY, recipientId: ALICE, recipientEcdhPub: world.vault.pub.ecdhPub, senderEcdsaKey: world.mallory.identity.ecdsa.privateKey });
+    world.keys.versions = [{ version: 1, createdBy: MALLORY, ...(await e2ee.commitRoomKey({ ...ctx, roomKey: key, creatorEcdsaKey: world.mallory.identity.ecdsa.privateKey })) }];
+    world.keys.wraps = [{ version: 1, senderId: MALLORY, ...wrap }];
+    expect(await client.ensureRoomKey(ROOM)).toMatchObject({ ok: false });
+    expect(notices).toContainEqual({ kind: "CREATOR_CHANGED", room: ROOM });
+    expect(world.vault.state.roomKeys[ROOM]).toBeUndefined();
+  });
+
+  test("ATAQUE: v2 que REPETE a chave da v1 (quem saiu ainda a tem) → recusada (KEY_REUSED)", async () => {
+    const v1 = await bobsRoom();
+    await world.client.ensureRoomKey(ROOM);
+    await verifyBob();
+    await bobV2(v1);
+    expect(await world.client.ensureRoomKey(ROOM)).toMatchObject({ ok: false });
+    expect(Object.keys(world.vault.state.roomKeys[ROOM])).toEqual(["1"]);
+  });
+
+  test("ATAQUE: rollback do nome — o servidor repõe um nome ANTIGO válido da dona → mantém o verificado, sinaliza, o cofre fica com o seq maior", async () => {
+    const key = await bobsRoom();
+    await world.client.ensureRoomKey(ROOM);
+    const named = async (name, seq) => {
+      const payload = await e2ee.signRoomName({ roomId: ROOM, seq, ownerId: BOB, name, ownerEcdsaKey: world.bob.identity.ecdsa.privateKey });
+      world.rooms = [{ id: ROOM, nameEnv: await e2ee.encryptRoomName({ roomKey: key, roomId: ROOM, kv: 1, payload }), ownerId: BOB, retentionSeconds: null, nummessages: "0" }];
+      return (await world.client.listRooms())[0];
+    };
+    expect(await named("Nome atual", 4)).toMatchObject({ name: "Nome atual", nameVerified: true, nameTampered: false });
+    expect(await named("Nome antigo", 2)).toMatchObject({ name: "Nome atual", nameTampered: true });
+    expect(world.vault.state.roomNames[ROOM]).toMatchObject({ seq: 4, name: "Nome atual" });
+  });
+
+  test("ATAQUE: chaves no servidor diferentes das do cofre → KEYS_MISMATCH, sem trocar nada no servidor", async () => {
+    world.directory[ALICE] = await identityOf(ALICE);
+    await expect(world.client.registerKeys()).rejects.toMatchObject({ code: "KEYS_MISMATCH" });
+    expect(world.api.calls.filter((c) => c.method !== "get")).toEqual([]);
+  });
+
+  test("mensagem com kv novo: o cliente busca a v2 (autor verificado) e decifra", async () => {
+    await bobsRoom();
+    await world.client.ensureRoomKey(ROOM);
+    await verifyBob();
+    const v2 = await e2ee.generateRoomKey();
+    await bobV2(v2);
+    const body = await e2ee.encryptMessage({ roomKey: v2, kv: 2, roomId: ROOM, senderId: BOB, cid: "novo", text: "na v2", senderEcdsaKey: world.bob.identity.ecdsa.privateKey });
+    expect(await world.client.accept({ room: ROOM, from: BOB, cid: "novo", id: 5, ts: "t", body })).toMatchObject({ status: "ok", text: "na v2" });
+  });
+
+  test("histórico: mapeia as colunas do GET /messages e passa tudo pelo receptor", async () => {
+    const key = await bobsRoom();
+    await world.client.ensureRoomKey(ROOM);
+    const body = await e2ee.encryptMessage({ roomKey: key, kv: 1, roomId: ROOM, senderId: BOB, cid: "h1", text: "do histórico", senderEcdsaKey: world.bob.identity.ecdsa.privateKey });
+    world.history = [
+      { username: "bob", userid: BOB, message: body, dtmessage: "2026-10-31T10:00:00.000Z", idmessage: 7, roomid: ROOM, cid: "h1", keyversion: 1 },
+      { username: "bob", userid: BOB, message: body, dtmessage: "2026-10-31T10:01:00.000Z", idmessage: 8, roomid: ROOM, cid: "outro", keyversion: 1 },
+    ];
+    const page = await world.client.history(ROOM);
+    expect(page.map((p) => [p.packet.id, p.packet.from, p.packet.cid, p.result.status])).toEqual([
+      [7, BOB, "h1", "ok"],
+      [8, BOB, "outro", "invalid"], // o cid faz parte do AAD: o servidor não reaproveita um envelope
+    ]);
+    expect(page[0].result.text).toBe("do histórico");
   });
 });
 
@@ -185,7 +285,7 @@ describe("mensagens", () => {
     expect(await world.client.accept(packet)).toEqual({ status: "expired" });
   });
 
-  test("sem a chave da versão: missing_key", async () => {
+  test("sem a chave da versão (e o servidor não oferece nenhuma): missing_key", async () => {
     const key = await bobsRoom();
     const packet = await packetFrom(world.bob, key);
     world.keys.wraps = [];
